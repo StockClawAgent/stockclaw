@@ -11,6 +11,7 @@ const PORT_RPC = Number(process.env.E2E_RPC_PORT ?? 8546), PORT_API = Number(pro
 process.env.RPC_URL = `http://127.0.0.1:${PORT_RPC}`;
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-e2e-"));
 process.env.KEEPER = "off";
+process.env.STOCKCLAW_NO_ENV_FILE = "1"; // never read server/.env.demo in tests
 process.env.MARKET_MODE = "open";
 const OWNER = (process.env.OWNER_API_TOKEN = "owner-e2e-token"), MCPT = (process.env.MCP_API_TOKEN = "mcp-e2e-token");
 const ANVIL = process.env.ANVIL_BIN ?? (fs.existsSync(`${os.homedir()}/.foundry/bin/anvil`) ? `${os.homedir()}/.foundry/bin/anvil` : "anvil");
@@ -293,6 +294,37 @@ try {
     assert.equal(Number(await read(vaultAddr(), C.vault.abi, "spentLast24h", [k.body.agent])), 0, "new key has its own zero spend");
     const r = await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 95 });
     assert.equal(r.status, 403); assert.match(r.body.error, /vault's \$500\.00 rolling-24h cap shared by all agent keys/);
+  });
+
+  await step("R3-1/B8/B12: tokens required (ALLOW_OPEN_LOCAL escape), X-Owner-Token, rate limit 429, health alerts", async () => {
+    const save = { o: process.env.OWNER_API_TOKEN, m: process.env.MCP_API_TOKEN };
+    delete process.env.OWNER_API_TOKEN;
+    assert.throws(() => cfg.assertTokensConfigured(), /REFUSING to start/);
+    process.env.ALLOW_OPEN_LOCAL = "1"; assert.doesNotThrow(() => cfg.assertTokensConfigured()); delete process.env.ALLOW_OPEN_LOCAL;
+    process.env.OWNER_API_TOKEN = save.o; process.env.MCP_API_TOKEN = save.m;
+    // owner endpoint via X-Owner-Token header (dashboard shape); MCP token in the same header is still refused
+    const viaHdr = await fetch(`${API}/strategies/activations/x/resume`, { method: "POST", headers: { "content-type": "application/json", "x-owner-token": OWNER } }); assert.equal(viaHdr.status, 409);
+    const mcpHdr = await fetch(`${API}/revoke_session_key`, { method: "POST", headers: { "content-type": "application/json", "x-owner-token": MCPT } }); assert.equal(mcpHdr.status, 403);
+    // rate limit on a separate app instance with a tiny budget
+    const small = buildApp({ restPerMin: 5, mcpPerMin: 2 }).listen(PORT_API + 1);
+    const codes: number[] = [];
+    for (let i = 0; i < 7; i++) codes.push((await fetch(`http://127.0.0.1:${PORT_API + 1}/api/list_assets`, { headers: { authorization: `Bearer ${MCPT}` } })).status);
+    assert.deepEqual(codes.slice(5), [429, 429]); assert.ok(codes.slice(0, 5).every((c) => c === 200));
+    const m: number[] = [];
+    for (let i = 0; i < 3; i++) m.push((await fetch(`http://127.0.0.1:${PORT_API + 1}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${MCPT}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) })).status);
+    assert.equal(m[2], 429);
+    small.close();
+    // health: fresh pushes = no oracle alert; after 20 min without pushes ORACLE_STALE fires; cap-block spike counted
+    await keeper.pushOracle();
+    let hh = (await call("GET", "health")).body; assert.ok(!hh.alerts.some((a: any) => a.code === "ORACLE_STALE"), JSON.stringify(hh.alerts));
+    await warp(1200);
+    hh = (await call("GET", "health")).body; assert.ok(hh.alerts.some((a: any) => a.code === "ORACLE_STALE")); assert.equal(hh.status, "degraded");
+    const mon = await import("../src/monitor.js"); for (let i = 0; i < 5; i++) mon.recordCapBlock();
+    hh = (await call("GET", "health")).body; assert.ok(hh.alerts.some((a: any) => a.code === "CAP_BLOCK_SPIKE"));
+    process.env.MARKET_MODE = "schedule"; keeper._resetPushedSession();
+    await warp(9 * 3600); // past the override session's close, no new session pushed
+    hh = (await call("GET", "health")).body; assert.ok(hh.alerts.some((a: any) => a.code === "SESSION_CLOSED"), JSON.stringify(hh.alerts));
+    process.env.MARKET_MODE = "open";
   });
 
   await step("market calendar: DST (14:30-21:00 UTC from Nov 1), holidays, early close; keeper pushes the NYSE session", async () => {

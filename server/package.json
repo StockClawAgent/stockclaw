@@ -10,7 +10,9 @@
     "mcp": "tsx src/mcpStdio.ts",
     "e2e": "tsx scripts/e2e.ts",
     "typecheck": "tsc",
-    "strategies:lock": "tsx src/strategies.ts lock"
+    "strategies:lock": "tsx src/strategies.ts lock",
+    "demo:env": "bash scripts/gen-demo-env.sh",
+    "testnet:dryrun": "bash scripts/testnet-dryrun.sh"
   },
   "keywords": [],
   "author": "",

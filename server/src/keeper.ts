@@ -8,6 +8,7 @@ import { KEEPER_INTERVAL_MS, getMarketMode } from "./config.js";
 import { BASE_PRICES } from "./deploy.js";
 import { sessionFor } from "./marketCalendar.js";
 import * as strat from "./strategies.js";
+import * as mon from "./monitor.js";
 
 const MAX_DRIFT = 0.03; // stay inside the pools' 5% oracle band
 
@@ -95,6 +96,7 @@ export async function executeDue() {
       const name = revertReason(e).name, reason = svc.humanReason(e);
       const prev = o.lastError; o.lastError = reason;
       if (name === "NotAgent" || name === "AgentExpired") o.status = "paused";
+      if (CAP_ERRORS.has(name)) mon.recordCapBlock();
       if (CAP_ERRORS.has(name)) backoff.set(o.intentId, now + 3600); // hourly buckets: retry when the window can have moved
       if (name === "NonceIsCancelled") o.status = "cancelled";
       if (!BENIGN.has(name) && prev !== reason) S.history.unshift({ txHash: null, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: "—", fee: "—", ts: new Date().toISOString(), status: "blocked", reason });
@@ -116,8 +118,8 @@ export function startKeeper(log = console.log) {
   let busy = false;
   const run = async () => {
     if (busy) return; busy = true;
-    try { const r = await tick(); log(`[keeper] ${new Date().toISOString()} prices ${JSON.stringify(r.prices)} ${r.executed.length ? JSON.stringify(r.executed) : ""}`); }
-    catch (e) { log(`[keeper] error: ${(e as Error).message}`); }
+    try { const r = await tick(); mon.recordTick(true); log(`[keeper] ${new Date().toISOString()} prices ${JSON.stringify(r.prices)} ${r.executed.length ? JSON.stringify(r.executed) : ""}`); }
+    catch (e) { mon.recordTick(false, (e as Error).message.slice(0, 200)); log(`[keeper] error: ${(e as Error).message}`); void mon.health(); }
     finally { busy = false; }
   };
   run();

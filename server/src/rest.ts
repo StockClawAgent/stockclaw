@@ -4,20 +4,38 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import * as svc from "./service.js";
 import * as strat from "./strategies.js";
 import { buildMcpServer } from "./mcp.js";
+import * as mon from "./monitor.js";
 import { REPO, ownerToken, mcpToken } from "./config.js";
 
 // Auth (review S-1). Roles: "owner" (OWNER_API_TOKEN, dashboard) and "agent" (MCP_API_TOKEN).
 // If a token is unset (local demo only; non-local refuses to start), that role is open.
-const bearer = (req: express.Request) => (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+// Owner token may arrive as Authorization: Bearer or X-Owner-Token (dashboard owner calls send both).
+const bearer = (req: express.Request) => (req.headers["x-owner-token"] as string | undefined) || (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
 const isOwner = (req: express.Request) => !ownerToken() || bearer(req) === ownerToken();
 const isAgent = (req: express.Request) => !mcpToken() || bearer(req) === mcpToken();
 const ownerOnly: express.RequestHandler = (req, res, next) => (ownerToken() && bearer(req) !== ownerToken() ? res.status(bearer(req) ? 403 : 401).json({ error: "Owner token required (dashboard action)" }) : next());
 const anyRole: express.RequestHandler = (req, res, next) => (isOwner(req) || isAgent(req) ? next() : res.status(401).json({ error: "Missing or bad bearer token" }));
 const mcpOnly: express.RequestHandler = (req, res, next) => (mcpToken() && bearer(req) !== mcpToken() ? res.status(401).json({ error: "MCP token required" }) : next());
 
-export function buildApp() {
+// B8: fixed-window rate limit per token (hashed key) or IP. REST and MCP have separate budgets.
+function rateLimiter(perMin: number, scope: string): express.RequestHandler {
+  const hits = new Map<string, { win: number; n: number }>();
+  return (req, res, next) => {
+    const tok = bearer(req), key = `${scope}:${tok ? "t:" + tok.slice(-12) : "ip:" + (req.ip ?? "?")}`, win = Math.floor(Date.now() / 60_000);
+    const h = hits.get(key);
+    if (!h || h.win !== win) hits.set(key, { win, n: 1 });
+    else if (++h.n > perMin) { res.setHeader("Retry-After", String(60 - Math.floor((Date.now() / 1000) % 60))); return res.status(429).json({ error: "Rate limit exceeded" }); }
+    if (hits.size > 10_000) hits.clear();
+    next();
+  };
+}
+
+export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number } = {}) {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "100kb" }));
+  mon && svc.setCapBlockHook(mon.recordCapBlock);
+  app.use("/api", rateLimiter(opts.restPerMin ?? Number(process.env.RATE_LIMIT_REST_PER_MIN ?? 300), "rest"));
+  app.use("/mcp", rateLimiter(opts.mcpPerMin ?? Number(process.env.RATE_LIMIT_MCP_PER_MIN ?? 120), "mcp"));
   const geo = (req: express.Request) => (req.headers["cf-ipcountry"] as string | undefined) ?? undefined;
   const h = (fn: (req: express.Request) => unknown) => async (req: express.Request, res: express.Response) => {
     svc.countCall();
@@ -43,7 +61,7 @@ export function buildApp() {
   r.get("/get_history", anyRole, h((q) => svc.get_history(q.query.limit ? Number(q.query.limit) : undefined)));
   r.post("/faucet_testnet", anyRole, h(() => svc.faucet_testnet()));
   r.get("/get_usage", anyRole, h(() => svc.get_usage()));
-  r.get("/health", h(async () => ({ ok: true, chainId: 46630, router: svc.dep().router, ownerSimulated: true })));
+  r.get("/health", h(async () => ({ ...(await mon.health()), chainId: 46630, router: svc.dep().router, ownerSimulated: true })));
   // owner-only (dashboard)
   r.post("/submit_attestation", ownerOnly, h((q) => svc.submit_attestation(q.body?.sig, geo(q))));
   r.post("/create_smart_account", ownerOnly, h((q) => svc.create_smart_account(q.body?.owner)));

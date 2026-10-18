@@ -9,6 +9,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, type Deployment } from "./chain.js";
 import * as cfg from "./config.js";
 
+let onCapBlock: (() => void) | undefined;
+export const setCapBlockHook = (f: () => void) => { onCapBlock = f; };
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
 
 type Intent = {
@@ -301,6 +303,7 @@ export async function execute_swap(arg: string | { tokenIn: string; tokenOut: st
     if (e instanceof ApiError || !isRevert(e)) throw e;
     const reason = humanReason(e);
     pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason });
+    if (/rolling-24h cap/.test(reason)) onCapBlock?.();
     throw new ApiError(403, `Blocked: ${reason}`);
   }
 }

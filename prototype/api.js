@@ -52,14 +52,30 @@ const mockApi = {
   // get_usage omitted from UI: tiers/subscriptions out of scope.
 };
 // ---------------------------------------------------------------- live (StockClaw server)
-async function call(method, name, body) {
+// ---- presenter auth (review-3 R3-1). The owner token is NEVER served by the server: the presenter pastes it
+// once per tab; it lives in sessionStorage only. Owner calls also send X-Owner-Token.
+const OWNER_KEY = "stockclaw-owner-token";
+const OWNER_CALLS = new Set(["submit_attestation", "create_smart_account", "create_session_key", "revoke_session_key", "cancel_order"]);
+const ss = () => { try { return typeof sessionStorage !== "undefined" ? sessionStorage : null; } catch { return null; } };
+function getOwnerToken(forcePrompt) {
+  let t = forcePrompt ? null : (ss()?.getItem(OWNER_KEY) || (typeof window !== "undefined" && window.STOCKCLAW_TOKEN) || null);
+  if (!t && typeof window !== "undefined" && typeof window.prompt === "function") {
+    t = (window.prompt("Presenter: paste the StockClaw OWNER token (stored in this tab only)") || "").trim() || null;
+    if (t) ss()?.setItem(OWNER_KEY, t);
+  }
+  return t;
+}
+const StockClawAuth = { set: (t) => ss()?.setItem(OWNER_KEY, t), clear: () => ss()?.removeItem(OWNER_KEY), has: () => !!ss()?.getItem(OWNER_KEY) };
+async function call(method, name, body, retried) {
   let url = `${API_BASE}/api/${name}`;
   const opt = { method, headers: { "content-type": "application/json" } };
-  if (typeof window !== "undefined" && window.STOCKCLAW_TOKEN) opt.headers.authorization = `Bearer ${window.STOCKCLAW_TOKEN}`;
+  const tok = getOwnerToken(retried);
+  if (tok) { opt.headers.authorization = `Bearer ${tok}`; if (OWNER_CALLS.has(name)) opt.headers["x-owner-token"] = tok; }
   if (method === "GET" && body) { const q = new URLSearchParams(Object.entries(body).filter(([, v]) => v != null && v !== "").map(([k, v]) => [k, Array.isArray(v) ? v.join(",") : String(v)])); if ([...q].length) url += "?" + q; }
   else if (body) opt.body = JSON.stringify(body);
   let r; try { r = await fetch(url, opt); } catch (e) { throw new Unreachable(String(e)); }
   const data = await r.json().catch(() => ({}));
+  if ((r.status === 401 || r.status === 403) && /token/i.test(data.error || "") && !retried) { StockClawAuth.clear(); return call(method, name, body, true); }
   if (!r.ok) { const e = new Error(data.error || `HTTP ${r.status}`); e.status = r.status; throw e; }
   return data;
 }
@@ -91,4 +107,4 @@ const api = Object.fromEntries(Object.keys(mockApi).map((name) => [name, async (
   try { return await liveApi[name](...args); }
   catch (e) { if (e instanceof Unreachable) { console.warn(`[api] server unreachable, using mock for ${name}`); return mockApi[name](...args); } throw e; }
 }]));
-if (typeof window !== "undefined") Object.assign(window, { api, FEE_BPS, EXPLORER, CHAIN_ID, USE_MOCK });
+if (typeof window !== "undefined") Object.assign(window, { api, FEE_BPS, EXPLORER, CHAIN_ID, USE_MOCK, StockClawAuth });
