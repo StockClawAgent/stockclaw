@@ -14,6 +14,8 @@ process.env.KEEPER = "off";
 process.env.STOCKCLAW_NO_ENV_FILE = "1";
 process.env.RATE_LIMIT_REST_PER_MIN = process.env.RATE_LIMIT_IP_PER_MIN = "100000"; // main test app; limits tested on a small app // never read server/.env.demo in tests
 process.env.MARKET_MODE = "open";
+process.env.WEBAUTHN_ORIGINS = `http://localhost:${PORT_API}`;
+process.env.LOG_LEVEL ??= "silent";
 const OWNER = (process.env.OWNER_API_TOKEN = "owner-e2e-token"), MCPT = (process.env.MCP_API_TOKEN = "mcp-e2e-token");
 const ANVIL = process.env.ANVIL_BIN ?? (fs.existsSync(`${os.homedir()}/.foundry/bin/anvil`) ? `${os.homedir()}/.foundry/bin/anvil` : "anvil");
 
@@ -53,6 +55,10 @@ try {
   const svc = await import("../src/service.js");
   const cfg = await import("../src/config.js");
   const server = buildApp().listen(PORT_API);
+  const jobs = await import("../src/jobs.js");
+  const bk = await import("../src/baskets.js");
+  const { getDb } = await import("../src/db.js");
+  jobs.startWorker(100);
   await keeper.pushOracle();
   const usdgBal = async (a: string) => Number(await read<bigint>(d.usdg, C.usdg.abi, "balanceOf", [a])) / 1e6;
 
@@ -318,6 +324,208 @@ try {
     assert.equal(r.status, 403); assert.match(r.body.error, /vault's \$500\.00 rolling-24h cap shared by all agent keys/);
   });
 
+
+  // ================= Friday backend: SQLite, jobs, nonces, recovery, baskets, sell approvals
+  const callH = async (method: "GET" | "POST", name: string, body?: Record<string, unknown>, token: string | null = OWNER, headers: Record<string, string> = {}) => {
+    let url = `${API}/${name}`;
+    if (method === "GET" && body) url += "?" + new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)]));
+    const r = await fetch(url, { method, headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers }, body: method === "POST" ? JSON.stringify(body ?? {}) : undefined });
+    return { status: r.status, body: (await r.json()) as any };
+  };
+  const freshUser = async (allowlist = ["TSLA", "AMZN", "AMD", "PLTR"]) => {
+    assert.equal((await call("POST", "dev/reset")).status, 200);
+    await call("GET", "check_eligibility", { country: "FR" });
+    assert.equal((await call("POST", "submit_attestation")).status, 200);
+    assert.equal((await call("POST", "create_smart_account")).status, 200);
+    assert.equal((await call("POST", "create_session_key", { allowlist })).status, 200);
+    assert.equal((await call("POST", "faucet_testnet")).status, 200);
+  };
+  const waitExec = async (id: string, done = (e: any) => !["pending", "running"].includes(e.status)) => {
+    for (let i = 0; i < 200; i++) { const e = (await callH("GET", `baskets/executions/${id}`)).body; if (done(e)) return e; await new Promise((r) => setTimeout(r, 150)); }
+    throw new Error("basket execution did not settle");
+  };
+  const txCount = (labelLike: string) => (getDb().prepare("SELECT COUNT(*) n FROM tx_log WHERE label LIKE ?").get(labelLike) as { n: number }).n;
+  const bal = async (sym: string) => (await call("GET", "get_balances", { tokens: sym })).body[0].amount as number;
+
+  await step("SQLite: state.json migrates into SQLite once; nonce manager: 6 concurrent writes from 2 wallet objects, then resync after an external tx", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-mig-"));
+    fs.writeFileSync(path.join(tmp, "state.json"), JSON.stringify({ country: "DE", nextAgentIdx: 3, orders: { int_legacy: { intentId: "int_legacy", type: "DCA", status: "open", tokenIn: "mUSDG", tokenOut: "AMD", amount: 10, maxExecs: 3, execsDone: 1, txHashes: [] } }, history: [{ txHash: null, type: "swap", in: "1 mUSDG", out: "—", fee: "—", ts: "2026-10-18T10:00:00Z", status: "blocked", reason: "x" }], usage: { day: "", calls: 0 }, activations: { act_old: { activationId: "act_old", status: "stopped" } } }));
+    const script = path.join(tmp, "check.mts");
+    fs.writeFileSync(script, `const s = await import(${JSON.stringify(path.resolve("src/service.ts"))}); const S = s._state(); console.log("RESULT" + JSON.stringify({ orders: Object.keys(S.orders), history: S.history.length, country: S.country, idx: S.nextAgentIdx, acts: Object.keys(S.activations ?? {}) }));`);
+    const { spawnSync } = await import("node:child_process");
+    const run = () => { const r = spawnSync("npx", ["tsx", script], { env: { ...process.env, DATA_DIR: tmp }, encoding: "utf8" }); const m = /RESULT(.*)/.exec(r.stdout); assert.ok(m, r.stderr); return JSON.parse(m![1]); };
+    const r1 = run();
+    assert.deepEqual(r1, { orders: ["int_legacy"], history: 1, country: "DE", idx: 3, acts: ["act_old"] });
+    assert.ok(fs.existsSync(path.join(tmp, "state.json.migrated")) && !fs.existsSync(path.join(tmp, "state.json")) && fs.existsSync(path.join(tmp, "stockclaw.db")));
+    assert.deepEqual(run(), r1, "second boot reads SQLite (no re-import)");
+    // state survives a reload of the in-memory view
+    const v = svc._vault(); svc._reloadFromDb(); assert.equal(svc._vault(), v);
+    // nonce manager: concurrent writes, two wallet objects for the same key share one queue + counter
+    const w1 = wallet(cfg.keys.demoOwner()), w2 = wallet(cfg.keys.demoOwner());
+    const res = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => (i % 2 ? w1 : w2).write(v as any, C.vault.abi, "setAllowedToken", [d.stocks.PLTR.token, true], { label: `e2e-nonce-${i}` })));
+    assert.equal(res.length, 6);
+    const ns = (getDb().prepare("SELECT nonce FROM tx_log WHERE label LIKE 'e2e-nonce-%' ORDER BY nonce").all() as { nonce: number }[]).map((r) => r.nonce);
+    assert.equal(new Set(ns).size, 6); assert.equal(ns[5] - ns[0], 5, JSON.stringify(ns));
+    // an external tx from the same key (outside the manager) => "nonce too low" => resync => success
+    await w1.client.sendTransaction({ to: w1.address, value: 0n, nonce: ns[5] + 1 } as any);
+    await rpc("evm_mine");
+    const r = await w1.write(v as any, C.vault.abi, "setAllowedToken", [d.stocks.PLTR.token, true], { label: "e2e-nonce-resync" });
+    assert.equal(r.receipt.status, "success");
+    assert.equal((getDb().prepare("SELECT status FROM tx_log WHERE label='e2e-nonce-resync'").get() as any).status, "mined");
+  });
+
+  await step("baskets: 8 listed (only ai-tech-mini executable, others give a reason); hashes pinned; $300 preview = 6 legs <= $98; non-executable 409", async () => {
+    await freshUser();
+    const ls = (await callH("GET", "baskets", undefined, MCPT)).body;
+    assert.equal(ls.length, 8);
+    const mini = ls.find((b: any) => b.id === "ai-tech-mini");
+    assert.equal(mini.executable, true); assert.deepEqual(mini.legs.map((l: any) => l.symbol).sort(), ["AMD", "AMZN", "PLTR"]); assert.equal(mini.legs.reduce((s: number, l: any) => s + l.weightBps, 0), 10000);
+    for (const b of ls.filter((x: any) => x.id !== "ai-tech-mini")) { assert.equal(b.executable, false); assert.match(b.notExecutableReason, /Not executable locally/); assert.match(b.basketHash, /^sha256:/); }
+    const g = (await callH("GET", "baskets/ai-tech-mini")).body; assert.ok(g.legs.every((l: any) => l.tradable && l.priceUsd > 0)); assert.match(g.disclaimer, /Not investment advice/);
+    const p = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 300 }, MCPT)).body;
+    assert.equal(p.preflight.ok, true, JSON.stringify(p.preflight)); assert.equal(p.legs.length, 6);
+    assert.ok(p.legs.every((l: any) => l.amountIn <= 98 && l.amountIn >= 5 && l.quotedOut > 0 && l.minOut > 0));
+    assert.equal(+p.legs.reduce((s: number, l: any) => s + l.amountIn, 0).toFixed(2), 300);
+    assert.equal(p.capHeadroom.perTrade, 100); assert.equal(p.capHeadroom.remaining24h, 500);
+    const ai = await callH("POST", "baskets/preview", { id: "ai", usd: 100 }); assert.equal(ai.status, 409); assert.match(ai.body.error, /Not executable locally/);
+    assert.equal((await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 600 })).status, 400, "basket max $500");
+    assert.deepEqual(bk.splitLeg(125), [98, 27]);
+  });
+
+  let ex1: any;
+  await step("basket: agent proposes via MCP (pending, nothing bought); MCP token can't confirm; owner confirms; 3 legs fill; same Idempotency-Key replays with no new txs", async () => {
+    const c = await mcpClient();
+    const pv = mcpJson(await c.callTool({ name: "preview_basket_buy", arguments: { id: "ai-tech-mini", usd: 150 } }));
+    const usdg0 = await bal("mUSDG");
+    const pr = mcpJson(await c.callTool({ name: "buy_basket", arguments: { previewId: pv.previewId } }));
+    assert.equal(pr.status, "pending_confirmation"); assert.equal(pr.requiresOwnerConfirmation, true); assert.match(pr.message, /pending owner confirmation/);
+    await c.close();
+    assert.equal(await bal("mUSDG"), usdg0, "nothing bought before owner confirms");
+    assert.equal((await callH("POST", `baskets/proposals/${pr.proposalId}/confirm`, {}, MCPT)).status, 403);
+    const cf = await callH("POST", `baskets/proposals/${pr.proposalId}/confirm`, {}, OWNER, { "idempotency-key": "e2e-k1" });
+    assert.equal(cf.status, 200, JSON.stringify(cf.body)); assert.ok(["pending", "running", "filled"].includes(cf.body.status));
+    ex1 = await waitExec(cf.body.id);
+    assert.equal(ex1.status, "filled", JSON.stringify(ex1));
+    assert.deepEqual(Object.keys(ex1).sort(), ["basketHash", "basketId", "basketVersion", "createdAt", "id", "legs", "status", "totalUsd", "updatedAt"].sort());
+    assert.equal(ex1.legs.length, 3);
+    for (const l of ex1.legs) { assert.deepEqual(Object.keys(l).sort(), ["filledUsd", "legId", "status", "targetUsd", "ticker", "txHash", "weight"].sort()); assert.equal(l.status, "filled"); assert.equal(l.filledUsd, l.targetUsd); }
+    const n = txCount("basket:%");
+    const again = await callH("POST", `baskets/proposals/${pr.proposalId}/confirm`, {}, OWNER, { "idempotency-key": "e2e-k1" });
+    assert.equal(again.body.id, ex1.id); assert.equal(txCount("basket:%"), n, "replay: no new txs");
+    assert.ok(Math.abs((await bal("mUSDG")) - (usdg0 - 150)) < 0.01);
+  });
+
+  await step("basket partial: forced revert in leg 2 => partial (leg 1 kept, no auto-retry); replay = no new txs; only failed legs retry (owner, idempotent); transport error retried once", async () => {
+    bk._setFaults({ revertLeg: 1 });
+    const b = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 60 }, OWNER, { "idempotency-key": "e2e-k2" });
+    assert.equal(b.status, 200, JSON.stringify(b.body));
+    const e = await waitExec(b.body.id);
+    assert.equal(e.status, "partial", JSON.stringify(e));
+    assert.deepEqual(e.legs.map((l: any) => l.status), ["filled", "failed", "pending"]);
+    assert.match(e.legs[1].error, /Slippage|oracle|Insufficient/i); assert.equal(e.legs[1].txHash, undefined);
+    const n = txCount("basket:%");
+    const rep = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 60 }, OWNER, { "idempotency-key": "e2e-k2" });
+    assert.equal(rep.body.id, e.id); assert.equal(rep.body.status, "partial"); assert.equal(txCount("basket:%"), n, "no duplicates on replay");
+    const [l1, l2, l3] = e.legs;
+    assert.equal((await callH("POST", `baskets/executions/${e.id}/legs/${l3.legId}/retry`)).status, 409, "pending legs can't be retried");
+    assert.equal((await callH("POST", `baskets/executions/${e.id}/legs/${l1.legId}/retry`)).body.legs[0].status, "filled", "filled leg: no-op");
+    assert.equal((await callH("POST", `baskets/executions/${e.id}/legs/${l2.legId}/retry`, {}, MCPT)).status, 403, "owner token only");
+    const rt = await callH("POST", `baskets/executions/${e.id}/legs/${l2.legId}/retry`); assert.equal(rt.status, 200, JSON.stringify(rt.body));
+    const e2 = await waitExec(e.id, (x) => x.legs[1].status === "filled" || x.legs[1].status === "failed");
+    assert.equal(e2.legs[1].status, "filled"); assert.equal(e2.status, "partial", "leg 3 untouched");
+    const n2 = txCount("basket:%"); assert.equal(n2, n + 1);
+    await callH("POST", `baskets/executions/${e.id}/legs/${l2.legId}/retry`); await new Promise((r) => setTimeout(r, 300));
+    assert.equal(txCount("basket:%"), n2, "repeat retry: no new tx");
+    bk._setFaults({ transientOnceLeg: 0 });
+    const t = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 30 });
+    const et = await waitExec(t.body.id);
+    assert.equal(et.status, "filled"); assert.equal(txCount(`basket:${et.legs[0].legId}`), 1);
+  });
+
+  await step("restart mid-queue: crash after leg 2's tx is sent; restart reconciles it by receipt and finishes leg 3, no duplicate txs", async () => {
+    bk._setFaults({ crashAfterSubmitLeg: 1 });
+    const b = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 60 }, OWNER, { "idempotency-key": "e2e-k3" });
+    for (let i = 0; i < 100 && !jobs.isCrashed(); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(jobs.isCrashed(), "process 'died' mid-basket");
+    const mid = (await callH("GET", `baskets/executions/${b.body.id}`)).body;
+    assert.equal(mid.status, "running"); assert.deepEqual(mid.legs.map((l: any) => l.status), ["filled", "filling", "pending"]); assert.ok(mid.legs[1].txHash);
+    assert.equal(jobs.stats().running, 1);
+    // "restart": drop in-memory state, rebuild from SQLite, recover (reconcile tx_log + requeue jobs), resume worker
+    jobs.stopWorker(); svc._reloadFromDb(); const { resyncNonce } = await import("../src/chain.js"); resyncNonce(svc._agent()!.address);
+    const rec = await jobs.recover(); assert.equal(rec.requeuedJobs, 1);
+    jobs.startWorker(100);
+    const e = await waitExec(b.body.id);
+    assert.equal(e.status, "filled", JSON.stringify(e));
+    assert.equal(e.legs[1].txHash, mid.legs[1].txHash, "leg 2 settled from its original tx");
+    for (const l of e.legs) assert.equal(txCount(`basket:${l.legId}`), 1, `exactly one tx for ${l.legId}`);
+    assert.equal(jobs.stats().running, 0);
+    // remaining headroom now $220 (150 + 40 + 30 + 60 bought) => $250 refused by default, scaled down on request
+    const big = await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 250 }); assert.equal(big.status, 403); assert.match(big.body.error, /rolling-24h buy cap/);
+    const sd = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 250, allowScaleDown: true })).body; assert.equal(sd.scaledDown, true); assert.ok(Math.abs(sd.totalUsd - 220) < 0.05 && sd.totalUsd <= sd.capHeadroom.remaining24h, String(sd.totalUsd));
+  });
+
+  await step("sell approvals (R4-1): sells use the $500 sell cap; over it the sell is held (no tx), MCP says pending owner approval; passkey approve => keeper relays SellApproval, sell executes; reject; >3% move fails", async () => {
+    const { virtualAuthenticator } = await import("./virtualAuthenticator.js");
+    for (let i = 0; i < 5; i++) { const r = await call("POST", "execute_swap", { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.6 }); assert.equal(r.status, 200, JSON.stringify(r.body)); assert.ok(r.body.txHash, JSON.stringify(r.body)); }
+    const sold = Number(await read<bigint>(vaultAddr(), C.vault.abi, "vaultSoldLast24h")) / 1e6; assert.ok(sold > 440 && sold < 460, String(sold));
+    const amd0 = await bal("AMD");
+    const c = await mcpClient();
+    const held = mcpJson(await c.callTool({ name: "execute_swap", arguments: { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.6 } }));
+    await c.close();
+    assert.equal(held.status, "pending_owner_approval"); assert.match(held.message, /pending owner approval/); assert.equal(await bal("AMD"), amd0, "nothing submitted");
+    assert.equal((await callH("GET", "approvals", { status: "pending" }, MCPT)).status, 403);
+    const list = (await callH("GET", "approvals", { status: "pending" })).body; assert.equal(list.length, 1);
+    const ap = list[0];
+    for (const k of ["id", "agentKeyId", "agentName", "ticker", "amountIn", "estUsdgOut", "estUsdgOutMin", "reason", "status", "createdAt", "expiresAt"]) assert.ok(k in ap, k);
+    assert.equal(ap.ownerSignatureSimulated, true); assert.ok(Math.abs(Date.parse(ap.expiresAt) - Date.parse(ap.createdAt) - 3600_000) < 2000);
+    // passkey (virtual authenticator, real WebAuthn verification)
+    const va = virtualAuthenticator("localhost", `http://localhost:${PORT_API}`);
+    const ro = (await callH("POST", "passkey/register/options")).body; assert.equal(ro.rp.id, "localhost");
+    const rv = await callH("POST", "passkey/register/verify", { response: va.register(ro) }); assert.equal(rv.status, 200, JSON.stringify(rv.body));
+    assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge, { tamper: true }) })).status, 401);
+    assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert("d3Jvbmc") })).status, 401, "wrong challenge");
+    assert.equal((await callH("POST", `approvals/${ap.id}/approve`, {})).status, 401, "assertion required");
+    const ok = await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge) });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.status, "executed"); assert.equal(ok.body.ownerSignatureSimulated, true); assert.equal(ok.body.exitApproval.relayedBy, "keeper");
+    assert.ok(Math.abs(ok.body.exitApproval.amountUsd / (0.6 * Number((await svc.priceE8("AMD")).p) / 1e8) - 1.02) < 0.01, "amount = est x 1.02");
+    assert.ok(Math.abs((await bal("AMD")) - (amd0 - 0.6)) < 1e-9);
+    assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge) })).status, 409, "one approval per sell");
+    // reject
+    const h2 = (await call("POST", "execute_swap", { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.6 })).body; assert.equal(h2.status, "pending_owner_approval");
+    assert.equal((await callH("POST", `approvals/${h2.approvalId}/reject`)).body.status, "rejected");
+    assert.equal((await callH("POST", `approvals/${h2.approvalId}/approve`, { webauthnAssertion: va.assert(h2.approval.challenge) })).status, 409);
+    // price moved > 3% => not executed
+    const h3 = (await call("POST", "execute_swap", { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.6 })).body; assert.equal(h3.status, "pending_owner_approval");
+    const px = Number((await svc.priceE8("AMD")).p) / 1e8;
+    await warp(600); await keeper.pushOracle({ AMD: +(px * 0.95).toFixed(2) });
+    const mv = await callH("POST", `approvals/${h3.approvalId}/approve`, { webauthnAssertion: va.assert(h3.approval.challenge) });
+    assert.equal(mv.status, 409); assert.match(mv.body.error, /Price moved .*> 3%/);
+    assert.equal((await callH("GET", "approvals", { status: "failed" })).body.length, 1);
+    await warp(600); await keeper.pushOracle({ AMD: 150 });
+  });
+
+  await step("blocked sell display fixture: a non-cap blocked sell is recorded as side=sell with its real reason (fixtures/blocked-sell.json)", async () => {
+    const r = await call("POST", "execute_swap", { tokenIn: "NFLX", tokenOut: "mUSDG", amountIn: 0.01 });
+    assert.equal(r.status, 403); assert.match(r.body.error, /allowlist/);
+    const h = (await call("GET", "get_history", { limit: 1 })).body[0];
+    assert.equal(h.side, "sell"); assert.equal(h.status, "blocked"); assert.doesNotMatch(h.reason, /rolling|24h|cap/i);
+    const pending = (await callH("GET", "approvals")).body.find((a: any) => a.status === "failed");
+    const fixture = { note: "Generated by scripts/e2e.ts. Sells are never cap-blocked: a blocked sell shows its own reason; an over-limit sell is held for owner approval instead.",
+      blockedSellHistoryRow: { ...h, ts: "2026-10-18T12:00:00.000Z" }, expectedUi: `Blocked: ${h.reason}`,
+      heldSellApiResponse: { status: "pending_owner_approval", approvalId: "apr_example", message: "Sell is pending owner approval: agent sells over $500 per rolling 24h need the owner's passkey approval in the StockClaw dashboard. Nothing was submitted." },
+      approvalShapeKeys: Object.keys(pending).sort() };
+    fs.mkdirSync(path.resolve("fixtures"), { recursive: true });
+    fs.writeFileSync(path.resolve("fixtures/blocked-sell.json"), JSON.stringify(fixture, null, 2) + "\n");
+  });
+
+  await step("health: /api/health reports rpc, sqlite, job queue, signers (keeper/updater/owner) with nonces, tx stats; /healthz 200", async () => {
+    const hh = (await callH("GET", "health", undefined, null)).body;
+    assert.equal(hh.rpc.ok, true); assert.equal(hh.db.ok, true); assert.ok("queued" in hh.queue && "running" in hh.queue);
+    assert.deepEqual(hh.signers.map((x: any) => x.role), ["keeper", "updater", "owner"]); assert.ok(hh.signers.every((x: any) => x.balanceEth > 0));
+    assert.ok(hh.txs && "inFlight" in hh.txs);
+    const z = await fetch(`http://127.0.0.1:${PORT_API}/healthz`); assert.equal(z.status, 200);
+  });
   await step("R3-1/B8/B12: tokens required (ALLOW_OPEN_LOCAL escape), X-Owner-Token, rate limit 429, health alerts", async () => {
     const save = { o: process.env.OWNER_API_TOKEN, m: process.env.MCP_API_TOKEN };
     delete process.env.OWNER_API_TOKEN;
@@ -394,6 +602,12 @@ try {
     process.env.MARKET_MODE = "open";
   });
 
+  await step("healthz is red (503, CHAIN_UNREACHABLE) when anvil is down", async () => {
+    anvil.kill(); await new Promise((r) => setTimeout(r, 500));
+    const z = await fetch(`http://127.0.0.1:${PORT_API}/healthz`); assert.equal(z.status, 503);
+    assert.ok((await z.json()).alerts.includes("CHAIN_UNREACHABLE"));
+  });
+  jobs.stopWorker();
   server.close();
   console.log(`\nE2E PASS: ${pass} steps`);
   cleanup(); process.exit(0);

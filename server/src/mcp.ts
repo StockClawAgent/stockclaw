@@ -3,6 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as svc from "./service.js";
 import * as strat from "./strategies.js";
+import * as bk from "./baskets.js";
+import "./approvals.js";
 
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], structuredContent: (Array.isArray(data) ? { items: data } : data) as Record<string, unknown> });
 const wrap = <A>(fn: (a: A) => Promise<unknown> | unknown) => async (a: A) => {
@@ -41,6 +43,12 @@ export function buildMcpServer() {
   s.registerTool("get_strategy_status", { description: "Status of the vault's strategy (or a given activation): intents, fills, 24h headroom.", inputSchema: { activationId: z.string().optional() }, annotations: RO }, wrap((a: any) => strat.get_strategy_status(a.activationId)));
   s.registerTool("pause_strategy", { description: "Pause the strategy: cancels its open orders onchain. Resuming needs the user (dashboard).", inputSchema: { activationId: z.string() }, annotations: W }, wrap((a: any) => strat.pause_strategy(a.activationId)));
   s.registerTool("stop_strategy", { description: "Stop the strategy and cancel all its open orders.", inputSchema: { activationId: z.string() }, annotations: W }, wrap((a: any) => strat.stop_strategy(a.activationId)));
+  // ---- baskets (BASKETS.md §3): the agent previews and proposes; the owner confirms in the dashboard.
+  s.registerTool("list_baskets", { description: "Themed baskets (fixed, published, market-cap weights; editorial groupings, not funds). Only executable ones can be bought on this chain.", annotations: RO }, wrap(() => bk.list_baskets()));
+  s.registerTool("get_basket", { description: "Full basket definition: legs, weights, prices, tradability, disclaimer.", inputSchema: { id: z.string(), version: z.string().optional() }, annotations: RO }, wrap((a: any) => bk.get_basket(a.id, a.version)));
+  s.registerTool("preview_basket_buy", { description: "Preview a basket buy: legs (<= $98 each), quotes, fees, skipped names, cap headroom, preflight. No transaction. Expires in 60s.", inputSchema: { id: z.string(), usd: z.number().positive(), version: z.string().optional(), allowScaleDown: z.boolean().optional() }, annotations: RO }, wrap((a: any) => bk.preview_basket_buy(a.id, a.usd, { version: a.version, allowScaleDown: a.allowScaleDown })));
+  s.registerTool("buy_basket", { description: "Propose buying a previewed basket. Creates a PENDING proposal only: the user must confirm it in the StockClaw dashboard before any leg executes. Legs then execute one by one (no atomicity).", inputSchema: { previewId: z.string().optional(), id: z.string().optional(), usd: z.number().positive().optional(), idempotencyKey: z.string().max(128).optional() }, annotations: W }, wrap((a: any) => bk.buy_basket(a, "agent", a.idempotencyKey)));
+  s.registerTool("get_basket_execution", { description: "Status of a basket execution (per-leg status, tx hashes, errors).", inputSchema: { executionId: z.string() }, annotations: RO }, wrap((a: any) => bk.get_execution(a.executionId)));
   for (const p of strat.promptsForMcp()) s.registerPrompt(p.name, { title: p.title, description: `${p.title} explainer (StockClaw strategy template)` }, () => ({ messages: [{ role: "user", content: { type: "text", text: p.text } }] }));
   return s;
 }

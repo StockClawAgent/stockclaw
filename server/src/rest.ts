@@ -5,6 +5,10 @@ import * as svc from "./service.js";
 import * as strat from "./strategies.js";
 import { buildMcpServer } from "./mcp.js";
 import * as mon from "./monitor.js";
+import * as bk from "./baskets.js";
+import * as apr from "./approvals.js";
+import { randomUUID } from "node:crypto";
+import { log, withCtx } from "./log.js";
 import { REPO, ownerToken, mcpToken } from "./config.js";
 
 // Auth (review S-1). Roles: "owner" (OWNER_API_TOKEN, dashboard) and "agent" (MCP_API_TOKEN).
@@ -42,6 +46,14 @@ const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?"
 export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerMin?: number; healthPerMin?: number } = {}) {
   const app = express();
   app.use(express.json({ limit: "100kb" }));
+  // structured request logs with a request id (X-Request-Id echoed) and idempotency key; tokens never logged
+  app.use((req, res, next) => {
+    const requestId = (req.headers["x-request-id"] as string | undefined)?.slice(0, 64) || randomUUID(), t0 = Date.now();
+    res.setHeader("X-Request-Id", requestId);
+    const idempotencyKey = (req.headers["idempotency-key"] as string | undefined)?.slice(0, 128);
+    res.on("finish", () => { if (req.path !== "/api/health" && req.path !== "/healthz") log.info("http", { requestId, method: req.method, path: req.path, status: res.statusCode, ms: Date.now() - t0, ...(idempotencyKey ? { idempotencyKey } : {}) }); });
+    withCtx({ requestId, ...(idempotencyKey ? { idempotencyKey } : {}) }, () => next());
+  });
   mon && svc.setCapBlockHook(mon.recordCapBlock);
   const restPerMin = opts.restPerMin ?? Number(process.env.RATE_LIMIT_REST_PER_MIN ?? 300);
   const mcpPerMin = opts.mcpPerMin ?? Number(process.env.RATE_LIMIT_MCP_PER_MIN ?? 120);
@@ -114,7 +126,28 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.post("/strategies/activations/:id/pause", anyRole, h((q) => strat.pause_strategy(String(q.params.id))));
   r.post("/strategies/activations/:id/stop", anyRole, h((q) => strat.stop_strategy(String(q.params.id))));
   r.post("/strategies/activations/:id/resume", ownerOnly, h((q) => strat.resume_strategy(String(q.params.id))));
+  // themed baskets (BASKETS.md §3). Agent proposes, owner confirms (S-3).
+  const idem = (q: express.Request) => (q.headers["idempotency-key"] as string | undefined)?.slice(0, 128) || q.body?.idempotencyKey;
+  r.get("/baskets", anyRole, h(() => bk.list_baskets()));
+  r.get("/baskets/executions", anyRole, h((q) => bk.list_executions(q.query.limit ? Number(q.query.limit) : undefined)));
+  r.get("/baskets/executions/:id", anyRole, h((q) => bk.get_execution(String(q.params.id))));
+  r.post("/baskets/executions/:id/legs/:legId/retry", ownerOnly, h((q) => bk.retry_leg(String(q.params.id), String(q.params.legId))));
+  r.get("/baskets/proposals", anyRole, h((q) => bk.list_basket_proposals(q.query.status as string | undefined)));
+  r.post("/baskets/proposals/:id/confirm", ownerOnly, h((q) => bk.confirm_basket(String(q.params.id), idem(q))));
+  r.post("/baskets/proposals/:id/reject", ownerOnly, h((q) => bk.reject_basket(String(q.params.id))));
+  r.post("/baskets/preview", anyRole, h((q) => bk.preview_basket_buy(q.body.id, Number(q.body.usd), { version: q.body.version, allowScaleDown: !!q.body.allowScaleDown, slippageBps: q.body.slippageBps })));
+  r.post("/baskets/buy", anyRole, h((q) => bk.buy_basket(q.body, role(q), idem(q))));
+  r.get("/baskets/:id", anyRole, h((q) => bk.get_basket(String(q.params.id), q.query.version as string | undefined)));
+  // sell approvals + passkeys (owner only)
+  r.get("/approvals", ownerOnly, h((q) => apr.list_approvals(q.query.status as string | undefined)));
+  r.get("/approvals/:id/options", ownerOnly, h((q) => apr.approval_options(String(q.params.id))));
+  r.post("/approvals/:id/approve", ownerOnly, h((q) => apr.approve(String(q.params.id), q.body?.webauthnAssertion)));
+  r.post("/approvals/:id/reject", ownerOnly, h((q) => apr.reject(String(q.params.id))));
+  r.post("/passkey/register/options", ownerOnly, h(() => apr.passkey_register_options()));
+  r.post("/passkey/register/verify", ownerOnly, h((q) => apr.passkey_register_verify(q.body?.response ?? q.body)));
   app.use("/api", r);
+  // liveness/readiness for ops: 503 when any critical alert (e.g. anvil down)
+  app.get("/healthz", async (_req, res) => { const hh = await mon.health(); res.status(hh.ok ? 200 : 503).json({ ok: hh.ok, status: hh.status, alerts: hh.alerts.map((a) => a.code), rpc: hh.rpc, queue: hh.queue }); });
 
   // MCP Streamable HTTP, stateless; MCP token only. TODO: OAuth 2.1 resource server (PRM, audience check).
   app.post("/mcp", mcpOnly, async (req, res) => {
