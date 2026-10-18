@@ -14,3 +14,6 @@
 .apr-more{margin:10px 0 0}
 @media (prefers-reduced-motion:reduce){.apr{transition:none}}
 .apr-btn2{background:none!important;color:#ecebe8!important;border:1px solid #4a4a50!important;border-radius:999px;padding:9px 18px!important;font-weight:600}.apr-btn2:hover{border-color:#C6FF3D!important}
+.apr-q{padding:12px 22px;border-style:dashed;background:none}
+.apr-qt{margin:0;font-size:15px;color:#cfccc5;font-weight:600}
+.apr-q .apr-r{margin:2px 0 0}

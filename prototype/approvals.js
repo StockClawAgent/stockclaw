@@ -15,12 +15,14 @@ const fromB64u=s=>Uint8Array.from(atob(String(s).replace(/-/g,"+").replace(/_/g,
 // ---------- local simulator (remove when api.js has list_approvals / approve_sell / reject_sell) ----------
 const APRSim={items:null,
  seed(){const now=Date.now(),m=60e3;const mk=(id,agentName,ticker,amountIn,est,age,exp,reason,flags={})=>({id,agentKeyId:"key-sim",agentName,ticker,amountIn,estUsdgOut:est,estUsdgOutMin:+(est*0.99).toFixed(2),reason,status:"pending",createdAt:new Date(now-age*m).toISOString(),expiresAt:new Date(now+exp).toISOString(),challenge:"sim:"+id+":paramsHash",...flags});
-  this.items=[mk("ap-1","Dip Hunter","TSLA",0.42,98.4,1,52*m,"Over $500 of agent sells in 24h ($540 so far)."),
-   mk("ap-2","Trend Flip","PLTR",0.6,61.2,4,38*m,"EMA crossed back below VWAP; over the 24h agent-sell limit.",{_move:true}),
-   mk("ap-3","Steady Stacker","NFLX",0.09,88.1,58,q.get("aprExpire")==="1"?4000:9*m,"Rebalance sell; over the 24h agent-sell limit."),
-   mk("ap-4","Dip Hunter","AMD",0.3,47.1,70,-1,"Older request."),mk("ap-5","AI Thematic","AMZN",0.2,40.5,80,-1,"Older request.")];this.items.slice(3).forEach(x=>x.expiresAt=new Date(now+20*m).toISOString())},
+  this.items=[mk("ap-1","Dip Hunter","TSLA",0.42,98.4,30,52*m,"VaultSellCapExceeded"),
+   mk("ap-2","Trend Flip","PLTR",0.6,61.2,20,38*m,"VaultSellCapExceeded",{_move:true}),
+   mk("ap-3","Steady Stacker","NFLX",0.09,88.1,10,q.get("aprExpire")==="1"?4000:9*m,"VaultSellCapExceeded"),
+   mk("ap-4","Dip Hunter","AMD",0.3,47.1,5,-1,"VaultSellCapExceeded"),mk("ap-5","AI Thematic","AMZN",0.2,40.5,2,-1,"VaultSellCapExceeded")];this.items.slice(3).forEach(x=>x.expiresAt=new Date(now+20*m).toISOString())},
  list(){if(!this.items)this.seed();return Promise.resolve(this.items.filter(x=>x.status=="pending"&&Date.parse(x.expiresAt)>Date.now()).map(x=>({...x})))},
- approve(id){const x=this.items.find(x=>x.id==id);return new Promise((ok,no)=>setTimeout(()=>{if(!x||Date.parse(x.expiresAt)<=Date.now())return no(Object.assign(new Error("This approval expired. Ask your agent to re-propose."),{code:"expired"}));
+ approve(id){const x=this.items.find(x=>x.id==id);return new Promise((ok,no)=>setTimeout(()=>{if(!x||Date.parse(x.expiresAt)<=Date.now())return no(Object.assign(new Error("BadSellApproval"),{code:"BadSellApproval"}));
+  if(x.status=="approved")return no(Object.assign(new Error("SellNonceUsed"),{code:"SellNonceUsed"}));
+  const oldest=this.items.filter(y=>y.status=="pending"&&Date.parse(y.expiresAt)>Date.now()).sort((p,r)=>Date.parse(p.createdAt)-Date.parse(r.createdAt))[0];if(oldest&&oldest.id!=id)return no(Object.assign(new Error("BadSellApproval"),{code:"BadSellApproval"}));
   if(x._move){x.status="failed";return no(Object.assign(new Error("Price moved, ask agent to re-propose"),{code:"price_moved"}))}x.status="approved";ok({status:"approved"})},700))},
  reject(id){const x=this.items.find(x=>x.id==id);if(x)x.status="rejected";return Promise.resolve({status:"rejected"})}};
 
@@ -30,10 +32,18 @@ const APRAdapter={
  list:()=>live()?A.list_approvals("pending"):MOCK?APRSim.list():Promise.resolve([]),
  approve:(id,webauthnAssertion)=>live()?A.approve_sell(id,{webauthnAssertion}):APRSim.approve(id),
  reject:id=>live()?A.reject_sell(id):APRSim.reject(id),
- challenge:a=>a.challenge, // supplied by the server/mock (approval id + params hash); we don't invent crypto
+ challenge:a=>a.challenge,
+ // Contract errors -> friendly copy. kind: 'invalid' (muted), 'done' (resolve as approved), 'moved' (server text), 'error'.
+ friendly(err){const m=String(err&&(err.code||"")+" "+(err.message||err));
+  if(/VaultSellCapExceeded/.test(m))return {kind:"reason",msg:"Over the $500 agent sell limit, needs your approval"};
+  if(/BadSellApproval/.test(m)||/expired/i.test(m))return {kind:"invalid",msg:"Approval expired or invalid. Ask your agent to re-propose."};
+  if(/SellNonceUsed/.test(m))return {kind:"done",msg:"Already approved."};
+  if(/price moved/i.test(m))return {kind:"moved",msg:String(err.message||err)};
+  return {kind:"error",msg:"Couldn't approve: "+String(err&&err.message||err)}},
+ reasonText:a=>/VaultSellCapExceeded/.test(String(a.reason||""))?"Over the $500 agent sell limit, needs your approval":(a.reason||""), // supplied by the server/mock (approval id + params hash); we don't invent crypto
  // Card copy and actions live here (per-sell is final).
  copy:{title:a=>`${a.agentName} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} mUSDG`,primary:"Approve sell",secondary:"Decline",
-  note:"Simulated owner signature (demo)",expired:"Expired. Ask your agent to re-propose.",declined:"Declined. Your agent won't sell this.",approved:"Approved. The sell is going through."}};
+  note:"Simulated owner signature (demo)",expired:"Approval expired or invalid. Ask your agent to re-propose.",declined:"Declined. Your agent won't sell this.",approved:"Approved. The sell is going through."}};
 
 // ---------- passkey ----------
 const pk=()=>S.passkey||null;
@@ -61,25 +71,28 @@ R["/onboarding/passkey"]=[PK,PKbind];
 const ui={items:[],st:{},timer:null};
 const left=a=>Math.max(0,Date.parse(a.expiresAt)-Date.now());
 const fmtLeft=ms=>{const m=Math.floor(ms/60e3),s=Math.floor(ms%60e3/1e3);return m>=1?`${m}m left`:`${s}s left`};
-function card(a,i){const s=ui.st[a.id]||{k:left(a)?"pending":"expired"};const C=APRAdapter.copy;
+function card(a,i,active){const s=ui.st[a.id]||{k:left(a)?"pending":"expired"};const C=APRAdapter.copy;
+ if(!active&&(s.k=="pending"||s.k=="nopk"))return `<li class="apr apr-q" data-id="${e(a.id)}"><p class="apr-qt">${e(C.title(a))}</p><p class="apr-r">Queued, next up after this one · <span class="apr-cd" data-cd="${e(a.id)}">${fmtLeft(left(a))}</span></p></li>`;
  const muted=s.k=="expired"||s.k=="moved"||s.k=="declined";
- const body=s.k=="approved"?`<p class="apr-ok"><span aria-hidden="true">✓</span> ${e(C.approved)}</p>`:
-  s.k=="expired"?`<p class="apr-msg">${e(C.expired)}</p>`:s.k=="moved"?`<p class="apr-msg">${e(s.msg)}</p>`:s.k=="declined"?`<p class="apr-msg">${e(C.declined)}</p>`:
+ const body=s.k=="approved"?`<p class="apr-ok"><span aria-hidden="true">✓</span> ${e(s.msg||C.approved)}</p>`:
+  s.k=="expired"?`<p class="apr-msg">${e(s.msg||C.expired)}</p>`:s.k=="moved"?`<p class="apr-msg">${e(s.msg)}</p>`:s.k=="declined"?`<p class="apr-msg">${e(C.declined)}</p>`:
   s.k=="nopk"?`<p class="apr-msg">You need a passkey to approve sells.</p><a class="dx-primary" href="#/onboarding/passkey">Set up passkey</a>`:
-  `<div class="apr-act"><button class="${i?"apr-btn2":"dx-primary"}" data-ap="${e(a.id)}" ${s.k=="approving"?"disabled":""}>${s.k=="approving"?"Approving…":e(C.primary)}</button> <button class="dx-link" data-dc="${e(a.id)}" ${s.k=="approving"?"disabled":""}>${e(C.secondary)}</button></div>${s.msg?`<p class="st err" role="alert">${e(s.msg)}</p>`:""}`;
- return `<li class="apr apr-${s.k}${muted?" apr-muted":""}" data-id="${e(a.id)}"><p class="apr-t">${e(C.title(a))}</p><p class="apr-r">${e(a.reason||"")}${s.k=="pending"||s.k=="approving"||s.k=="nopk"?` · <span class="apr-cd" data-cd="${e(a.id)}">${fmtLeft(left(a))}</span>`:""}</p>${body}<p class="apr-n">${e(C.note)}</p></li>`}
-function draw(){const el=document.getElementById("aprSlot");if(!el)return;const list=ui.items.slice().sort((x,y)=>Date.parse(y.createdAt)-Date.parse(x.createdAt));
+  `<div class="apr-act"><button class="dx-primary" data-ap="${e(a.id)}" ${s.k=="approving"?"disabled":""}>${s.k=="approving"?"Approving…":e(C.primary)}</button> <button class="dx-link" data-dc="${e(a.id)}" ${s.k=="approving"?"disabled":""}>${e(C.secondary)}</button></div>${s.msg?`<p class="st err" role="alert">${e(s.msg)}</p>`:""}`;
+ return `<li class="apr apr-${s.k}${muted?" apr-muted":""}" data-id="${e(a.id)}"><p class="apr-t">${e(C.title(a))}</p><p class="apr-r">${e(APRAdapter.reasonText(a))}${s.k=="pending"||s.k=="approving"||s.k=="nopk"?` · <span class="apr-cd" data-cd="${e(a.id)}">${fmtLeft(left(a))}</span>`:""}</p>${body}<p class="apr-n">${e(C.note)}</p></li>`}
+function draw(){const el=document.getElementById("aprSlot");if(!el)return;const list=ui.items.slice().sort((x,y)=>Date.parse(x.createdAt)-Date.parse(y.createdAt));
+ const unres=x=>{const k=(ui.st[x.id]||{k:"pending"}).k;return k=="pending"||k=="approving"||k=="nopk"};const act=(list.find(x=>unres(x)&&left(x))||{}).id;
  if(!list.length){el.innerHTML="";return}const vis=list.slice(0,3),more=list.length-vis.length;
- el.innerHTML=`<section class="apr-wrap" aria-labelledby="aprH"><h2 id="aprH" class="sr-only">Sell approvals</h2><ul class="apr-list">${vis.map((x,i)=>card(x,i)).join("")}</ul>${more>0?`<p class="dx-mut dx-small apr-more">+${more} more waiting</p>`:""}</section>`;
+ el.innerHTML=`<section class="apr-wrap" aria-labelledby="aprH"><h2 id="aprH" class="sr-only">Sell approvals</h2><ul class="apr-list">${vis.map((x,i)=>card(x,i,x.id==act)).join("")}</ul>${more>0?`<p class="dx-mut dx-small apr-more">+${more} more waiting</p>`:""}</section>`;
  el.querySelectorAll("[data-ap]").forEach(b=>b.onclick=()=>approve(b.dataset.ap));el.querySelectorAll("[data-dc]").forEach(b=>b.onclick=()=>decline(b.dataset.dc))}
 function set(id,k,msg,focus){ui.st[id]={k,msg};draw();const a=ui.items.find(x=>x.id==id);say(k=="approved"?"Sell approved":k=="declined"?"Sell declined":k=="expired"?"Approval expired":k=="moved"?msg:k=="approving"?"Approving sell":"");
  if(focus){const li=document.querySelector(`.apr[data-id="${CSS.escape(id)}"]`);(li?.querySelector("button,a")||document.querySelector(".apr-list button"))?.focus()}}
 async function approve(id){const a=ui.items.find(x=>x.id==id);if(!a)return;if(!left(a))return set(id,"expired");if(!pk())return set(id,"nopk",null,true);
  set(id,"approving");let as;try{as=await signApproval(a)}catch(err){return set(id,"pending",err&&err.name=="NotAllowedError"?"Passkey check was cancelled.":"Passkey check failed.",true)}
- try{await APRAdapter.approve(id,as);as=null;set(id,"approved",null,false);setTimeout(()=>{const li=document.querySelector(`.apr[data-id="${CSS.escape(id)}"]`);li&&li.classList.add("apr-fade");setTimeout(()=>{ui.items=ui.items.filter(x=>x.id!=id);draw();if(typeof loadDash=="function")try{loadDash()}catch(_){}},400)},q.get("aprHold")==="1"?6e4:1800)}
- catch(err){as=null;const m=String(err&&err.message||err);if(/price moved/i.test(m)||err.code=="price_moved")set(id,"moved",m,true);else if(/expired/i.test(m)||err.code=="expired")set(id,"expired",null,true);else set(id,"pending","Couldn't approve: "+m,true)}}
-async function decline(id){try{await APRAdapter.reject(id);set(id,"declined",null,true)}catch(err){set(id,"pending","Couldn't decline: "+(err.message||err),true)}}
-function tickCd(){document.querySelectorAll("[data-cd]").forEach(s=>{const a=ui.items.find(x=>x.id==s.dataset.cd);if(!a)return;const l=left(a);if(!l&&(!ui.st[a.id]||ui.st[a.id].k=="pending"))set(a.id,"expired");else s.textContent=fmtLeft(l)})}
+ try{await APRAdapter.approve(id,as);as=null;set(id,"approved",null,false);retire(id)}
+ catch(err){as=null;const f=APRAdapter.friendly(err);if(f.kind=="done"){ui.st[id]={k:"approved",msg:f.msg};draw();retire(id)}else if(f.kind=="moved"){set(id,"moved",f.msg,true);retire(id,4000)}else if(f.kind=="invalid"){set(id,"expired",f.msg,true);retire(id,4000)}else set(id,"pending",f.msg,true)}}
+function retire(id,ms=1800){if(q.get("aprHold")==="1")return;setTimeout(()=>{const li=document.querySelector(`.apr[data-id="${CSS.escape(id)}"]`);li&&li.classList.add("apr-fade");setTimeout(()=>{ui.items=ui.items.filter(x=>x.id!=id);draw();document.querySelector(".apr-list .dx-primary")?.focus()},400)},ms)}
+async function decline(id){try{await APRAdapter.reject(id);set(id,"declined",null,true);retire(id,1500)}catch(err){set(id,"pending","Couldn't decline: "+(err.message||err),true)}}
+function tickCd(){document.querySelectorAll("[data-cd]").forEach(s=>{const a=ui.items.find(x=>x.id==s.dataset.cd);if(!a)return;const l=left(a);if(!l&&(!ui.st[a.id]||ui.st[a.id].k=="pending")){set(a.id,"expired");retire(a.id,4000)}else s.textContent=fmtLeft(l)})}
 async function mount(){clearInterval(ui.timer);try{const got=await APRAdapter.list();const keep=ui.items.filter(x=>ui.st[x.id]&&ui.st[x.id].k!="pending");ui.items=[...got.filter(g=>!keep.some(k=>k.id==g.id)),...keep]}catch(_){}
  draw();ui.timer=setInterval(()=>{if(!document.getElementById("aprSlot"))return clearInterval(ui.timer);tickCd()},1000)}
 {const [V,B]=R["/dashboard/overview"];R["/dashboard/overview"]=[()=>V().replace('<div class="dx-body">','<div class="dx-body"><div id="aprSlot" aria-live="polite"></div>'),()=>{B();mount()}]}
