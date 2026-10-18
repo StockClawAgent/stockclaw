@@ -490,4 +490,182 @@ contract AgentVaultTest is Base {
         vault.executeIntent(i, sig);
         assertEq(vault.vaultSpentLast24h(), 500e6);
     }
+
+    // ---------------- R4-1 vault sell cap + owner sell approvals
+    uint256 constant SLICE100 = 0.4e18; // $100 at $250
+    uint256 constant ONE_MICRO_USD = 4e9; // $0.000001 of TSLA
+
+    function _sellAll500() internal {
+        for (uint256 k; k < 5; k++) _sell(SLICE100);
+        assertEq(vault.vaultSoldLast24h(), 500e6);
+    }
+
+    function _sigApprove(uint128 amt, uint40 exp, uint64 nonce) internal view returns (bytes memory) {
+        return _sign(alicePk, vault.sellApprovalDigest(amt, exp, nonce));
+    }
+
+    function test_sellCap_500PassesThenNextUnitReverts() public {
+        _allowBoth();
+        _sellAll500();
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultSellCapExceeded.selector, address(vault), 1, 0));
+        vault.agentSwap(address(pool), address(tsla), address(usdg), ONE_MICRO_USD, 1, block.timestamp + 60);
+    }
+
+    function test_sellCap_ownerApprovalEnablesExactlyX() public {
+        _allowBoth();
+        _sellAll500();
+        vm.expectEmit(address(vault));
+        emit AgentVault.SellApproved(address(vault), 150e6, block.timestamp + 1 hours, 1);
+        vm.prank(alice);
+        vault.approveSell(150e6, uint40(block.timestamp + 1 hours), 1);
+        _sell(SLICE100); // $100 from allowance
+        vm.expectEmit(address(vault));
+        emit AgentVault.SellAllowanceUsed(address(vault), 50e6, 0);
+        _sell(SLICE100 / 2); // $50 -> allowance exactly 0
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultSellCapExceeded.selector, address(vault), 1, 0));
+        vault.agentSwap(address(pool), address(tsla), address(usdg), ONE_MICRO_USD, 1, block.timestamp + 60);
+    }
+
+    function test_sellCap_windowThenAllowanceSplit() public {
+        _allowBoth();
+        for (uint256 k; k < 4; k++) _sell(SLICE100); // $400
+        _sell(SLICE100 / 2); // $450
+        vm.prank(alice);
+        vault.approveSell(70e6, uint40(block.timestamp + 1 hours), 2);
+        _sell(SLICE100); // $50 from window + $50 from allowance
+        (uint256 capLeft, uint256 allow,, uint256 total) = vault.exitRemaining();
+        assertEq(capLeft, 0);
+        assertEq(allow, 20e6);
+        assertEq(total, 20e6);
+    }
+
+    function test_sellApprovalSig_valid_replay_wrongSigner_expired_tooLong() public {
+        _allowBoth();
+        _sellAll500();
+        uint40 exp = uint40(block.timestamp + 1 hours);
+        bytes memory sig = _sigApprove(100e6, exp, 7);
+        vm.prank(keeper); // relayed by keeper
+        vault.approveSellWithSig(100e6, exp, 7, sig);
+        _sell(SLICE100);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.SellNonceUsed.selector, uint256(7)));
+        vault.approveSellWithSig(100e6, exp, 7, sig); // replay
+        bytes memory bad = _sign(agentPk, vault.sellApprovalDigest(100e6, exp, 8)); // agent, not owner
+        vm.expectRevert(AgentVault.BadSellApproval.selector);
+        vault.approveSellWithSig(100e6, exp, 8, bad);
+        bytes memory tampered = _sigApprove(100e6, exp, 9);
+        vm.expectRevert(AgentVault.BadSellApproval.selector);
+        vault.approveSellWithSig(1_000e6, exp, 9, tampered); // amount changed
+        uint40 past = uint40(block.timestamp - 1);
+        bytes memory old = _sigApprove(100e6, past, 10);
+        vm.expectRevert(AgentVault.BadSellApproval.selector);
+        vault.approveSellWithSig(100e6, past, 10, old);
+        uint40 tooLong = uint40(block.timestamp + 7 days + 1);
+        bytes memory longSig = _sigApprove(100e6, tooLong, 11);
+        vm.expectRevert(AgentVault.BadSellApproval.selector);
+        vault.approveSellWithSig(100e6, tooLong, 11, longSig);
+        vm.prank(alice);
+        vault.approveSell(1e6, uint40(block.timestamp + 7 days), 12); // exactly 7d ok
+    }
+
+    function test_sellApproval_cancelUnused_thenRelayFails() public {
+        _allowBoth();
+        _sellAll500();
+        uint40 exp = uint40(block.timestamp + 1 hours);
+        bytes memory sig = _sigApprove(100e6, exp, 21);
+        vm.prank(alice);
+        vm.expectEmit(address(vault));
+        emit AgentVault.SellApprovalCancelled(address(vault), 21);
+        vault.cancelSellApproval(21); // owner cancels before the keeper relays
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.SellNonceUsed.selector, uint256(21)));
+        vault.approveSellWithSig(100e6, exp, 21, sig);
+        // cancelling an active allowance clears it
+        vm.prank(alice);
+        vault.approveSell(100e6, exp, 22);
+        vm.prank(alice);
+        vault.cancelSellApproval(22);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultSellCapExceeded.selector, address(vault), 100e6, 0));
+        vault.agentSwap(address(pool), address(tsla), address(usdg), SLICE100, 1, block.timestamp + 60);
+    }
+
+    function test_sellApproval_expiredUnusable_andDoesNotBlockNew() public {
+        _allowBoth();
+        _sellAll500();
+        vm.prank(alice);
+        uint40 exp1 = uint40(block.timestamp + 1 hours);
+        vault.approveSell(100e6, exp1, 31);
+        vm.warp(exp1 + 1);
+        _setPrice(PRICE);
+        (, uint256 allow,,) = vault.exitRemaining();
+        assertEq(allow, 0);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultSellCapExceeded.selector, address(vault), 100e6, 0));
+        vault.agentSwap(address(pool), address(tsla), address(usdg), SLICE100, 1, block.timestamp + 60);
+        uint40 exp2 = exp1 + 1 + 1 hours;
+        bytes memory sig = _sigApprove(100e6, exp2, 32);
+        vault.approveSellWithSig(100e6, exp2, 32, sig); // new one works
+        _sell(SLICE100);
+    }
+
+    function test_sellApproval_onePerHeldSell_plus2pct_leftoverDiesAtExpiry() public {
+        _allowBoth();
+        _sellAll500();
+        // server holds a $98 sell; owner signs 98 * 1.02 = $99.96, 1h expiry
+        uint128 amt = 99.96e6;
+        uint40 exp = uint40(block.timestamp + 1 hours);
+        vault.approveSellWithSig(amt, exp, 41, _sigApprove(amt, exp, 41));
+        _sell(0.392e18); // $98
+        (, uint256 allow,,) = vault.exitRemaining();
+        assertEq(allow, 1.96e6); // leftover
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultSellCapExceeded.selector, address(vault), 98e6, 1.96e6));
+        vault.agentSwap(address(pool), address(tsla), address(usdg), 0.392e18, 1, block.timestamp + 60); // 2nd sell: no
+        vm.warp(exp + 1);
+        _setPrice(PRICE);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultSellCapExceeded.selector, address(vault), 1e6, 0));
+        vault.agentSwap(address(pool), address(tsla), address(usdg), 0.004e18, 1, block.timestamp + 60); // $1 leftover dead
+    }
+
+    function test_sellAndBuyWindowsIndependent() public {
+        _allowBoth();
+        _sellAll500();
+        _spend500(); // buys still fully available
+        assertEq(vault.vaultSpentLast24h(), 500e6);
+        assertEq(vault.vaultSoldLast24h(), 500e6);
+    }
+
+    function test_sellWindowRollingRelease() public {
+        _allowBoth();
+        uint256 h0 = (block.timestamp / 1 hours + 1) * 1 hours;
+        _warpTo(h0 + 10 minutes);
+        _sellAll500();
+        _warpTo(h0 + 25 hours - 1);
+        vm.prank(agent);
+        vm.expectRevert();
+        vault.agentSwap(address(pool), address(tsla), address(usdg), SLICE100, 1, block.timestamp + 60);
+        _warpTo(h0 + 25 hours);
+        assertEq(vault.vaultSoldLast24h(), 0);
+        _sell(SLICE100);
+    }
+
+    function test_sellCap_ownerCanLowerNotRaise_ownerSwapUncapped() public {
+        _allowBoth();
+        vm.startPrank(alice);
+        vm.expectRevert(AgentVault.CapAboveProtocolMax.selector);
+        vault.setSellCap(500e6 + 1);
+        vault.setSellCap(200e6);
+        vm.stopPrank();
+        _sell(SLICE100);
+        _sell(SLICE100);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultSellCapExceeded.selector, address(vault), 100e6, 0));
+        vault.agentSwap(address(pool), address(tsla), address(usdg), SLICE100, 1, block.timestamp + 60);
+        vm.prank(alice); // owner-executed sell of $1,000: never capped
+        vault.ownerSwap(FeeRouter.SwapParams(address(pool), address(tsla), address(usdg), 4e18, 1, address(vault), block.timestamp + 60));
+    }
 }

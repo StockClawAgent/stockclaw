@@ -6,6 +6,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {FeeRouter} from "./FeeRouter.sol";
 import {PriceOracle} from "./oracle/PriceOracle.sol";
 import {TokenTransfers} from "./libraries/TokenTransfers.sol";
@@ -25,17 +27,26 @@ import {TokenTransfers} from "./libraries/TokenTransfers.sol";
 /// tokenIn != USDG) through a router-registered adapter that serves exactly that pair, delivered to
 /// this vault, does NOT count toward the rolling 24h caps (agent or vault). It still needs the
 /// $100 per-trade cap, the allowlist, the oracle floor and market hours. Buys and token->token count.
+/// R4-1 (user/CTO decision): those exempt sells have their OWN per-vault rolling 24h SELL cap
+/// (protocol max $500, owner can lower, never raise; same 25-bucket ring, separate from buys).
+/// Beyond it, agent sells consume an owner sell allowance - set directly by the owner (approveSell)
+/// or from an owner-signed EIP-712 SellApproval submitted by anyone (approveSellWithSig) - else they
+/// revert VaultSellCapExceeded and the server queues them offchain. Owner trades (ownerSwap) are uncapped.
 ///
 /// Rolling window: spend is recorded in hourly buckets (ring of 25, two buckets per storage word,
 /// 13 words). A check sums buckets for hours [now-24h, now]. A spend therefore stops counting
 /// between 24h and 25h after it happened - conservative: the cap can never be exceeded within ANY
 /// 24h period (incl. across midnight); worst case the user waits up to 1h longer than strict 24h.
-contract AgentVault is Ownable2Step, ReentrancyGuard {
+contract AgentVault is Ownable2Step, ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
 
     /// Protocol-level HARD maximums (CTO decision, review-1 L-2). Owners can only lower them.
     uint128 public constant MAX_PER_TRADE_USD = 100e6;
     uint128 public constant MAX_PER_DAY_USD = 500e6;
+    uint128 public constant MAX_SELL_PER_DAY_USD = 500e6;
+    uint40 public constant MAX_SELL_APPROVAL_TTL = 7 days;
+    bytes32 public constant SELL_APPROVAL_TYPEHASH =
+        keccak256("SellApproval(address vault,uint256 amountUsd,uint256 expiry,uint256 nonce)");
     uint128 public constant DEFAULT_PER_TRADE_USD = MAX_PER_TRADE_USD;
     uint128 public constant DEFAULT_PER_DAY_USD = MAX_PER_DAY_USD;
 
@@ -54,6 +65,19 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
 
     mapping(address agent => AgentPolicy) public policies;
     mapping(address token => bool) public allowedToken;
+
+    /// Vault-wide agent sell cap per rolling 24h (<= MAX_SELL_PER_DAY_USD).
+    uint128 public sellCapUsd = MAX_SELL_PER_DAY_USD;
+
+    /// Owner sell allowance (one active approval; a new one replaces it). One slot.
+    struct SellAllowance {
+        uint128 amountUsd;
+        uint40 expiry;
+        uint64 nonce;
+    }
+
+    SellAllowance public sellAllowance;
+    mapping(uint256 nonce => bool) public sellNonceUsed;
     /// word w holds buckets 2w (low 128 bits) and 2w+1 (high); bucket = hour(32) | usd(96)
     mapping(address agent => uint256[13]) internal _buckets;
 
@@ -62,6 +86,10 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     event CapsSet(address indexed agent, uint128 perTradeUsd, uint128 perDayUsd);
     event TokenAllowed(address indexed token, bool allowed);
     event AgentSpent(address indexed agent, uint256 usd, uint256 spentToday);
+    event SellCapSet(address indexed vault, uint256 capUsd);
+    event SellApproved(address indexed vault, uint256 amountUsd, uint256 expiry, uint256 nonce);
+    event SellAllowanceUsed(address indexed vault, uint256 amountUsd, uint256 remaining);
+    event SellApprovalCancelled(address indexed vault, uint256 nonce);
     event Withdrawn(address indexed token, address indexed to, uint256 amount);
 
     error NotAgent();
@@ -75,15 +103,19 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     error NotKeeper();
     error CapAboveProtocolMax();
     error VaultDailyCapExceeded(uint256 wouldSpend, uint256 cap);
+    error VaultSellCapExceeded(address vault, uint256 needUsd, uint256 remainingUsd);
+    error BadSellApproval();
+    error SellNonceUsed(uint256 nonce);
 
-    constructor(address owner_, FeeRouter router_) Ownable(owner_) {
+    constructor(address owner_, FeeRouter router_) Ownable(owner_) EIP712("StockClawVault", "1") {
         router = router_;
         oracle = router_.oracle();
     }
 
     // ================================================================ owner controls
     function grantAgent(address agent, uint40 expiry) external onlyOwner {
-        if (agent == address(0) || expiry <= block.timestamp) revert InvalidParams();
+        // address(0)/address(1) are reserved bucket keys (vault buys / vault sells)
+        if (uint160(agent) <= 1 || expiry <= block.timestamp) revert InvalidParams();
         AgentPolicy storage p = policies[agent];
         p.expiry = expiry;
         p.active = true;
@@ -110,6 +142,48 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     function setAllowedToken(address token, bool allowed) external onlyOwner {
         allowedToken[token] = allowed;
         emit TokenAllowed(token, allowed);
+    }
+
+    // ================================================================ sell cap & approvals (R4-1)
+    /// @notice Owner may lower (never raise above $500) the vault's rolling-24h agent sell cap.
+    function setSellCap(uint128 capUsd) external onlyOwner {
+        if (capUsd > MAX_SELL_PER_DAY_USD) revert CapAboveProtocolMax();
+        sellCapUsd = capUsd;
+        emit SellCapSet(address(this), capUsd);
+    }
+
+    /// @notice Path 1 (direct): owner approves `amountUsd` (6 dp) of agent sells beyond the cap, a
+    /// batch allowance until `expiry` (<= now + 7 days). Replaces any active approval. Nonce single-use.
+    function approveSell(uint128 amountUsd, uint40 expiry, uint64 nonce) external onlyOwner {
+        _setSellApproval(amountUsd, expiry, nonce);
+    }
+
+    /// @notice Path 2: anyone (keeper/server) submits an owner-signed EIP-712 SellApproval.
+    function approveSellWithSig(uint128 amountUsd, uint40 expiry, uint64 nonce, bytes calldata ownerSig) external {
+        if (!SignatureChecker.isValidSignatureNow(owner(), sellApprovalDigest(amountUsd, expiry, nonce), ownerSig)) {
+            revert BadSellApproval();
+        }
+        _setSellApproval(amountUsd, expiry, nonce);
+    }
+
+    /// @notice Burn `nonce` and clear the active approval if it is that nonce.
+    function cancelSellApproval(uint64 nonce) external onlyOwner {
+        sellNonceUsed[nonce] = true;
+        if (sellAllowance.nonce == nonce) delete sellAllowance;
+        emit SellApprovalCancelled(address(this), nonce);
+    }
+
+    /// @notice EIP-712 digest the owner's wallet signs (domain StockClawVault/1, chainId, this vault).
+    function sellApprovalDigest(uint128 amountUsd, uint40 expiry, uint64 nonce) public view returns (bytes32) {
+        return _hashTypedDataV4(keccak256(abi.encode(SELL_APPROVAL_TYPEHASH, address(this), amountUsd, expiry, nonce)));
+    }
+
+    function _setSellApproval(uint128 amountUsd, uint40 expiry, uint64 nonce) internal {
+        if (expiry <= block.timestamp || expiry > block.timestamp + MAX_SELL_APPROVAL_TTL) revert BadSellApproval();
+        if (sellNonceUsed[nonce]) revert SellNonceUsed(nonce);
+        sellNonceUsed[nonce] = true;
+        sellAllowance = SellAllowance(amountUsd, expiry, nonce);
+        emit SellApproved(address(this), amountUsd, expiry, nonce);
     }
 
     function withdraw(address token, address to, uint256 amount) external onlyOwner nonReentrant {
@@ -171,6 +245,8 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     // ================================================================ views
     /// Bucket-ring key for vault-wide spend (no agent can be address(0)).
     address internal constant VAULT_KEY = address(0);
+    /// Bucket-ring key for vault-wide agent SELL volume (separate window from buys).
+    address internal constant SELL_KEY = address(1);
 
     /// @notice Vault-wide rolling-24h spend across ALL agent keys (capped at MAX_PER_DAY_USD).
     function vaultSpentLast24h() public view returns (uint256) {
@@ -189,6 +265,28 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
                 if (hr + 24 >= cur && hr <= cur) total += uint96(bk);
             }
         }
+    }
+
+    /// @notice Agent sells (stock -> USDG) counted in the rolling 24h sell window.
+    function vaultSoldLast24h() public view returns (uint256) {
+        return spentLast24h(SELL_KEY);
+    }
+
+    /// @notice Convenience: sell-cap headroom + live owner allowance (what the agent can still sell).
+    function exitRemaining()
+        public
+        view
+        returns (uint256 capLeftUsd, uint256 allowanceUsd, uint256 allowanceExpiry, uint256 totalUsd)
+    {
+        uint256 sold = vaultSoldLast24h();
+        uint256 cap = sellCapUsd;
+        capLeftUsd = cap > sold ? cap - sold : 0;
+        SellAllowance memory a = sellAllowance;
+        if (a.expiry >= block.timestamp) {
+            allowanceUsd = a.amountUsd;
+            allowanceExpiry = a.expiry;
+        }
+        totalUsd = capLeftUsd + allowanceUsd;
     }
 
     function remainingToday(address agent) external view returns (uint256 usdLeft, uint256 perTrade) {
@@ -223,7 +321,8 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         if (usd > p.perTradeUsd) revert PerTradeCapExceeded(usd, p.perTradeUsd);
 
         if (isExemptExit(adapter, tokenIn, tokenOut)) {
-            emit AgentSpent(agent, usd, spentLast24h(agent)); // exits don't consume the 24h window
+            _consumeSell(usd); // sells use the separate sell window (+ owner allowance), not the buy cap
+            emit AgentSpent(agent, usd, spentLast24h(agent));
             return;
         }
 
@@ -236,6 +335,20 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         _record(agent, usd);
         _record(VAULT_KEY, usd);
         emit AgentSpent(agent, usd, newSpent);
+    }
+
+    /// @dev Sell window first, then owner allowance for the remainder; else revert (all-or-nothing).
+    function _consumeSell(uint256 usd) internal {
+        (uint256 capLeft, uint256 allow,,) = exitRemaining();
+        uint256 fromCap = usd < capLeft ? usd : capLeft;
+        uint256 fromAllowance = usd - fromCap;
+        if (fromAllowance > allow) revert VaultSellCapExceeded(address(this), usd, capLeft + allow);
+        if (fromCap != 0) _record(SELL_KEY, fromCap);
+        if (fromAllowance != 0) {
+            uint256 rem = allow - fromAllowance;
+            sellAllowance.amountUsd = uint128(rem);
+            emit SellAllowanceUsed(address(this), fromAllowance, rem);
+        }
     }
 
     function _record(address key, uint256 usd) internal {

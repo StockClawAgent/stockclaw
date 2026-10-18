@@ -71,3 +71,6 @@ So **no Safe or Permit2 mocks are needed on testnet**. Create the 2-of-3 treasur
 5. **Session keys:** do we build the 4337 module (Safe4337Module + a custom guard reusing AgentVault's policy logic) or ship AgentVault only for Friday?
 6. **Eligibility:** should vaults be allowlisted (currently the vault address is gated, not the EOA)? Should the attester also bind vault→owner?
 7. **Fee tiers:** do we want a per-caller `feeBps` override for API tiers (20-25 bps in §8 sits below the 30 bps floor in the brief)? Currently the floor is 0 and the cap is 50.
+
+## R4-1 sell cap (final)
+- Per-vault $500 rolling-24h agent sell cap (owner can only lower it). Beyond it, sells need an owner allowance: `approveSell`, or an EIP-712 `SellApproval` relayed with `approveSellWithSig`. There is one active allowance slot, and nonces are single-use and cancelable. The contract max TTL is 7d; the server policy is one approval per held sell, 1h expiry, amount = sell + 2%. Owner-executed trades are uncapped. Review4 `test_FINDING_unboundedLiquidationInOneDay` is flipped to a regression.

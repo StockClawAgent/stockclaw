@@ -83,3 +83,11 @@ For `server/` (I haven't edited it). It covers every change from 7656854 through
   - **What still counts:** USDG→stock buys, stock→stock and any sell into a non-USDG token. Cycling buy/sell can't buy more than $500 per 24h.
   - **UI:** "Exits don't use your daily limit". `remainingToday` and `vaultSpentLast24h()` only reflect buys and token→token trades now.
 - **S-4 test:** `oracle.setMarketMode` from the keeper reverts with `OwnableUnauthorizedAccount(keeper)`.
+
+## R4-1: per-vault agent SELL cap + owner sell approvals (final)
+- Agent sells (stock -> USDG, registered pool, recipient = vault) do not count toward the $500 buy window. They use their own per-vault rolling 24h **sell** cap: protocol max $500 (`MAX_SELL_PER_DAY_USD`). The owner can lower it with `setSellCap` but can never raise it. Same 25-bucket ring as buys.
+- If a sell goes over the cap it reverts with `VaultSellCapExceeded(vault, needUsd, remainingUsd)`. Owner trades (`ownerSwap`) are never capped.
+- Views: `vaultSoldLast24h()`, `exitRemaining() -> (capLeftUsd, allowanceUsd, allowanceExpiry, totalUsd)`, `sellApprovalDigest(amountUsd, expiry, nonce)`.
+- Events: `SellCapSet`, `SellApproved`, `SellAllowanceUsed`, `SellApprovalCancelled`.
+- **Keeper queue flow (CTO final):** before each sell slice, check `exitRemaining().totalUsd`. If it doesn't cover the slice, hold the sell and ask the owner for **one approval per held sell**: amount = slice USD x 1.02, expiry = now + 1h (the contract allows up to 7d), and a fresh nonce. The owner signs the EIP-712 `SellApproval(vault, amountUsd, expiry, nonce)` (domain `StockClawVault`/`1`/chainId/vault). The keeper relays it with `approveSellWithSig`, then executes the held sell. Any leftover expires at `expiry` and can't be reused. A new approval replaces the active one. If the owner cancels a nonce with `cancelSellApproval`, relaying that nonce fails with `SellNonceUsed`. An expired approval blocks nothing, so just request a new one.
+- **UX (approve-sell screen):** show the token, slice size, USD value incl. 2% buffer, a 1h countdown and the reason ("daily agent sell limit of $X reached"). Offer Approve (sign) and Cancel. After expiry, say the sell was not executed and offer to re-request.

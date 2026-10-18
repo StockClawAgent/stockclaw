@@ -66,7 +66,7 @@ contract Review4 is Base {
     }
 
     function test_buysStillCountFully_afterExemptSells() public {
-        for (uint256 k; k < 10; k++) _sell(address(pool), address(tsla), 0.39e18); // ~$97.5 each, exempt
+        for (uint256 k; k < 5; k++) _sell(address(pool), address(tsla), 0.39e18); // ~$97.5 each, exempt from buy cap (R4-1 sell cap $500)
         assertEq(vault.spentLast24h(agent), 0);
         assertEq(vault.vaultSpentLast24h(), 0);
         for (uint256 k; k < 5; k++) _buy(100e6);
@@ -124,8 +124,8 @@ contract Review4 is Base {
             0.39e18, 1, 0, 60, 50, 300, uint40(block.timestamp), uint40(block.timestamp + 30 days), 7);
         bytes memory sig = _sign(agentPk, router.hashIntent(s));
         uint256 t = block.timestamp;
-        for (uint256 k; k < 8; k++) { vm.prank(keeper); vault.executeIntent(s, sig); t += 60; vm.warp(t); _setPrice(PRICE); }
-        assertEq(vault.vaultSpentLast24h(), 0); // ~$780 sold, nothing counted
+        for (uint256 k; k < 5; k++) { vm.prank(keeper); vault.executeIntent(s, sig); t += 60; vm.warp(t); _setPrice(PRICE); }
+        assertEq(vault.vaultSpentLast24h(), 0); // ~$487.5 sold, nothing counted against buys
         FeeRouter.Intent memory b = FeeRouter.Intent(address(vault), address(usdg), address(tsla), address(pool),
             100e6, 1, 0, 60, 50, 300, uint40(block.timestamp), uint40(block.timestamp + 30 days), 8);
         bytes memory sigb = _sign(agentPk, router.hashIntent(b));
@@ -135,15 +135,16 @@ contract Review4 is Base {
         vault.executeIntent(b, sigb);
     }
 
-    /// FINDING R4-1: an injected/compromised agent can liquidate the WHOLE stock position in one day
-    /// ($10,000 of TSLA here) in $100 slices; only per-trade cap + floor apply. Loss per slice ~fee+spread.
+    /// R4-1 FIXED (Quintus, user/CTO decision): agent sells have a per-vault $500/24h sell cap;
+    /// liquidation beyond it needs owner approval. ~$500 of the $10,000 TSLA can be sold, then revert.
     function test_FINDING_unboundedLiquidationInOneDay() public {
-        uint256 t0 = tsla.balanceOf(address(vault));
         uint256 slices;
-        while (tsla.balanceOf(address(vault)) >= 0.39e18) { _sell(address(pool), address(tsla), 0.39e18); slices++; }
-        assertGt(slices, 100);
-        assertLt(tsla.balanceOf(address(vault)), t0 / 100);
-        assertEq(vault.vaultSpentLast24h(), 0);
+        for (uint256 k; k < 5; k++) { _sell(address(pool), address(tsla), 0.39e18); slices++; } // $487.5
+        vm.prank(agent);
+        vm.expectPartialRevert(AgentVault.VaultSellCapExceeded.selector);
+        vault.agentSwap(address(pool), address(tsla), address(usdg), 0.39e18, 1, block.timestamp + 60);
+        assertEq(vault.vaultSpentLast24h(), 0); // buy window untouched
+        assertEq(vault.vaultSoldLast24h(), 487.5e6);
     }
 
     /// Churn round trips: each buy leg counts, so churn volume is bounded by $500/24h of buys.
