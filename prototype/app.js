@@ -18,7 +18,7 @@ function requestOwnerToken(force){const t=getTok();if(t)return Promise.resolve(t
 window.__requestOwnerToken=requestOwnerToken;
 async function askTok(){try{await requestOwnerToken(true);return true}catch(e){return false}}
 async function needOwner(){if(window.USE_MOCK||getTok())return true;return askTok()}
-window.__apiFails=[];if(window.api)for(const n of Object.keys(api)){const f=api[n];api[n]=(...a)=>Promise.resolve().then(()=>f(...a)).catch(e=>{window.__apiFails.push(n+": "+(e&&e.message));console.warn("api."+n+" failed:",e);say("Couldn't reach the server ("+n+")");throw e})}
+window.__apiFails=[];if(window.api)for(const n of Object.keys(api)){if(n==="openActivityStream")continue;const f=api[n];api[n]=(...a)=>Promise.resolve().then(()=>f(...a)).catch(e=>{window.__apiFails.push(n+": "+(e&&e.message));console.warn("api."+n+" failed:",e);say("Can't reach StockClaw right now. Check your connection and try again.");throw e})}
 const KEY="stockclaw-proto-v1";const B='<span class="badge">Testnet, not real stocks</span>';
 const DISC='<p class="disc">Stock tokens are not available to US persons or residents of restricted regions and are not shares. Stock tokens can be frozen or restricted by their issuer; a frozen token can\'t be sold. Final copy pending legal review.</p>';
 const BLOCKED=["United States","Canada","United Kingdom","Switzerland","United Arab Emirates","Iran","North Korea","Cuba","Syria","Russia"];
