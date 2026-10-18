@@ -1,4 +1,23 @@
 // StockClaw clickable prototype. Hash routing, localStorage state, data via api.js stubs.
+// ---- Owner token (presenter). sessionStorage only ("stockclaw-owner-token", same key as api.js); never localStorage, never logged.
+// Defined first so window.__requestOwnerToken exists before any api.js call. Concurrent callers share one dialog/promise.
+var OTK="stockclaw-owner-token",tokPending=null;
+function getTok(){try{return sessionStorage.getItem(OTK)||""}catch(e){return ""}}
+function applyTok(){if(typeof paintBar=="function")try{paintBar()}catch(e){}}
+function forgetTok(){try{sessionStorage.removeItem(OTK)}catch(e){}applyTok()}
+var tokCancelAt=0;
+function requestOwnerToken(force){const t=getTok();if(t)return Promise.resolve(t);if(tokPending)return tokPending;if(!force&&Date.now()-tokCancelAt<5000)return Promise.reject(new Error("Owner token needed: cancelled."));
+ tokPending=new Promise((res,rej)=>{const open=()=>{const d=document.createElement("dialog");d.className="tokdlg";d.setAttribute("aria-labelledby","tokh");
+  d.innerHTML=`<form method="dialog"><h2 id="tokh">Owner token needed</h2><p>This demo server needs the presenter's owner token. It is kept in this browser tab only (sessionStorage) and cleared when the tab closes.</p>
+  <label for="tokin">Owner token</label><input id="tokin" type="password" autocomplete="off" spellcheck="false" required>
+  <div class="row"><button class="btn" value="ok">Use token</button> <button class="btn sec" value="cancel" formnovalidate>Cancel</button></div></form>`;
+  document.body.appendChild(d);d.addEventListener("close",()=>{const v=d.returnValue,inp=d.querySelector("#tokin").value.trim();d.remove();tokPending=null;
+   if(v=="ok"&&inp){try{sessionStorage.setItem(OTK,inp)}catch(e){}applyTok();res(inp)}else{tokCancelAt=Date.now();rej(new Error("Owner token needed: cancelled."))}});
+  d.showModal();d.querySelector("#tokin").focus()};document.body?open():document.addEventListener("DOMContentLoaded",open,{once:true})});
+ return tokPending}
+window.__requestOwnerToken=requestOwnerToken;
+async function askTok(){try{await requestOwnerToken(true);return true}catch(e){return false}}
+async function needOwner(){if(window.USE_MOCK||getTok())return true;return askTok()}
 window.__apiFails=[];if(window.api)for(const n of Object.keys(api)){const f=api[n];api[n]=(...a)=>Promise.resolve().then(()=>f(...a)).catch(e=>{window.__apiFails.push(n+": "+(e&&e.message));console.warn("api."+n+" failed:",e);say("Couldn't reach the server ("+n+")");throw e})}
 const KEY="stockclaw-proto-v1";const B='<span class="badge">Testnet, not real stocks</span>';
 const DISC='<p class="disc">Stock tokens are not available to US persons or residents of restricted regions and are not shares. Final copy pending legal review.</p>';
@@ -131,14 +150,15 @@ function dash(t,body){const k=S.key,act=k&&k.status=="active";
 <nav class="tabs" aria-label="Dashboard">${TABS.map(([id,l])=>`<a href="#/dashboard/${id}" ${id==t?'aria-current="page"':""}>${l}</a>`).join("")}</nav>${ban}${dataErr()}${loadingRow()}<section class="card">${body}</section>${DISC}`}
 // Dashboard data: fetched only through api.js functions; cached in memory (C) and, for orders/history, in S.
 const C={bal:null,assets:null,loading:false,err:null};
-async function loadDash(force){if(C.loading)return;if(!force&&C.bal&&C.assets&&S.orders&&S.history)return;C.loading=true;C.err=null;
+async function loadDash(force){if(C.loading)return;if(!force&&C.err&&Date.now()-(C.errAt||0)<15000)return; // no auto-retry faster than 15s
+if(!force&&C.bal&&C.assets&&S.orders&&S.history)return;C.loading=true;C.err=null;
  const r=await Promise.allSettled([api.get_balances(),api.list_assets(),api.get_wallet(),(force||!S.orders)?api.list_orders():null,(force||!S.history)?api.get_history(50):null]);
  const w=r.splice(2,1)[0];if(w.status=="fulfilled"&&w.value&&w.value.sessionKey&&S.key){const sk=w.value.sessionKey;if(!S.key.id||sk.id==S.key.id||S.key.status=="active")S.key={...S.key,...sk,status:sk.status=="revoked"&&S.key.status=="paused"?"paused":sk.status}}
  const bad=["get_balances","list_assets","list_orders","get_history"].filter((n,i)=>r[i].status=="rejected");if(w.status=="rejected")bad.push("get_wallet");
  if(r[0].status=="fulfilled")C.bal=r[0].value||[];if(r[1].status=="fulfilled")C.assets=r[1].value||[];
  if(r[2].status=="fulfilled"&&r[2].value){const prev=S.orders||[];S.orders=r[2].value.map(o=>({...o,status:(prev.find(x=>x.intentId==o.intentId)||{}).status=="cancelled"&&o.status!="filled"?"cancelled":o.status,cancelTx:(prev.find(x=>x.intentId==o.intentId)||{}).cancelTx}))}
  if(r[3].status=="fulfilled"&&r[3].value)S.history=r[3].value;
- C.err=bad.length?bad:null;C.loading=false;S.lastRefresh=Date.now();save();if(lastRoute&&lastRoute.startsWith("/dashboard"))render()}
+ C.err=bad.length?bad:null;C.errAt=bad.length?Date.now():0;C.loading=false;S.lastRefresh=Date.now();save();if(lastRoute&&lastRoute.startsWith("/dashboard"))render()}
 function initData(){loadDash(false)}
 const dataErr=()=>C.err?`<div class="st err" role="alert">✕ Couldn't load: ${C.err.join(", ")}. <button class="sec" id="dataRetry">Retry</button></div>`:"";
 const loadingRow=(c)=>C.loading?`<p class="muted" role="status">⏳ Loading…</p>`:"";
@@ -238,7 +258,7 @@ const SREST={list_strategies:()=>rest("GET","/strategies"),preview_strategy:(b)=
 function normStatus(r){if(!r)return null;const id=r.strategyId||r.id;const fills=(r.fills||[]).map(f=>({...f,ts:f.ts||f.time||f.at,symbol:f.symbol||f.tokenOut||f.token,side:f.side||(f.role=="take-profit"?"sell":"buy"),amountUsd:f.amountUsd??f.usd??f.amountIn}));
  const nexts=(r.intents||[]).filter(i=>i.nextRunAt&&["open","active"].includes(String(i.status))).map(i=>i.nextRunAt).sort();const last=fills.slice().sort((a,b)=>String(b.ts).localeCompare(String(a.ts)))[0];
  return {...r,id,fills,lastAction:r.lastAction||(last?{ts:last.ts,text:`${last.side} ${last.symbol||""} $${(+last.amountUsd||0).toFixed(2)}`}:null),nextAction:r.nextAction||(nexts[0]&&r.status=="active"?{ts:nexts[0],text:"Next scheduled order"}:null)}}
-let ownerSimulated=false;(async()=>{try{if(!window.USE_MOCK){const h=await fetch((typeof API_BASE!=="undefined"?API_BASE:location.origin)+"/api/health").then(r=>r.ok?r.json():{});ownerSimulated=!!h.ownerSimulated}}catch(e){}})();
+let ownerSimulated=false;(async()=>{try{if(!window.USE_MOCK){let h;try{const c=JSON.parse(sessionStorage.getItem("stockclaw-health")||"null");if(c&&Date.now()-c.t<15000)h=c.h}catch(e){}if(!h){h=await fetch((typeof API_BASE!=="undefined"?API_BASE:location.origin)+"/api/health").then(r=>r.ok?r.json():{});try{sessionStorage.setItem("stockclaw-health",JSON.stringify({t:Date.now(),h}))}catch(e){}}ownerSimulated=!!h.ownerSimulated}}catch(e){}})();
 let stratMockUsed=false;
 const sapi=(name,...a)=>(async()=>{if(api[name])return api[name](...a);if(window.USE_MOCK){stratMockUsed=true;return smock[name](...a)}
  try{return await SREST[name](...a)}catch(e){if(e&&e.fallback||e instanceof TypeError){stratMockUsed=true;return smock[name](...a)}throw e}})();
@@ -257,8 +277,8 @@ function stratErrors(id,p){const e=[];const inr=(v,[a,b])=>typeof v=="number"&&i
   if(!Number.isInteger(p.expiryDays)||!inr(p.expiryDays,BOUNDS.expiry))e.push("Expiry must be 1–7 days.");}
  if(!Number.isInteger(p.oracleDevBps)||!inr(p.oracleDevBps,BOUNDS.dev))e.push("Max price deviation must be 10–300 bps.");return e}
 const ST={list:null,status:undefined,loading:false,err:null,draft:null,preview:null,ack:false,busy:false};
-async function loadStrats(force){if(ST.loading||(!force&&ST.list&&ST.status!==undefined))return;ST.loading=true;
- try{const [l,s]=await Promise.all([sapi("list_strategies"),sapi("get_strategy_status")]);ST.list=(l||[]).map(normStrat);const ns=normStatus(s);ST.status=ns&&!["stopped","rejected","none"].includes(ns.status)?ns:null;ST.err=null}catch(e){ST.err=e.message||String(e)}
+async function loadStrats(force){if(ST.loading||(!force&&ST.list&&ST.status!==undefined))return;if(!force&&ST.err&&Date.now()-(ST.errAt||0)<15000)return;ST.loading=true;
+ try{const [l,s]=await Promise.all([sapi("list_strategies"),sapi("get_strategy_status")]);ST.list=(l||[]).map(normStrat);const ns=normStatus(s);ST.status=ns&&!["stopped","rejected","none"].includes(ns.status)?ns:null;ST.err=null}catch(e){ST.err=e.message||String(e);ST.errAt=Date.now()}
  ST.loading=false;if(/strateg/.test(lastRoute||""))render()}
 const sById=(id)=>(ST.list||MOCK_STRATS).find(s=>s.id==id)||MOCK_STRATS.find(s=>s.id==id);
 const avatar=(id,size,extra="")=>`<img class="av ${extra}" src="${SAVATAR[id]||""}" width="${size}" height="${size}" alt="${esc((sById(id)||{}).name||id)} avatar">`;
@@ -355,22 +375,10 @@ addEventListener("hashchange",render);render();
 // ---- Persistent banner (shared bar from index.html; landing reuses the same bar) ----
 const BANNER="Local testnet demo: mock tokens, simulated prices, simulated owner wallet";
 // ---- Owner token (presenter). sessionStorage only; never localStorage, never logged. ----
-const OTK="stockclaw-owner-token",OSKIP="stockclaw-owner-skip";
-const getTok=()=>{try{return sessionStorage.getItem(OTK)||""}catch(e){return ""}};
-function applyTok(){paintBar()}
-function forgetTok(){try{sessionStorage.removeItem(OTK);sessionStorage.removeItem(OSKIP)}catch(e){}applyTok()}
 function paintBar(){const b=document.querySelector(".tnbar");if(!b)return;let t=b.querySelector(".bn-t");if(!t){b.innerHTML=`<span class="bn-t"></span> <span class="bn-o"></span> <a href="#" id="reset">Reset demo</a>`;t=b.querySelector(".bn-t")}
  t.textContent=BANNER+".";const o=b.querySelector(".bn-o");if(window.USE_MOCK){o.innerHTML="";return}
  o.innerHTML=getTok()?`· Owner token set <button type="button" class="linkbtn" id="forgetTok">Forget token</button>`:`· <button type="button" class="linkbtn" id="setTok">Set owner token</button>`}
 document.addEventListener("click",e=>{if(e.target.id=="forgetTok"){forgetTok();say&&say("Owner token forgotten")}else if(e.target.id=="setTok"){askTok()}});
-function askTok(){return new Promise(res=>{const d=document.createElement("dialog");d.className="tokdlg";d.setAttribute("aria-labelledby","tokh");
- d.innerHTML=`<form method="dialog"><h2 id="tokh">Owner token needed</h2><p>This is an owner action (it changes the vault onchain). Enter the presenter's owner token. It is kept in this browser tab only (sessionStorage) and cleared when the tab closes.</p>
- <label for="tokin">Owner token</label><input id="tokin" type="password" autocomplete="off" spellcheck="false" required>
- <div class="row"><button class="btn" value="ok">Use token</button> <button class="btn ghost" value="cancel" formnovalidate>Cancel</button></div></form>`;
- document.body.appendChild(d);d.addEventListener("close",()=>{const v=d.returnValue,inp=d.querySelector("#tokin").value.trim();d.remove();
-  if(v=="ok"&&inp){try{sessionStorage.setItem(OTK,inp)}catch(e){}applyTok();res(true)}else if(v=="skip"){try{sessionStorage.setItem(OSKIP,"1")}catch(e){}res(true)}else res(false)});
- d.showModal();d.querySelector("#tokin").focus()})}
-async function needOwner(){if(window.USE_MOCK||getTok())return true;return askTok()}
 const owned=(fn)=>async(...a)=>{if(!await needOwner())throw new Error("Owner token needed: action cancelled.");
  try{return await fn(...a)}catch(e){if(e&&(e.status==401||e.status==403||/owner token required/i.test(e.message||""))){forgetTok();throw new Error("Owner token missing or wrong. Try the action again and enter the token.")}throw e}};
 ["submit_attestation","create_smart_account","create_session_key","revoke_session_key","cancel_order"].forEach(n=>{if(api[n])api[n]=owned(api[n])});
