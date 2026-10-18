@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as svc from "./service.js";
+import * as strat from "./strategies.js";
 
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], structuredContent: (Array.isArray(data) ? { items: data } : data) as Record<string, unknown> });
 const wrap = <A>(fn: (a: A) => Promise<unknown> | unknown) => async (a: A) => {
@@ -15,7 +16,8 @@ const sym = z.string().describe("Token symbol: mUSDG, TSLA, AMZN, PLTR, NFLX, AM
 
 export function buildMcpServer() {
   const s = new McpServer({ name: "stockclaw", version: "0.1.0-testnet" }, { instructions: "StockClaw (TESTNET 46630, mock tokens). Trades run from the user's AgentVault under onchain caps ($100/trade, $500 rolling 24h, allowlist). Over-limit trades are hard-blocked. Not available to US persons or blocked regions." });
-  s.registerTool("check_eligibility", { description: "Eligibility status of the connected account (blocked: US, CA, GB, CH, AE, sanctioned).", inputSchema: { country: z.string().length(2).optional().describe("ISO country code, optional") }, annotations: RO }, wrap((a: { country?: string }) => svc.check_eligibility(a.country)));
+  // S-5: read-only; the agent cannot declare the user's country.
+  s.registerTool("check_eligibility", { description: "Eligibility status of the connected account (blocked: US, CA, GB, CH, AE, sanctioned).", annotations: RO }, wrap(() => svc.check_eligibility()));
   s.registerTool("get_wallet", { description: "Smart wallet (AgentVault) address, chain and agent session-key caps / spend in the rolling 24h.", annotations: RO }, wrap(() => svc.get_wallet()));
   s.registerTool("get_balances", { description: "Token balances of the smart wallet.", inputSchema: { tokens: z.array(sym).optional() }, annotations: RO }, wrap((a: { tokens?: string[] }) => svc.get_balances(a.tokens)));
   s.registerTool("list_assets", { description: "Supported assets with oracle prices.", annotations: RO }, wrap(() => svc.list_assets()));
@@ -26,9 +28,19 @@ export function buildMcpServer() {
   s.registerTool("create_dca", { description: "Create a signed DCA intent executed by the keeper. No catch-up for missed runs.", inputSchema: { tokenIn: sym, tokenOut: sym, amountPerExec: z.number().positive(), interval: z.union([z.enum(["hourly", "daily", "weekly"]), z.number().int().min(60)]), maxExecs: z.number().int().min(1).max(365), slippageBps: z.number().int().min(0).max(300).optional() }, annotations: W }, wrap((a: any) => svc.create_dca(a)));
   s.registerTool("create_limit_order", { description: "Create a limit order. Buy (tokenIn=mUSDG) fires when price <= limitPrice; sell fires when price >= limitPrice.", inputSchema: { tokenIn: sym, tokenOut: sym, amountIn: z.number().positive(), limitPrice: z.number().positive(), expiry: z.string().optional().describe("ISO time; default 7 days") }, annotations: W }, wrap((a: any) => svc.create_limit_order(a)));
   s.registerTool("list_orders", { description: "List DCA and limit orders.", inputSchema: { status: z.string().optional() }, annotations: RO }, wrap((a: { status?: string }) => svc.list_orders(a.status)));
-  s.registerTool("cancel_order", { description: "Cancel an order onchain (cancels its nonce).", inputSchema: { intentId: z.string() }, annotations: W }, wrap((a: { intentId: string }) => svc.cancel_order(a.intentId)));
+  s.registerTool("cancel_order", { description: "Cancel an order onchain (cancels its nonce).", inputSchema: { intentId: z.string() }, annotations: W }, wrap((a: { intentId: string }) => svc.cancel_order(a.intentId, "agent")));
   s.registerTool("get_history", { description: "Trade history incl. blocked attempts.", inputSchema: { limit: z.number().int().min(1).max(500).optional() }, annotations: RO }, wrap((a: { limit?: number }) => svc.get_history(a.limit)));
   s.registerTool("faucet_testnet", { description: "Fund the smart wallet with testnet mUSDG (1,000 / 24h) and mock stocks. Testnet only.", annotations: { ...W, destructiveHint: false } }, wrap(() => svc.faucet_testnet()));
   s.registerTool("get_usage", { description: "API usage for today (tiers are placeholders).", annotations: RO }, wrap(() => svc.get_usage()));
+  // ---- strategies (STRATEGIES.md §4). The agent can propose, pause and stop; it can NOT activate, switch or resume (S-3).
+  const sid = z.enum(["steady-stacker", "dip-hunter", "momentum-rider", "ai-thematic", "monday-planner"]);
+  s.registerTool("list_strategies", { description: "Strategy templates (versioned, hashed). Not investment advice.", annotations: RO }, wrap(() => strat.list_strategies()));
+  s.registerTool("get_strategy", { description: "Full definition of a strategy: schema, prompt name, changelog.", inputSchema: { id: sid, version: z.string().optional() }, annotations: RO }, wrap((a: any) => strat.get_strategy(a.id, a.version)));
+  s.registerTool("preview_strategy", { description: "Validate params and show planned orders and worst-case $/24h vs the cap. No transaction.", inputSchema: { id: sid, version: z.string().optional(), params: z.record(z.string(), z.any()) }, annotations: RO }, wrap((a: any) => strat.preview_strategy(a.id, a.version, a.params)));
+  s.registerTool("choose_strategy", { description: "Propose a strategy for the user's vault. Creates a PENDING proposal only; the user must confirm it in the StockClaw dashboard before anything runs. confirmHash = strategyHash from preview_strategy.", inputSchema: { id: sid, version: z.string().optional(), params: z.record(z.string(), z.any()), confirmHash: z.string() }, annotations: { ...W, destructiveHint: false } }, wrap((a: any) => strat.choose_strategy(a.id, a.version, a.params, a.confirmHash, "agent")));
+  s.registerTool("get_strategy_status", { description: "Status of the vault's strategy (or a given activation): intents, fills, 24h headroom.", inputSchema: { activationId: z.string().optional() }, annotations: RO }, wrap((a: any) => strat.get_strategy_status(a.activationId)));
+  s.registerTool("pause_strategy", { description: "Pause the strategy: cancels its open orders onchain. Resuming needs the user (dashboard).", inputSchema: { activationId: z.string() }, annotations: W }, wrap((a: any) => strat.pause_strategy(a.activationId)));
+  s.registerTool("stop_strategy", { description: "Stop the strategy and cancel all its open orders.", inputSchema: { activationId: z.string() }, annotations: W }, wrap((a: any) => strat.stop_strategy(a.activationId)));
+  for (const p of strat.promptsForMcp()) s.registerPrompt(p.name, { title: p.title, description: `${p.title} explainer (StockClaw strategy template)` }, () => ({ messages: [{ role: "user", content: { type: "text", text: p.text } }] }));
   return s;
 }

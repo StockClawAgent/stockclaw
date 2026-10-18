@@ -1,0 +1,10 @@
+{"$id":"dip-hunter/1.0.0","type":"object","required":["symbol","usdPerRung","dropsBps","takeProfitBps"],
+ "properties":{
+  "symbol":{"enum":["TSLA","AMZN","PLTR","NFLX","AMD"]},
+  "referencePrice":{"enum":["oracle_at_start","high_7d_keeper"],"default":"oracle_at_start"},
+  "dropsBps":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"integer","minimum":100,"maximum":3000}},
+  "usdPerRung":{"type":"number","minimum":5,"maximum":98,"description":"<= $98 so a rung plus price drift stays under the $100 per-trade cap (review S-7)"},
+  "takeProfitBps":{"type":"integer","minimum":100,"maximum":5000},
+  "sellFractionBps":{"type":"integer","minimum":1000,"maximum":10000,"default":10000},
+  "expiryDays":{"type":"integer","minimum":1,"maximum":7,"default":7},
+  "oracleDevBps":{"type":"integer","minimum":10,"maximum":300,"default":100}}}

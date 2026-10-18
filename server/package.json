@@ -9,7 +9,8 @@
     "start": "tsx src/index.ts",
     "mcp": "tsx src/mcpStdio.ts",
     "e2e": "tsx scripts/e2e.ts",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "strategies:lock": "tsx src/strategies.ts lock"
   },
   "keywords": [],
   "author": "",

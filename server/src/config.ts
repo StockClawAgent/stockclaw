@@ -15,8 +15,15 @@ export const DEPLOYMENTS_FILE = process.env.DEPLOYMENTS_FILE ?? path.join(DATA_D
 export const EXPLORER = IS_LOCAL ? "local-anvil" : "https://explorer.testnet.chain.robinhood.com";
 export const KEEPER_INTERVAL_MS = Number(process.env.KEEPER_INTERVAL_MS ?? 60_000);
 /** "open" forces market open (local demo only); "schedule" uses the onchain NYSE schedule (halts off-hours). */
-export const MARKET_MODE = (process.env.MARKET_MODE ?? (IS_LOCAL ? "open" : "schedule")) as "open" | "schedule";
-export const API_TOKEN = process.env.STOCKCLAW_API_TOKEN; // optional bearer for REST writes + /mcp
+export const getMarketMode = () => (process.env.MARKET_MODE ?? (IS_LOCAL ? "open" : "schedule")) as "open" | "schedule";
+export const MARKET_MODE = getMarketMode();
+// Review S-1: separate tokens. Owner token = dashboard/owner actions; MCP token = agent. Read at call time.
+export const ownerToken = () => process.env.OWNER_API_TOKEN;
+export const mcpToken = () => process.env.MCP_API_TOKEN;
+export function assertTokensConfigured() {
+  if (!IS_LOCAL && (!ownerToken() || !mcpToken())) throw new Error("REFUSING to start on a non-local chain: OWNER_API_TOKEN and MCP_API_TOKEN must both be set");
+  if (ownerToken() && ownerToken() === mcpToken()) throw new Error("OWNER_API_TOKEN and MCP_API_TOKEN must differ");
+}
 
 // Product decisions (ARCHITECTURE.md decisions log).
 export const DEFAULT_FEE_BPS = 30;
@@ -51,10 +58,11 @@ export function setUserEpoch(e: number) { userEpoch = e; }
 const hd = (i: number) => bytesToHex(mnemonicToAccount(ANVIL_MNEMONIC, { addressIndex: i }).getHdKey().privateKey!) as Hex;
 export const keys = {
   deployer: () => key("DEPLOYER_KEY", 0),   // admin + attester + mock-token issuer
-  keeper: () => key("KEEPER_KEY", 1),       // router keeper + oracle feed updater
+  keeper: () => key("KEEPER_KEY", 1),       // router + oracle keeper (executes intents, market schedule)
+  updater: () => key("FEED_UPDATER_KEY", 4),// oracle feed updater (separate from keeper, review S-4)
   treasury: () => key("TREASURY_KEY", 2),   // fee treasury (testnet: 2/3 Safe address instead)
   demoOwner: () => (IS_LOCAL && userEpoch && !process.env.DEMO_OWNER_KEY ? hd(100 * userEpoch) : key("DEMO_OWNER_KEY", 3)),// stands in for the user's wallet (no wallet connect yet)
-  agentPool: (): Hex[] => (process.env.AGENT_KEYS ? (process.env.AGENT_KEYS.split(",") as Hex[]) : IS_LOCAL ? (userEpoch ? Array.from({ length: 20 }, (_, i) => hd(100 * userEpoch + 1 + i)) : ([...ANVIL_KEYS.slice(4)] as Hex[])) : []),
+  agentPool: (): Hex[] => (process.env.AGENT_KEYS ? (process.env.AGENT_KEYS.split(",") as Hex[]) : IS_LOCAL ? (userEpoch ? Array.from({ length: 20 }, (_, i) => hd(100 * userEpoch + 1 + i)) : ([...ANVIL_KEYS.slice(5)] as Hex[])) : []),
 };
 /** Country name -> code for the prototype's country picker (it sends names). */
 export const COUNTRY_NAMES: Record<string, string> = Object.fromEntries(Object.entries(BLOCKED_REGIONS).map(([k, v]) => [v.toUpperCase(), k]));

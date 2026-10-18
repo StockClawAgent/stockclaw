@@ -19,6 +19,7 @@ type Order = {
   intentId: string; type: "DCA" | "Limit"; tokenIn: string; tokenOut: string; amount: number; interval?: string; intervalSec?: number;
   maxExecs: number; execsDone: number; limitPrice?: number; expiry?: string; nextRunAt?: string | null; status: string;
   agent: Address; intent: Record<string, string | number>; sig: Hex; hash: Hex; lastError?: string; txHashes: string[];
+  activationId?: string; role?: "dca" | "rung" | "take-profit"; rung?: number; parent?: string;
 };
 type HistoryRow = { txHash: string | null; explorerUrl?: string; type: string; in: string; out: string; fee: string; ts: string; status: "filled" | "blocked" | "failed"; reason?: string };
 type State = {
@@ -26,6 +27,7 @@ type State = {
   vault?: Address; nextAgentIdx: number;
   agent?: { idx: number; address: Address; id: string; perTradeCap: number; dailyCap: number; days: number; allowlist: string[]; expiresAt: string; status: "active" | "revoked" | "expired" };
   orders: Record<string, Order>; history: HistoryRow[]; usage: { day: string; calls: number }; epoch?: number;
+  activations?: Record<string, any>;
 };
 
 const STATE_FILE = path.join(cfg.DATA_DIR, "state.json");
@@ -51,6 +53,7 @@ export const dep = () => (D ??= loadDeployment());
 const owner = () => wallet(cfg.keys.demoOwner());
 const deployer = () => wallet(cfg.keys.deployer());
 const keeper = () => wallet(cfg.keys.keeper());
+const updater = () => wallet(cfg.keys.updater());
 const agentWallet = () => {
   if (!S.agent) throw new ApiError(409, "No agent key. Call create_session_key first.");
   return wallet(cfg.keys.agentPool()[S.agent.idx]);
@@ -83,6 +86,7 @@ function humanReason(e: unknown): string {
   const usd = (x: unknown) => `$${(Number(x) / 1e6).toFixed(2)}`;
   switch (name) {
     case "PerTradeCapExceeded": return `Over ${usd(args[1])} per-trade cap (trade ${usd(args[0])})`;
+    case "VaultDailyCapExceeded": return `Over ${usd(args[1])} vault rolling-24h cap (would be ${usd(args[0])})`;
     case "DailyCapExceeded": return `Over ${usd(args[1])} rolling-24h cap (would be ${usd(args[0])})`;
     case "TokenNotAllowed": return "Ticker not on allowlist";
     case "NotAgent": return "Agent key revoked (paused)";
@@ -172,13 +176,16 @@ export async function create_smart_account(_owner?: string) {
 }
 async function spentLast24h(): Promise<number> {
   if (!S.vault || !S.agent) return 0;
-  return Number(await read<bigint>(S.vault, C.vault.abi, "spentLast24h", [S.agent.address])) / 1e6;
+  const perVault = (C.vault.abi as any[]).some((x) => x.type === "function" && x.name === "vaultSpentLast24h");
+  const [k, vlt] = await Promise.all([read<bigint>(S.vault, C.vault.abi, "spentLast24h", [S.agent.address]), perVault ? read<bigint>(S.vault, C.vault.abi, "vaultSpentLast24h") : Promise.resolve(0n)]);
+  return Number(k > vlt ? k : vlt) / 1e6; // the binding window: max(per-key, vault-wide)
 }
 export async function get_wallet() {
   let status = S.agent?.status;
   if (S.agent && status === "active" && Date.parse(S.agent.expiresAt) < (await chainNow()) * 1000) status = S.agent.status = "expired";
   return {
     address: S.vault ?? null, chainId: cfg.TESTNET_CHAIN_ID, owner: owner().address,
+    ownerSimulated: true, ownerNote: "DEMO: the owner wallet is SIMULATED by the server (no wallet-connect yet). Owner actions require the owner token.",
     sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h", allowlist: S.agent.allowlist } : null,
   };
 }
@@ -195,6 +202,9 @@ export async function create_session_key(caps: Caps = {}) {
   const pool = cfg.keys.agentPool();
   if (S.nextAgentIdx >= pool.length) throw new ApiError(503, "Agent key pool exhausted (restart local chain)");
   const o = owner(), v = S.vault;
+  // S-2 interim: if the deployed vault tracks spend per agent key only, a fresh key would reset the 24h window.
+  const perVault = (C.vault.abi as any[]).some((x) => x.type === "function" && x.name === "vaultSpentLast24h");
+  if (!perVault && S.agent && (await spentLast24h()) > 0) throw new ApiError(409, "Can't re-issue the agent key while the vault has spend in the last 24h (per-key cap tracking)");
   let revoked: { key: string; agent: Address; txHash: string } | null = null;
   if (S.agent?.status === "active") { const old = S.agent; const r = await revoke_session_key(); revoked = { key: old.id, agent: old.address, txHash: r.txHash }; } // editing limits = revoke + re-issue
   // allowlist: mUSDG + chosen tickers on, everything else off
@@ -219,6 +229,7 @@ export async function revoke_session_key() {
   const { hash } = await owner().write(S.vault, C.vault.abi, "revokeAgent", [S.agent.address]);
   S.agent.status = "revoked";
   for (const o of Object.values(S.orders)) if (o.agent === S.agent.address && o.status === "open") o.status = "paused";
+  for (const a of Object.values(S.activations ?? {})) if (a.status === "active") a.status = "paused"; // kill switch pauses strategies
   save();
   return txOut(hash);
 }
@@ -345,24 +356,47 @@ export async function create_limit_order(p: { tokenIn: string; tokenOut: string;
   if (!(expiry > now)) throw new ApiError(400, "expiry must be in the future");
   // minOut implied by the limit price, after fee and slippage.
   const slipL = p.slippageBps ?? cfg.DEFAULT_SLIPPAGE_BPS; if (!(slipL > 0) || slipL > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, "slippageBps must be in (0, 300]");
-  const net = p.amountIn * (1 - cfg.DEFAULT_FEE_BPS / 10_000) * (1 - slipL / 10_000);
-  const minOut = isUsdg(p.tokenIn) ? net / p.limitPrice : net * p.limitPrice;
-  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountIn, ti.decimals), minOutPerExec: units(minOut, to.decimals), limitPriceE8: BigInt(Math.round(p.limitPrice * 1e8)), interval: 0, maxExecs: 1, maxOracleDevBps: slipL, startTime: now, expiry, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
+  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountIn, ti.decimals), minOutPerExec: 1n /* trigger = limitPrice; protection = mandatory oracle floor (maxOracleDevBps) */, limitPriceE8: BigInt(Math.round(p.limitPrice * 1e8)), interval: 0, maxExecs: 1, maxOracleDevBps: slipL, startTime: now, expiry, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
   const { sig, hash } = await signIntent(i);
   const intentId = "int_" + hash.slice(2, 14);
   S.orders[intentId] = { intentId, type: "Limit", tokenIn: ti.symbol, tokenOut: to.symbol, amount: p.amountIn, maxExecs: 1, execsDone: 0, limitPrice: p.limitPrice, expiry: new Date(expiry * 1000).toISOString(), status: "open", agent: S.agent!.address, intent: toWire(i), sig, hash, txHashes: [] };
   save();
   return { intentId };
 }
-const publicOrder = (o: Order) => ({ intentId: o.intentId, type: o.type, tokenIn: o.tokenIn, tokenOut: o.tokenOut, amount: o.amount, ...(o.type === "DCA" ? { interval: o.interval, execs: `${o.execsDone}/${o.maxExecs}`, nextRunAt: o.nextRunAt } : { limitPrice: o.limitPrice, expiry: o.expiry }), status: o.status, lastError: o.lastError ?? null, txHashes: o.txHashes });
+/** Internal: sign + store an intent for a strategy (caller validated params). */
+export async function _createIntent(o: { type: "DCA" | "Limit"; tokenIn: string; tokenOut: string; amount: number; interval?: number; intervalLabel?: string; maxExecs: number;
+  limitPrice?: number; startTime: number; expiry: number; devBps: number; activationId: string; role: Order["role"]; rung?: number; parent?: string }) {
+  if (!S.vault) throw new ApiError(409, "No smart account");
+  if (!(o.devBps > 0 && o.devBps <= cfg.MAX_SLIPPAGE_BPS)) throw new ApiError(400, "oracleDevBps must be in (0, 300]");
+  const ti = token(o.tokenIn), to = token(o.tokenOut);
+  precheckAgentCaps(o.tokenIn, o.tokenOut, await usdOf(o.tokenIn, o.amount));
+  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(o.tokenIn, o.tokenOut), amountPerExec: units(o.amount, ti.decimals), minOutPerExec: 1n,
+    limitPriceE8: o.limitPrice ? BigInt(Math.round(o.limitPrice * 1e8)) : 0n, interval: o.interval ?? 0, maxExecs: o.maxExecs, maxOracleDevBps: o.devBps, startTime: o.startTime, expiry: o.expiry, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
+  const { sig, hash } = await signIntent(i);
+  const intentId = "int_" + hash.slice(2, 14);
+  S.orders[intentId] = { intentId, type: o.type, tokenIn: ti.symbol, tokenOut: to.symbol, amount: o.amount, maxExecs: o.maxExecs, execsDone: 0, status: "open", agent: S.agent!.address, intent: toWire(i), sig, hash, txHashes: [],
+    ...(o.type === "DCA" ? { interval: o.intervalLabel ?? `${o.interval}s`, intervalSec: o.interval, nextRunAt: new Date(o.startTime * 1000).toISOString() } : { limitPrice: o.limitPrice, expiry: new Date(o.expiry * 1000).toISOString() }),
+    activationId: o.activationId, role: o.role, rung: o.rung, parent: o.parent };
+  save();
+  return S.orders[intentId];
+}
+export const _vault = () => S.vault;
+export const _agent = () => S.agent;
+export { spentLast24h as _spentLast24h, owner as _owner };
+
+const publicOrder = (o: Order) => ({ intentId: o.intentId, type: o.type, ...(o.activationId ? { activationId: o.activationId, role: o.role } : {}), tokenIn: o.tokenIn, tokenOut: o.tokenOut, amount: o.amount, ...(o.type === "DCA" ? { interval: o.interval, execs: `${o.execsDone}/${o.maxExecs}`, nextRunAt: o.nextRunAt } : { limitPrice: o.limitPrice, expiry: o.expiry }), status: o.status, lastError: o.lastError ?? null, txHashes: o.txHashes });
 export async function list_orders(status?: string) {
   // status enum: open | paused | filled | cancelled | expired
   return Object.values(S.orders).filter((o) => !status || o.status === status).map(publicOrder);
 }
-export async function cancel_order(intentId: string) {
+/** by: "owner" (owner token / dashboard), "agent" (MCP: signs with the agent key, review S-1), "auto" (agent if active, else owner). */
+export async function cancel_order(intentId: string, by: "owner" | "agent" | "auto" = "owner") {
   const o = S.orders[intentId];
   if (!o || !S.vault) throw new ApiError(404, "Unknown intentId");
-  const { hash } = await owner().write(S.vault, C.vault.abi, "cancelIntent", [BigInt(o.intent.nonce)]);
+  const agentOk = S.agent?.status === "active";
+  if (by === "agent" && !agentOk) throw new ApiError(403, "Agent key revoked; the owner can cancel from the dashboard");
+  const signer = by === "owner" || (by === "auto" && !agentOk) ? owner() : agentWallet();
+  const { hash } = await signer.write(S.vault, C.vault.abi, "cancelIntent", [BigInt(o.intent.nonce)]);
   o.status = "cancelled"; save();
   return { ...txOut(hash), status: "confirmed" };
 }
@@ -388,4 +422,4 @@ export function countCall() { get_usage(); S.usage.calls++; save(); }
 
 // ---------------------------------------------------------------- keeper hooks
 export const _state = () => S;
-export { save as _save, humanReason, priceE8, chainNow, keeper as keeperWallet };
+export { save as _save, humanReason, priceE8, chainNow, keeper as keeperWallet, updater as updaterWallet };
