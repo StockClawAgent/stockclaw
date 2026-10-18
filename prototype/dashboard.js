@@ -116,16 +116,21 @@ function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.bod
 addEventListener("hashchange",mark);mark();render();
 
 // ---------- Basket buy (Home entry → live fill donut, no confirm step) and latest-basket card. Data via BasketFill.adapter (sim until api.js ships it). ----------
-let bkSel=null,bkAmt=500,bkBusy=false;
-const BKS=()=>(window.SCBaskets&&SCBaskets.data&&SCBaskets.data.baskets)||[];
+let bkSel=null,bkAmt=500,bkBusy=false,bkKey=null,BKL=null,bkLoading=false;
+// Baskets come from api.list_baskets (server marks which are executable on this chain).
+function BKS(){if(!BKL&&!bkLoading){bkLoading=true;BasketFill.adapter.list().then(l=>{BKL=l||[]}).catch(()=>{BKL=[]}).finally(()=>{bkLoading=false;if(lastRoute=="/dashboard/overview")render()})}return BKL||[]}
+const bname=b=>b.name||b.theme||b.id;
 // Order entry lives on Home (no confirm step): pick a basket + amount, "Buy basket" goes straight to the filling donut.
-function bkEntry(){const list=BKS();if(!list.length)return "";const b=list.find(x=>x.id==bkSel)||list[0];bkSel=b.id;
- return `<section class="dx-sec" aria-labelledby="dx-bkb"><h2 id="dx-bkb">Buy a basket</h2><div class="lp-tabs" role="radiogroup" aria-label="Basket">${list.map(x=>`<button role="radio" aria-checked="${x.id==b.id}" class="${x.id==b.id?"on":""}" data-bksel="${esc(x.id)}">${esc(x.theme||x.name||x.id)}</button>`).join("")}</div>
-<p class="dx-amt"><label>Amount <input id="bkAmt" type="number" min="10" max="500" step="10" value="${bkAmt}"></label> <span class="dx-mut">mUSDG, up to $500 per basket, in orders of $100 or less</span></p>
-<button class="dx-link dx-bkgo" id="bkGo" ${bkBusy?"disabled":""}>Buy ${esc(b.theme||b.name||b.id)} basket</button><p id="bkErr" class="st err" role="alert" hidden></p></section>`}
-function bkEntryBind(){document.querySelectorAll("[data-bksel]").forEach(x=>x.onclick=()=>{bkSel=x.dataset.bksel;render()});
- const a=$("#bkAmt");a&&(a.oninput=()=>{bkAmt=Math.max(10,Math.min(500,+a.value||0))});
- const g=$("#bkGo");g&&(g.onclick=async()=>{const b=BKS().find(x=>x.id==bkSel);bkBusy=true;g.disabled=true;try{const r=await BasketFill.adapter.start(b,bkAmt);S.lastBasket={id:r.id,basketId:b.id,name:b.theme||b.name||b.id};save()}catch(err){bkBusy=false;g.disabled=false;const x=$("#bkErr");x.hidden=false;x.textContent="Couldn't start the basket: "+err.message;return}bkBusy=false;location.hash="#/dashboard/basket"})}
+function bkEntry(){const list=BKS();if(!list.length)return "";let b=list.find(x=>x.id==bkSel)||list.find(x=>x.executable!==false)||list[0];bkSel=b.id;const ok=b.executable!==false;
+ return `<section class="dx-sec" aria-labelledby="dx-bkb"><h2 id="dx-bkb">Buy a basket</h2><div class="lp-tabs" role="radiogroup" aria-label="Basket">${list.map(x=>`<button role="radio" aria-checked="${x.id==b.id}" class="${x.id==b.id?"on":""}${x.executable===false?" dx-off":""}" data-bksel="${esc(x.id)}">${esc(bname(x))}</button>`).join("")}</div>
+${ok?`<p class="dx-amt"><label>Amount <input id="bkAmt" type="number" min="10" max="500" step="10" value="${bkAmt}"></label> <span class="dx-mut">mUSDG, up to $500 per basket, in orders of $100 or less</span></p>
+<button class="dx-link dx-bkgo" id="bkGo" ${bkBusy?"disabled":""}>${bkKey?"Try again":"Buy "+esc(bname(b))+" basket"}</button>`:`<p class="dx-mut dx-small">${esc(b.notExecutableReason||"Not available on this chain.")}</p>`}<p id="bkErr" class="st err" role="alert" hidden></p></section>`}
+function bkEntryBind(){document.querySelectorAll("[data-bksel]").forEach(x=>x.onclick=()=>{bkSel=x.dataset.bksel;bkKey=null;render()});
+ const a=$("#bkAmt");a&&(a.oninput=()=>{bkAmt=Math.max(10,Math.min(500,+a.value||0));bkKey=null});
+ const g=$("#bkGo");g&&(g.onclick=async()=>{const b=BKS().find(x=>x.id==bkSel);bkKey=bkKey||BasketFill.adapter.newKey();bkBusy=true;g.disabled=true;
+  try{const x=await BasketFill.adapter.start(b.id,bkAmt,bkKey);S.lastBasket={id:x.id,basketId:b.id,name:bname(b)};save();bkKey=null}
+  catch(err){bkBusy=false;g.disabled=false;g.textContent="Try again";const e=$("#bkErr");e.hidden=false;e.textContent="Couldn't start the basket: "+err.message;return}
+  bkBusy=false;location.hash="#/dashboard/basket"})}
 function BuyBasket(){const lb=S.lastBasket;if(!lb)return dash("overview",`<p class="dx-quiet">No basket order yet. <a href="#/dashboard/overview">Buy one from Home</a></p>`);
  return dash("overview",`<section class="dx-ob"><p class="dx-k">Basket order</p><h1>Buying ${esc(lb.name||lb.basketId)}</h1><div id="bfBuy" class="bf-card" tabindex="-1"></div>
 <p class="dx-mut dx-small">Each order is a separate trade of $100 or less, within your buy headroom (24h). Simulated fills (demo).</p><a class="dx-primary" href="#/dashboard/overview">Back to Home</a></section>`)}

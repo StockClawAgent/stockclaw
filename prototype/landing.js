@@ -87,5 +87,5 @@ function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.bod
 R["/"]=[Landing,()=>{LandingBind();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
 addEventListener("hashchange",mark);mark();render();
 // Shared with dashboard/basketfill: basket data + fixed ticker colors.
-window.SCBaskets={get data(){return BK},col:s=>col(s)};
+window.SCBaskets={get data(){return BK},col:s=>col(s),has:s=>s in TCOL};
 })();

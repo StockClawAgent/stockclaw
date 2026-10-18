@@ -3,57 +3,51 @@
      GET  /api/approvals?status=pending -> [{id, agentKeyId, agentName, ticker, amountIn, estUsdgOut, estUsdgOutMin, reason, status, createdAt, expiresAt, challenge?}]
      POST /api/approvals/:id/approve {webauthnAssertion}   (server re-quotes; >3% move -> 'Price moved, ask agent to re-propose')
      POST /api/approvals/:id/reject
-   APRAdapter is the ONE place to wire api.js. Until then a local simulator (APRSim) runs only with ?mock=1. Delete APRSim when api.js ships.
+   APRAdapter is the ONE place that talks to api.js (Lucius 502b3f4; ?mock=1 / ?mockFail=1 use its mocks).
    Never log the assertion or the owner token. */
 (function(){
 const q=new URLSearchParams(location.search),MOCK=q.get("mock")==="1";
-const STUB=MOCK; // headless/demo: stub navigator.credentials in mock mode only
+const STUB=MOCK; // headless screenshots only: stub navigator.credentials in ?mock=1
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const b64u=buf=>btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 const fromB64u=s=>Uint8Array.from(atob(String(s).replace(/-/g,"+").replace(/_/g,"/")),c=>c.charCodeAt(0));
 
-// ---------- local simulator (remove when api.js has list_approvals / approve_sell / reject_sell) ----------
-const APRSim={items:null,
- seed(){const now=Date.now(),m=60e3;const mk=(id,agentName,ticker,amountIn,est,age,exp,reason,flags={})=>({id,agentKeyId:"key-sim",agentName,ticker,amountIn,estUsdgOut:est,estUsdgOutMin:+(est*0.99).toFixed(2),reason,status:"pending",createdAt:new Date(now-age*m).toISOString(),expiresAt:new Date(now+exp).toISOString(),challenge:"sim:"+id+":paramsHash",...flags});
-  this.items=[mk("ap-1","Dip Hunter","TSLA",0.42,98.4,30,52*m,"VaultSellCapExceeded"),
-   mk("ap-2","Trend Flip","PLTR",0.6,61.2,20,38*m,"VaultSellCapExceeded",{_move:true}),
-   mk("ap-3","Steady Stacker","NFLX",0.09,88.1,10,q.get("aprExpire")==="1"?4000:9*m,"VaultSellCapExceeded"),
-   mk("ap-4","Dip Hunter","AMD",0.3,47.1,5,-1,"VaultSellCapExceeded"),mk("ap-5","AI Thematic","AMZN",0.2,40.5,2,-1,"VaultSellCapExceeded")];this.items.slice(3).forEach(x=>x.expiresAt=new Date(now+20*m).toISOString())},
- list(){if(!this.items)this.seed();return Promise.resolve(this.items.filter(x=>x.status=="pending"&&Date.parse(x.expiresAt)>Date.now()).map(x=>({...x})))},
- approve(id){const x=this.items.find(x=>x.id==id);return new Promise((ok,no)=>setTimeout(()=>{if(!x||Date.parse(x.expiresAt)<=Date.now())return no(Object.assign(new Error("BadSellApproval"),{code:"BadSellApproval"}));
-  if(x.status=="approved")return no(Object.assign(new Error("SellNonceUsed"),{code:"SellNonceUsed"}));
-  const oldest=this.items.filter(y=>y.status=="pending"&&Date.parse(y.expiresAt)>Date.now()).sort((p,r)=>Date.parse(p.createdAt)-Date.parse(r.createdAt))[0];if(oldest&&oldest.id!=id)return no(Object.assign(new Error("BadSellApproval"),{code:"BadSellApproval"}));
-  if(x._move){x.status="failed";return no(Object.assign(new Error("Price moved, ask agent to re-propose"),{code:"price_moved"}))}x.status="approved";ok({status:"approved"})},700))},
- reject(id){const x=this.items.find(x=>x.id==id);if(x)x.status="rejected";return Promise.resolve({status:"rejected"})}};
-
 // ---------- the ONE adapter ----------
-const A=window.api||{};const live=()=>typeof A.list_approvals=="function";
 const APRAdapter={
- list:()=>live()?A.list_approvals("pending"):MOCK?APRSim.list():Promise.resolve([]),
- approve:(id,webauthnAssertion)=>live()?A.approve_sell(id,{webauthnAssertion}):APRSim.approve(id),
- reject:id=>live()?A.reject_sell(id):APRSim.reject(id),
+ list:()=>api.list_approvals("pending"),
+ approve:(id,webauthnAssertion)=>api.approve_sell(id,webauthnAssertion),
+ reject:id=>api.reject_sell(id),
+ pkOptions:assertion=>api.passkey_register_options(assertion),
+ pkVerify:response=>api.passkey_register_verify(response),
  challenge:a=>a.challenge,
  // Contract errors -> friendly copy. kind: 'invalid' (muted), 'done' (resolve as approved), 'moved' (server text), 'error'.
  friendly(err){const m=String(err&&(err.code||"")+" "+(err.message||err));
   if(/VaultSellCapExceeded/.test(m))return {kind:"reason",msg:"Over the $500 agent sell limit, needs your approval"};
   if(/BadSellApproval/.test(m)||/expired/i.test(m))return {kind:"invalid",msg:"Approval expired or invalid. Ask your agent to re-propose."};
-  if(/SellNonceUsed/.test(m))return {kind:"done",msg:"Already approved."};
+  if(/SellNonceUsed|Approval is (executed|approved)/.test(m))return {kind:"done",msg:"Already approved."};
   if(/price moved/i.test(m))return {kind:"moved",msg:String(err.message||err)};
   return {kind:"error",msg:"Couldn't approve: "+String(err&&err.message||err)}},
  reasonText:a=>/VaultSellCapExceeded/.test(String(a.reason||""))?"Over the $500 agent sell limit, needs your approval":(a.reason||""), // supplied by the server/mock (approval id + params hash); we don't invent crypto
  // Card copy and actions live here (per-sell is final).
- copy:{title:a=>`${a.agentName} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} mUSDG`,primary:"Approve sell",secondary:"Decline",
+ copy:{title:a=>`${a.agentName&&!/^Agent key /.test(a.agentName)?a.agentName:"Your agent"} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} mUSDG`,primary:"Approve sell",secondary:"Decline",
   note:"Simulated owner signature (demo)",expired:"Approval expired or invalid. Ask your agent to re-propose.",declined:"Declined. Your agent won't sell this.",approved:"Approved. The sell is going through."}};
 
 // ---------- passkey ----------
 const pk=()=>S.passkey||null;
-async function createPasskey(){if(STUB&&(!window.PublicKeyCredential||q.get("stubpk")!=="0")){await new Promise(r=>setTimeout(r,400));return {id:"stub-"+Date.now().toString(36),stub:true}}
- const cred=await navigator.credentials.create({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),rp:{name:"StockClaw",id:location.hostname},
-  user:{id:crypto.getRandomValues(new Uint8Array(16)),name:"owner@stockclaw.local",displayName:"StockClaw owner"},pubKeyCredParams:[{type:"public-key",alg:-7},{type:"public-key",alg:-257}],
-  authenticatorSelection:{residentKey:"preferred",userVerification:"required"},timeout:60000,attestation:"none"}});return {id:b64u(cred.rawId)}}
-async function signApproval(a){const ch=APRAdapter.challenge(a);if(STUB&&(pk()?.stub||q.get("stubpk")!=="0")){await new Promise(r=>setTimeout(r,300));return {stub:true,id:pk()?.id}}
- const enc=new TextEncoder().encode(String(ch));const as=await navigator.credentials.get({publicKey:{challenge:enc,allowCredentials:[{type:"public-key",id:fromB64u(pk().id)}],userVerification:"required",timeout:60000}});
- return {id:b64u(as.rawId),clientDataJSON:b64u(as.response.clientDataJSON),authenticatorData:b64u(as.response.authenticatorData),signature:b64u(as.response.signature)}}
+const toBuf=s=>fromB64u(s).buffer;
+async function createPasskey(){
+ // A 2nd passkey needs a step-up assertion over the server's stepUpChallenge (returned in a 403). api.js call() drops that field
+ // (and clears the owner token on 403), so until Lucius exposes it we stop with a clear message instead of looping.
+ let o;try{o=await APRAdapter.pkOptions()}catch(err){if(/already registered/i.test(err.message))throw new Error("A passkey is already set up for this wallet. Adding another one isn't available in the demo yet.");throw err}
+ if(STUB){await new Promise(r=>setTimeout(r,300));const v=await APRAdapter.pkVerify({id:"stub",stub:true});return {id:v.credentialId||"stub",stub:true}}
+ const pubKey={...o,challenge:toBuf(o.challenge),user:{...o.user,id:toBuf(o.user.id)},excludeCredentials:(o.excludeCredentials||[]).map(c=>({...c,id:toBuf(c.id)})),
+  authenticatorSelection:{...(o.authenticatorSelection||{}),userVerification:"required"}};
+ const c=await navigator.credentials.create({publicKey:pubKey});
+ const resp={id:c.id,rawId:b64u(c.rawId),type:c.type,response:{clientDataJSON:b64u(c.response.clientDataJSON),attestationObject:b64u(c.response.attestationObject),transports:c.response.getTransports?c.response.getTransports():[]},clientExtensionResults:c.getClientExtensionResults()};
+ const v=await APRAdapter.pkVerify(resp);if(!v||v.verified===false)throw new Error("The server couldn't verify the passkey");return {id:v.credentialId||c.id}}
+async function assert(challenge){const as=await navigator.credentials.get({publicKey:{challenge:toBuf(challenge),allowCredentials:pk()&&!pk().stub?[{type:"public-key",id:toBuf(pk().id)}]:[],userVerification:"required",timeout:60000}});
+ return {id:as.id,rawId:b64u(as.rawId),type:as.type,response:{clientDataJSON:b64u(as.response.clientDataJSON),authenticatorData:b64u(as.response.authenticatorData),signature:b64u(as.response.signature),userHandle:as.response.userHandle?b64u(as.response.userHandle):null}}}
+async function signApproval(a){if(STUB){await new Promise(r=>setTimeout(r,300));return {stub:true}}return assert(APRAdapter.challenge(a))}
 
 // ---------- onboarding step: Set up passkey ----------
 let pkBusy=false,pkErr="";
@@ -78,7 +72,7 @@ function card(a,i,active){const s=ui.st[a.id]||{k:left(a)?"pending":"expired"};c
   s.k=="expired"?`<p class="apr-msg">${e(s.msg||C.expired)}</p>`:s.k=="moved"?`<p class="apr-msg">${e(s.msg)}</p>`:s.k=="declined"?`<p class="apr-msg">${e(C.declined)}</p>`:
   s.k=="nopk"?`<p class="apr-msg">You need a passkey to approve sells.</p><a class="dx-primary" href="#/onboarding/passkey">Set up passkey</a>`:
   `<div class="apr-act"><button class="dx-primary" data-ap="${e(a.id)}" ${s.k=="approving"?"disabled":""}>${s.k=="approving"?"Approving…":e(C.primary)}</button> <button class="dx-link" data-dc="${e(a.id)}" ${s.k=="approving"?"disabled":""}>${e(C.secondary)}</button></div>${s.msg?`<p class="st err" role="alert">${e(s.msg)}</p>`:""}`;
- return `<li class="apr apr-${s.k}${muted?" apr-muted":""}" data-id="${e(a.id)}"><p class="apr-t">${e(C.title(a))}</p><p class="apr-r">${e(APRAdapter.reasonText(a))}${s.k=="pending"||s.k=="approving"||s.k=="nopk"?` · <span class="apr-cd" data-cd="${e(a.id)}">${fmtLeft(left(a))}</span>`:""}</p>${body}<p class="apr-n">${e(C.note)}</p></li>`}
+ return `<li class="apr apr-${s.k}${muted?" apr-muted":""}" data-id="${e(a.id)}"><p class="apr-t">${e(C.title(a))}</p><p class="apr-r">${e(APRAdapter.reasonText(a))}${s.k=="pending"||s.k=="approving"||s.k=="nopk"?` · <span class="apr-cd" data-cd="${e(a.id)}">${fmtLeft(left(a))}</span>`:""}</p>${body}${a.ownerSignatureSimulated?`<p class="apr-n">${e(C.note)}</p>`:""}</li>`}
 function draw(){const el=document.getElementById("aprSlot");if(!el)return;const list=ui.items.slice().sort((x,y)=>Date.parse(x.createdAt)-Date.parse(y.createdAt));
  const unres=x=>{const k=(ui.st[x.id]||{k:"pending"}).k;return k=="pending"||k=="approving"||k=="nopk"};const act=(list.find(x=>unres(x)&&left(x))||{}).id;
  if(!list.length){el.innerHTML="";return}const vis=list.slice(0,3),more=list.length-vis.length;
@@ -96,5 +90,5 @@ function tickCd(){document.querySelectorAll("[data-cd]").forEach(s=>{const a=ui.
 async function mount(){clearInterval(ui.timer);try{const got=await APRAdapter.list();const keep=ui.items.filter(x=>ui.st[x.id]&&ui.st[x.id].k!="pending");ui.items=[...got.filter(g=>!keep.some(k=>k.id==g.id)),...keep]}catch(_){}
  draw();ui.timer=setInterval(()=>{if(!document.getElementById("aprSlot"))return clearInterval(ui.timer);tickCd()},1000)}
 {const [V,B]=R["/dashboard/overview"];R["/dashboard/overview"]=[()=>V().replace('<div class="dx-body">','<div class="dx-body"><div id="aprSlot" aria-live="polite"></div>'),()=>{B();mount()}]}
-window.SCApprovals={adapter:APRAdapter,_sim:APRSim};
+window.SCApprovals={adapter:APRAdapter};
 })();
