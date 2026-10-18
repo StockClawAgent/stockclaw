@@ -56,8 +56,9 @@ try {
   await step("fee: router default 30 bps, setFeeBps(51) reverts FeeAboveCap, 50 allowed", async () => {
     assert.equal(Number(await read(d.router, C.router.abi, "feeBps")), 30);
     assert.equal(Number(await read(d.router, C.router.abi, "MAX_FEE_BPS")), 50);
-    const dep = wallet(cfg.keys.deployer());
-    await assert.rejects(dep.write(d.router, C.router.abi, "setFeeBps", [51]), (e) => revertReason(e).name === "FeeAboveCap");
+    const safe = wallet(cfg.keys.treasury()); // simulated Safe accepted ownership at deploy
+    assert.equal((await read<string>(d.router, C.router.abi, "owner")).toLowerCase(), safe.address.toLowerCase());
+    await assert.rejects(safe.write(d.router, C.router.abi, "setFeeBps", [51]), (e) => revertReason(e).name === "FeeAboveCap");
   });
 
   await step("eligibility: US/CA/GB/CH/AE/IR blocked, geo-IP 451, DE ok after attestation", async () => {
@@ -97,6 +98,7 @@ try {
     assert.equal(q.feeAmount, 0.15); assert.equal(q.netIn, 49.85); assert.ok(q.amountOut > 0.18 && q.amountOut < 0.22, String(q.amountOut));
     const t0 = await usdgBal(d.treasury);
     const x = await call("POST", "execute_swap", { quoteId: q.quoteId }); assert.equal(x.status, 200, JSON.stringify(x.body)); assert.match(x.body.txHash, /^0x/);
+    assert.equal(x.body.amountOut, q.amountOut, "StockClawPool.quote() == swap() fill");
     assert.equal(+(await usdgBal(d.treasury) - t0).toFixed(6), 0.15);
   });
 
@@ -205,6 +207,7 @@ try {
     await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${PORT_API}/mcp`), { requestInit: { headers: { authorization: `Bearer ${MCPT}` } } }));
     return c;
   };
+  const vaultAddr = () => svc._vault() as any;
   const mcpJson = (r: any) => { if (r.isError) throw new Error(r.content[0].text); return JSON.parse(r.content[0].text); };
   await step("auth: MCP token can't call owner endpoints; owner token can't use /mcp; no token = 401", async () => {
     for (const ep of ["create_session_key", "revoke_session_key", "cancel_order", "submit_attestation", "strategies/activate", "dev/reset"]) assert.equal((await call("POST", ep, {}, MCPT)).status, 403, ep);
@@ -282,6 +285,14 @@ try {
     assert.equal((await call("POST", `strategies/activations/${dhId}/resume`, {}, MCPT)).status, 403);
     assert.equal((await call("POST", `strategies/activations/${dhId}/resume`)).status, 409, "no active key");
     assert.equal((await keeper.executeDue()).length, 0);
+  });
+
+  await step("vault-wide $500/24h cap holds across agent keys (new key can't reset it)", async () => {
+    const spent = (await call("GET", "get_wallet")).body.sessionKey.spentToday; assert.ok(spent > 400, String(spent));
+    const k = await call("POST", "create_session_key", { allowlist: ["TSLA", "AMD"] }); assert.equal(k.status, 200, JSON.stringify(k.body));
+    assert.equal(Number(await read(vaultAddr(), C.vault.abi, "spentLast24h", [k.body.agent])), 0, "new key has its own zero spend");
+    const r = await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 95 });
+    assert.equal(r.status, 403); assert.match(r.body.error, /vault's \$500\.00 rolling-24h cap shared by all agent keys/);
   });
 
   await step("market calendar: DST (14:30-21:00 UTC from Nov 1), holidays, early close; keeper pushes the NYSE session", async () => {

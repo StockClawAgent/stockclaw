@@ -32,15 +32,13 @@ export async function pushOracle(overrides: Record<string, number> = {}) {
 }
 
 /**
- * Market-schedule adapter. Two contract generations:
- *  - "legacy" (current HEAD): PriceOracle.setMarketMode(Schedule|Open|Closed) + setSchedule(openMinute, closeMinute).
- *  - "session" (Quintus's next commit): fail-closed keeper-pushed setSession(openAt, closeAt), closeAt > openAt,
- *    window <= 8h, not in the past; no/expired session = closed. Detected from the ABI, so the switch is automatic.
+ * Market sessions (SERVER_MIGRATION §4): fail-closed keeper-pushed setSession(openAt, closeAt), closeAt > openAt,
+ *    window <= 8h, not in the past; no/expired session = closed. setMarketMode is owner(Safe)-only and never used by the keeper.
  * Calendar: hardcoded NYSE 2026-2027 (DST, holidays, early closes) in marketCalendar.ts.
  * Local demo override (MARKET_MODE=open): legacy => force Open; session => push [now, now+8h], re-push 1h before expiry.
  */
 const hasFn = (name: string) => (C.oracle.abi as any[]).some((x) => x.type === "function" && x.name === name);
-export const scheduleAdapterKind = () => (hasFn("setSession") ? "session" : "legacy");
+export const scheduleAdapterKind = () => (hasFn("setSession") ? "session" : "unsupported");
 let pushedSession: { openAt: number; closeAt: number } | null = null;
 const MAX_WINDOW = 8 * 3600;
 
@@ -60,24 +58,21 @@ export async function syncMarketSchedule() {
     if (win) { await k.write(d.oracle, C.oracle.abi, "setSession", [BigInt(win.openAt), BigInt(win.closeAt)]); pushedSession = win; }
     return { adapter: "session", mode: override ? "open (override)" : "session", session: pushedSession };
   }
-  const mode = Number(await read(d.oracle, C.oracle.abi, "marketMode")); // 0 Schedule, 1 Open, 2 Closed
-  if (override) { if (mode !== 1) await k.write(d.oracle, C.oracle.abi, "setMarketMode", [1]); return { adapter: "legacy", mode: "open (override)" }; }
-  const s = sessionFor(new Date(now * 1000));
-  if (!s.open) { if (mode !== 2) await k.write(d.oracle, C.oracle.abi, "setMarketMode", [2]); return { adapter: "legacy", mode: "closed", reason: s.reason }; }
-  const [o, c] = [Number(await read(d.oracle, C.oracle.abi, "openMinute")), Number(await read(d.oracle, C.oracle.abi, "closeMinute"))];
-  if (o !== s.openMinute || c !== s.closeMinute) await k.write(d.oracle, C.oracle.abi, "setSchedule", [s.openMinute, s.closeMinute]);
-  if (mode !== 0) await k.write(d.oracle, C.oracle.abi, "setMarketMode", [0]);
-  return { adapter: "legacy", mode: "schedule", openMinute: s.openMinute, closeMinute: s.closeMinute, reason: s.reason };
+  throw new Error("Oracle has no setSession(): rebuild artifacts from Quintus's HEAD (legacy schedule oracles are no longer supported)");
 }
 export const _resetPushedSession = () => { pushedSession = null; };
+export const _clearBackoff = () => backoff.clear();
 
-const BENIGN = new Set(["NotYet", "LimitNotMet"]);
+const BENIGN = new Set(["NotYet", "LimitNotMet", "MarketClosed", "StalePrice"]);
+const CAP_ERRORS = new Set(["DailyCapExceeded", "VaultDailyCapExceeded"]);
+const backoff = new Map<string, number>(); // S-8: intentId -> chain time to retry after a cap block
 export async function executeDue() {
   const S = svc._state(), d = svc.dep(), k = svc.keeperWallet(), now = await svc.chainNow();
   const results: { intentId: string; result: string }[] = [];
   for (const o of Object.values(S.orders)) {
     if (o.status !== "open") continue;
     if (!strat.intentRunnable(o)) continue; // strategy intents run only for owner-confirmed, active activations
+    if ((backoff.get(o.intentId) ?? 0) > now) continue;
     const i = svc.fromWire(o.intent);
     if (now > i.expiry) { o.status = "expired"; results.push({ intentId: o.intentId, result: "expired" }); continue; }
     const [execs, nextAt] = await read<[number, number]>(d.router, C.router.abi, "intentState", [o.hash]);
@@ -100,6 +95,7 @@ export async function executeDue() {
       const name = revertReason(e).name, reason = svc.humanReason(e);
       const prev = o.lastError; o.lastError = reason;
       if (name === "NotAgent" || name === "AgentExpired") o.status = "paused";
+      if (CAP_ERRORS.has(name)) backoff.set(o.intentId, now + 3600); // hourly buckets: retry when the window can have moved
       if (name === "NonceIsCancelled") o.status = "cancelled";
       if (!BENIGN.has(name) && prev !== reason) S.history.unshift({ txHash: null, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: "—", fee: "—", ts: new Date().toISOString(), status: "blocked", reason });
       results.push({ intentId: o.intentId, result: `skipped: ${reason}` });

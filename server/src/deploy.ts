@@ -49,6 +49,11 @@ export async function deployAndSeed(): Promise<Deployment> {
     stocks[sym] = { token, feed, pool, decimals: 18 };
     console.log(`  ${sym}: token ${token} feed ${feed} pool ${pool}`);
   }
+  // Simulated Safe step (LOCAL ONLY): the treasury key stands in for the 2-of-3 Safe and accepts the
+  // 2-step ownership of router, oracle, pools and feeds; the deployer then renounces registry admin.
+  for (const a of [router, oracle, ...pools, ...feeds]) await tr.write(a, C.router.abi.concat(C.agg.abi) as any, "acceptOwnership");
+  await dep.write(registry, C.registry.abi, "renounceRole", [await read(registry, C.registry.abi, "DEFAULT_ADMIN_ROLE"), dep.address]);
+  if ((await read<string>(router, C.router.abi, "owner")).toLowerCase() !== tr.address.toLowerCase()) throw new Error("Safe acceptOwnership failed");
   const d: Deployment = { chainId: TESTNET_CHAIN_ID, rpc: RPC_URL, deployedAt: new Date().toISOString(), deployer: dep.address, keeper: kp.address, treasury: tr.address, usdg, oracle, registry, router, stocks };
   fs.mkdirSync(path.dirname(DEPLOYMENTS_FILE), { recursive: true });
   fs.writeFileSync(DEPLOYMENTS_FILE, JSON.stringify(d, null, 2));

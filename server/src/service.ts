@@ -86,7 +86,11 @@ function humanReason(e: unknown): string {
   const usd = (x: unknown) => `$${(Number(x) / 1e6).toFixed(2)}`;
   switch (name) {
     case "PerTradeCapExceeded": return `Over ${usd(args[1])} per-trade cap (trade ${usd(args[0])})`;
-    case "VaultDailyCapExceeded": return `Over ${usd(args[1])} vault rolling-24h cap (would be ${usd(args[0])})`;
+    case "VaultDailyCapExceeded": return `Blocked by limit: vault's ${usd(args[1])} rolling-24h cap shared by all agent keys (would be ${usd(args[0])})`;
+    case "TransferBlocked": return "Token issuer blocked the transfer (frozen / paused / registry)";
+    case "ComplianceBlocked": return "Compliance check blocked the transfer";
+    case "ZeroMinOut": return "minOut must be > 0";
+    case "InsufficientLiquidity": return "Pool liquidity too low for this size";
     case "DailyCapExceeded": return `Over ${usd(args[1])} rolling-24h cap (would be ${usd(args[0])})`;
     case "TokenNotAllowed": return "Ticker not on allowlist";
     case "NotAgent": return "Agent key revoked (paused)";
@@ -176,9 +180,8 @@ export async function create_smart_account(_owner?: string) {
 }
 async function spentLast24h(): Promise<number> {
   if (!S.vault || !S.agent) return 0;
-  const perVault = (C.vault.abi as any[]).some((x) => x.type === "function" && x.name === "vaultSpentLast24h");
-  const [k, vlt] = await Promise.all([read<bigint>(S.vault, C.vault.abi, "spentLast24h", [S.agent.address]), perVault ? read<bigint>(S.vault, C.vault.abi, "vaultSpentLast24h") : Promise.resolve(0n)]);
-  return Number(k > vlt ? k : vlt) / 1e6; // the binding window: max(per-key, vault-wide)
+  // $500/24h is per VAULT (all keys share it; SERVER_MIGRATION §7). Headroom = vaultSpentLast24h.
+  return Number(await read<bigint>(S.vault, C.vault.abi, "vaultSpentLast24h")) / 1e6;
 }
 export async function get_wallet() {
   let status = S.agent?.status;
@@ -186,7 +189,7 @@ export async function get_wallet() {
   return {
     address: S.vault ?? null, chainId: cfg.TESTNET_CHAIN_ID, owner: owner().address,
     ownerSimulated: true, ownerNote: "DEMO: the owner wallet is SIMULATED by the server (no wallet-connect yet). Owner actions require the owner token.",
-    sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h", allowlist: S.agent.allowlist } : null,
+    sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h, per vault (shared by all keys)", allowlist: S.agent.allowlist } : null,
   };
 }
 export type Caps = { perTradeCap?: number; dailyCap?: number; days?: number; allowlist?: string[] };
@@ -202,9 +205,6 @@ export async function create_session_key(caps: Caps = {}) {
   const pool = cfg.keys.agentPool();
   if (S.nextAgentIdx >= pool.length) throw new ApiError(503, "Agent key pool exhausted (restart local chain)");
   const o = owner(), v = S.vault;
-  // S-2 interim: if the deployed vault tracks spend per agent key only, a fresh key would reset the 24h window.
-  const perVault = (C.vault.abi as any[]).some((x) => x.type === "function" && x.name === "vaultSpentLast24h");
-  if (!perVault && S.agent && (await spentLast24h()) > 0) throw new ApiError(409, "Can't re-issue the agent key while the vault has spend in the last 24h (per-key cap tracking)");
   let revoked: { key: string; agent: Address; txHash: string } | null = null;
   if (S.agent?.status === "active") { const old = S.agent; const r = await revoke_session_key(); revoked = { key: old.id, agent: old.address, txHash: r.txHash }; } // editing limits = revoke + re-issue
   // allowlist: mUSDG + chosen tickers on, everything else off
@@ -254,7 +254,10 @@ export async function quote_swap(tokenIn: string, tokenOut: string, amountIn: nu
   const ti = token(tokenIn), to = token(tokenOut), pool = poolFor(tokenIn, tokenOut);
   const raw = units(amountIn, ti.decimals);
   // TODO(Quintus): switch to oracle-anchored StockClawPool.quote() once docs/SERVER_MIGRATION.md lands (quote engine + keeper limit fills).
-  const [netOut, fee] = await read<[bigint, bigint]>(dep().router, C.router.abi, "quote", [pool, ti.address, to.address, raw]);
+  // Oracle-anchored StockClawPool.quote() (== swap() in the same block) on the post-fee amount.
+  const feeBpsNow = BigInt(await read<number>(dep().router, C.router.abi, "feeBps"));
+  const fee = raw * feeBpsNow / 10_000n;
+  const netOut = await read<bigint>(pool, C.pool.abi, "quote", [ti.address, to.address, raw - fee]);
   const minOutRaw = netOut * BigInt(10_000 - slippageBps) / 10_000n;
   const pi = (await priceE8(tokenIn)).p, po = (await priceE8(tokenOut)).p;
   const fair = (amountIn - fmt(fee, ti.decimals)) * Number(pi) / Number(po);

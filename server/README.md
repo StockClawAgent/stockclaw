@@ -74,3 +74,10 @@ Definitions live in `strategies/<id>/<version>/{prompt.md,schema.json}` plus `ca
 | `GET /api/strategies/status`, `GET /api/strategies/activations[/:id]` | `get_strategy_status` | `{activationId, strategyId, version, status: pending\|active\|paused\|stopped\|completed\|rejected, strategyHash, params, proposedBy, confirmedBy, confirmedAt, intents[{intentId, role: dca\|rung\|take-profit, rung, status, nextRunAt, execs, limitPrice, lastError}], fills[], spent24h, remaining24h}` |
 | `POST /api/strategies/activations/:id/pause` / `stop` | `pause_strategy` / `stop_strategy` | `{activationId, status, cancelled:[nonce]}` |
 | `POST /api/strategies/activations/:id/resume` (owner) | — | `{activationId, status:"active", intents}` |
+
+## Contracts at 6be1c43 (docs/SERVER_MIGRATION.md)
+- Quotes come from the oracle-anchored `StockClawPool.quote()` on the post-fee amount, which equals the `swap()` fill. The e2e checks quote == fill.
+- The $500/24h cap is per vault (`vaultSpentLast24h`, shared by all agent keys). `spentToday` and the headroom use it. `VaultDailyCapExceeded` shows as "Blocked by limit: vault's $500 rolling-24h cap shared by all agent keys". The legacy per-key re-issue block has been removed.
+- The keeper backs off for 1h after a cap block (S-8). `NotYet`, `LimitNotMet`, `MarketClosed` and `StalePrice` are treated as benign.
+- After deploy the market is closed: `npm start` pushes a session at startup, and the keeper re-pushes before expiry.
+- **Simulated Safe (local only):** after seeding, the treasury key (anvil #2, standing in for the 2-of-3 Safe) calls `acceptOwnership()` on the router, oracle, pools and feeds, and the deployer renounces registry admin. On testnet the real Safe does this through the Safe tx builder. Owner actions such as `setFeeBps` and `setMarketMode` then need the Safe.
