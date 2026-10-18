@@ -16,6 +16,8 @@ let BK=null,BKerr=null;
 fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/")render()});
 const SH=["#C6FF3D","#B2EB33","#9DD62B","#89C224","#76AD1E","#649918","#538513"];
 const BAV={"power-nuclear":"power","power":"power"};
+// File disclaimer minus sentences our own line already says (Lucius's JSON is not edited).
+const discExtra=()=>String((BK&&BK.disclaimer)||"").split(/(?<=\.)\s+/).filter(x=>x&&!/^tools, not investment advice\.?$/i.test(x.trim())&&!/^not an etf or fund\.?$/i.test(x.trim())).join(" ");
 const pct=(v)=>(+v).toFixed(2).replace(/\.00$/,"")+"%";
 function baskets(){const ph=!BK||BK.status==="placeholder";const tag='<span class="lp-ph">Placeholder weights, not real data</span>';
  const list=(BK&&BK.baskets)||[];const R_=(BK&&BK.rules)||{};
@@ -27,7 +29,7 @@ function baskets(){const ph=!BK||BK.status==="placeholder";const tag='<span clas
 <p class="lp-big lp-bk-intro">A basket is a themed group of tokenized stocks your agent buys in one go. Just say "get me some AI."</p>${body}
 <p class="lp-muted">${rules} ${meta}</p>
 <p class="lp-muted">Basket tickers are Robinhood Chain mainnet listings; the testnet demo trades only PLTR, NFLX, AMD, AMZN and TSLA.</p>
-<p class="lp-bk-disc">Baskets, not ETFs or funds. Tools, not investment advice.</p>${BK&&BK.disclaimer?`<p class="lp-bk-disc lp-bk-disc2">${esc(BK.disclaimer)}</p>`:""}</section>`}
+<p class="lp-bk-disc">Baskets, not ETFs or funds. Tools, not investment advice.${discExtra()?` ${esc(discExtra())}`:""}</p></section>`}
 const esc=(v)=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function Landing(){return `<div class="lp">
 <header class="lp-nav"><a class="lp-logo" href="#/"><img src="logo-lockup.svg" width="110" height="28" alt="StockClaw home"></a>
