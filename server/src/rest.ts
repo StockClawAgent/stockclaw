@@ -17,25 +17,49 @@ const ownerOnly: express.RequestHandler = (req, res, next) => (ownerToken() && b
 const anyRole: express.RequestHandler = (req, res, next) => (isOwner(req) || isAgent(req) ? next() : res.status(401).json({ error: "Missing or bad bearer token" }));
 const mcpOnly: express.RequestHandler = (req, res, next) => (mcpToken() && bearer(req) !== mcpToken() ? res.status(401).json({ error: "MCP token required" }) : next());
 
-// B8: fixed-window rate limit per token (hashed key) or IP. REST and MCP have separate budgets.
-function rateLimiter(perMin: number, scope: string): express.RequestHandler {
-  const hits = new Map<string, { win: number; n: number }>();
-  return (req, res, next) => {
-    const tok = bearer(req), key = `${scope}:${tok ? "t:" + tok.slice(-12) : "ip:" + (req.ip ?? "?")}`, win = Math.floor(Date.now() / 60_000);
-    const h = hits.get(key);
-    if (!h || h.win !== win) hits.set(key, { win, n: 1 });
-    else if (++h.n > perMin) { res.setHeader("Retry-After", String(60 - Math.floor((Date.now() / 1000) % 60))); return res.status(429).json({ error: "Rate limit exceeded" }); }
-    if (hits.size > 10_000) hits.clear();
-    next();
-  };
+// B8 / SC-2: fixed-window limiter with TTL + max-size eviction.
+export class Limiter {
+  private hits = new Map<string, { win: number; n: number; seen: number }>();
+  constructor(public perMin: number, private maxKeys = 50_000, private ttlMs = 120_000) {}
+  /** returns seconds to wait (>0) if over the limit, else 0 */
+  hit(key: string): number {
+    const now = Date.now(), win = Math.floor(now / 60_000);
+    if (this.hits.size >= this.maxKeys) this.evict(now);
+    const h = this.hits.get(key);
+    if (!h || h.win !== win) { this.hits.delete(key); this.hits.set(key, { win, n: 1, seen: now }); return 0; }
+    h.seen = now;
+    return ++h.n > this.perMin ? 60 - Math.floor((now / 1000) % 60) : 0;
+  }
+  private evict(now: number) {
+    for (const [k, v] of this.hits) if (now - v.seen > this.ttlMs) this.hits.delete(k);
+    while (this.hits.size >= this.maxKeys) this.hits.delete(this.hits.keys().next().value as string); // oldest first (insertion order)
+  }
+  get size() { return this.hits.size; }
 }
+const deny = (res: express.Response, wait: number) => { res.setHeader("Retry-After", String(wait)); res.status(429).json({ error: "Rate limit exceeded" }); };
+const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?";
 
-export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number } = {}) {
+export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerMin?: number } = {}) {
   const app = express();
   app.use(express.json({ limit: "100kb" }));
   mon && svc.setCapBlockHook(mon.recordCapBlock);
-  app.use("/api", rateLimiter(opts.restPerMin ?? Number(process.env.RATE_LIMIT_REST_PER_MIN ?? 300), "rest"));
-  app.use("/mcp", rateLimiter(opts.mcpPerMin ?? Number(process.env.RATE_LIMIT_MCP_PER_MIN ?? 120), "mcp"));
+  const restPerMin = opts.restPerMin ?? Number(process.env.RATE_LIMIT_REST_PER_MIN ?? 300);
+  const mcpPerMin = opts.mcpPerMin ?? Number(process.env.RATE_LIMIT_MCP_PER_MIN ?? 120);
+  // Stage 1 (before auth): per-IP per scope + a global per-IP limit. Fake tokens can't create new buckets.
+  const ipGlobal = new Limiter(opts.ipPerMin ?? Number(process.env.RATE_LIMIT_IP_PER_MIN ?? 600));
+  const ipRest = new Limiter(restPerMin), ipMcp = new Limiter(mcpPerMin);
+  app.use(["/api", "/mcp"], (req, res, next) => {
+    const ip = ipOf(req), w = ipGlobal.hit(ip) || (req.baseUrl === "/mcp" ? ipMcp : ipRest).hit(ip);
+    return w ? deny(res, w) : next();
+  });
+  // Stage 2 (after token validation): per-role buckets, keyed only for VALID tokens.
+  const tokRest = new Limiter(restPerMin), tokMcp = new Limiter(mcpPerMin);
+  app.use(["/api", "/mcp"], (req, res, next) => {
+    const t = bearer(req), role = t && t === ownerToken() ? "owner" : t && t === mcpToken() ? "agent" : null;
+    if (!role) return next(); // invalid/absent token: auth middleware rejects; already IP-limited
+    const w = (req.baseUrl === "/mcp" ? tokMcp : tokRest).hit(role);
+    return w ? deny(res, w) : next();
+  });
   const geo = (req: express.Request) => (req.headers["cf-ipcountry"] as string | undefined) ?? undefined;
   const h = (fn: (req: express.Request) => unknown) => async (req: express.Request, res: express.Response) => {
     svc.countCall();

@@ -11,7 +11,8 @@ const PORT_RPC = Number(process.env.E2E_RPC_PORT ?? 8546), PORT_API = Number(pro
 process.env.RPC_URL = `http://127.0.0.1:${PORT_RPC}`;
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-e2e-"));
 process.env.KEEPER = "off";
-process.env.STOCKCLAW_NO_ENV_FILE = "1"; // never read server/.env.demo in tests
+process.env.STOCKCLAW_NO_ENV_FILE = "1";
+process.env.RATE_LIMIT_REST_PER_MIN = process.env.RATE_LIMIT_IP_PER_MIN = "100000"; // main test app; limits tested on a small app // never read server/.env.demo in tests
 process.env.MARKET_MODE = "open";
 const OWNER = (process.env.OWNER_API_TOKEN = "owner-e2e-token"), MCPT = (process.env.MCP_API_TOKEN = "mcp-e2e-token");
 const ANVIL = process.env.ANVIL_BIN ?? (fs.existsSync(`${os.homedir()}/.foundry/bin/anvil`) ? `${os.homedir()}/.foundry/bin/anvil` : "anvil");
@@ -313,6 +314,19 @@ try {
     const m: number[] = [];
     for (let i = 0; i < 3; i++) m.push((await fetch(`http://127.0.0.1:${PORT_API + 1}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${MCPT}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) })).status);
     assert.equal(m[2], 429);
+    // SC-2: random fake tokens share the IP bucket (no bypass)
+    const small2 = buildApp({ restPerMin: 5, mcpPerMin: 2, ipPerMin: 50 }).listen(PORT_API + 12);
+    const fake: number[] = [];
+    for (let i = 0; i < 8; i++) fake.push((await fetch(`http://127.0.0.1:${PORT_API + 12}/api/list_assets`, { headers: { authorization: `Bearer fake_${Math.random()}` } })).status);
+    assert.deepEqual(fake.slice(0, 5), [401, 401, 401, 401, 401]); assert.deepEqual(fake.slice(5), [429, 429, 429]);
+    small2.close();
+    const small3 = buildApp({ restPerMin: 1000, mcpPerMin: 1000, ipPerMin: 4 }).listen(PORT_API + 13);
+    const g: number[] = [];
+    for (const u of ["api/list_assets", "mcp", "api/get_wallet", "mcp", "api/list_assets"]) g.push((await fetch(`http://127.0.0.1:${PORT_API + 13}/${u}`, { method: u === "mcp" ? "POST" : "GET", headers: { "content-type": "application/json", authorization: `Bearer x${Math.random()}` }, body: u === "mcp" ? "{}" : undefined })).status);
+    assert.equal(g[4], 429, "global per-IP limit spans REST + MCP: " + g);
+    small3.close();
+    const { Limiter } = await import("../src/rest.js");
+    const L = new Limiter(10, 100); for (let i = 0; i < 1000; i++) L.hit("k" + i); assert.ok(L.size <= 100, "bounded size");
     small.close();
     // health: fresh pushes = no oracle alert; after 20 min without pushes ORACLE_STALE fires; cap-block spike counted
     await keeper.pushOracle();
@@ -325,6 +339,11 @@ try {
     await warp(9 * 3600); // past the override session's close, no new session pushed
     hh = (await call("GET", "health")).body; assert.ok(hh.alerts.some((a: any) => a.code === "SESSION_CLOSED"), JSON.stringify(hh.alerts));
     process.env.MARKET_MODE = "open";
+  });
+
+  await step("SC-1: local RPC detection parses the URL (no userinfo / suffix tricks)", async () => {
+    for (const u of ["http://127.0.0.1:8545", "http://localhost:8545", "http://[::1]:8545", "https://LOCALHOST"]) assert.equal(cfg.isLocalRpc(u), true, u);
+    for (const u of ["http://127.0.0.1@remote.example:8545", "http://user:pw@localhost:8545", "http://localhost.evil.com", "http://127.0.0.1.nip.io", "http://0.0.0.0:8545", "https://rpc.testnet.chain.robinhood.com", "file:///127.0.0.1", "not a url", "http://127.0.0.2"]) assert.equal(cfg.isLocalRpc(u), false, u);
   });
 
   await step("market calendar: DST (14:30-21:00 UTC from Nov 1), holidays, early close; keeper pushes the NYSE session", async () => {

@@ -15,7 +15,14 @@ import fsx from "node:fs";
     for (const line of fsx.readFileSync(f, "utf8").split("\n")) { const m = line.match(/^\s*([A-Z0-9_]+)=(.*)$/); if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].trim(); }
 }
 export const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8545";
-export const IS_LOCAL = /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)(:\d+)?/.test(RPC_URL);
+/** SC-1: parse with new URL(); hostname must be exactly 127.0.0.1, localhost or ::1; no userinfo. */
+export function isLocalRpc(url: string): boolean {
+  let u: URL; try { u = new URL(url); } catch { return false; }
+  if (!["http:", "https:", "ws:", "wss:"].includes(u.protocol)) return false;
+  if (u.username || u.password) return false;
+  return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(u.hostname.toLowerCase());
+}
+export const IS_LOCAL = isLocalRpc(RPC_URL);
 export const PORT = Number(process.env.PORT ?? 8787);
 export const DATA_DIR = process.env.DATA_DIR ?? path.join(ROOT, "data");
 export const DEPLOYMENTS_FILE = process.env.DEPLOYMENTS_FILE ?? path.join(DATA_DIR, IS_LOCAL ? "local-46630.json" : "testnet-46630.json");
