@@ -14,7 +14,7 @@ import { log, withCtx } from "./log.js";
 
 const ApiError = svc.ApiError;
 const RULES = { minLegUsd: 5, maxLegUsd: 98, maxBasketUsd: cfg.MAX_PER_DAY_USD, previewTtlSec: 60, proposalTtlSec: 600 };
-export const DISCLAIMER = "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. You confirm every buy. Testnet tokens have no value. Legs execute one by one (no atomicity across legs).";
+export const DISCLAIMER = "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. Buys within your vault's onchain limits run automatically. Testnet tokens have no value. Legs execute one by one (no atomicity across legs).";
 
 // ---------------------------------------------------------------- registry
 /** Python json.dumps(sort_keys=True, separators=(',',':')) compatible; weightPct is a float in the source files. */

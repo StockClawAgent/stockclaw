@@ -193,7 +193,7 @@ Plain swaps by the agent key within caps are already allowed today. For baskets,
 
 ## 5. Naming & copy (Marcus)
 - Call them **"baskets"** or **"themes"**. **Never "ETF", "index", "fund" or "portfolio management"**, and never "Robinhood baskets".
-- "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. You confirm every buy. Testnet tokens have no value."
+- "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. Buys within your vault's onchain limits run automatically. Testnet tokens have no value."
 - Show the composition, weights, version and that membership is editorial. No performance numbers.
 
 ## 6. Friday verdict
