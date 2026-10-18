@@ -1,0 +1,59 @@
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#1a1a1a;background:#f4f4f5}
+a{color:#1d4ed8}.skip{position:absolute;left:-9999px}.skip:focus{left:8px;top:8px;background:#fff;padding:6px;z-index:99}
+.tnbar{position:sticky;top:0;z-index:50;background:#111;color:#fff;text-align:center;font-weight:600;padding:6px;font-size:14px}.tnbar a{color:#fde68a;margin-left:12px}
+main{max-width:1040px;margin:0 auto;padding:20px}main:focus{outline:none}
+.card{background:#fff;border:1px solid #d4d4d8;border-radius:8px;padding:18px;margin:0 0 16px}
+h1{font-size:28px;margin:.2em 0}h2{font-size:20px;margin:.2em 0 .5em}h3{font-size:16px;margin:.4em 0}
+button,.btn{font:inherit;cursor:pointer;background:#18181b;color:#fff;border:2px solid #18181b;padding:7px 14px;border-radius:6px;text-decoration:none;display:inline-block}
+button.sec,.btn.sec{background:#fff;color:#18181b}button.danger{background:#fff;color:#b91c1c;border-color:#b91c1c}button:disabled{opacity:.45;cursor:not-allowed}
+:focus-visible{outline:3px solid #2563eb!important;outline-offset:2px}
+input,select{font:inherit;border:1px solid #71717a;border-radius:4px;padding:5px 8px}label{display:block;margin:8px 0}
+.badge{display:inline-block;border:1.5px solid #18181b;border-radius:4px;font-size:12px;font-weight:700;padding:0 6px;background:#fef9c3;vertical-align:middle;margin-left:6px}
+.nav{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.logo{font-weight:800;font-size:18px;text-decoration:none;color:#111}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}.muted{color:#52525b}
+.steps{display:flex;gap:6px;list-style:none;padding:0;margin:0 0 16px}.steps li{flex:1;border:1px solid #a1a1aa;border-radius:6px;padding:6px;text-align:center;font-size:13px;background:#fff}
+.steps .on{background:#18181b;color:#fff;font-weight:700}.steps .done{background:#e4e4e7}
+.st{border-left:5px solid #71717a;padding:8px 12px;background:#fafafa;margin:8px 0;border-radius:4px}.st.ok{border-color:#15803d}.st.err{border-color:#b91c1c;background:#fef2f2}.st.wait{border-color:#ca8a04}
+table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #e4e4e7;padding:7px;text-align:left}th{font-size:13px;color:#52525b}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin:10px 0}.tabs a{padding:7px 12px;border:1px solid #a1a1aa;border-radius:6px;text-decoration:none;color:#111;background:#fff}.tabs a[aria-current=page]{background:#18181b;color:#fff}
+.disc{font-size:13px;color:#3f3f46;border-top:1px solid #d4d4d8;margin-top:16px;padding-top:8px}
+pre{background:#f4f4f5;border:1px solid #d4d4d8;padding:8px;white-space:pre-wrap;border-radius:4px}
+.chip{display:inline-flex;gap:4px;align-items:center;border:1px solid #71717a;border-radius:14px;padding:1px 4px 1px 10px;margin:2px}.chip button{padding:0 6px;font-size:12px;background:#fff;color:#111;border:1px solid #aaa;border-radius:10px}
+.dev{border:2px dashed #a1a1aa;padding:8px;font-size:13px;margin-top:12px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.meter{height:8px;background:#e4e4e7;border-radius:4px}.meter i{display:block;height:100%;background:#3f3f46;border-radius:4px}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:90}#modal[hidden]{display:none}
+.dlg{background:#fff;border-radius:8px;padding:20px;max-width:440px}.sr{position:absolute;left:-9999px}
+.stager li{margin:6px 0;list-style:none}.hero{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:center}.ill{background:#e4e4e7;border-radius:8px;padding:16px;font-size:14px}
+@media(max-width:700px){.hero{grid-template-columns:1fr}}
+main:focus-visible{outline:none!important}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+@media(max-width:600px){main{padding:10px}h1{font-size:22px}.card{padding:12px}.steps{gap:3px}.steps li{font-size:11px;padding:4px 2px}
+.nav{flex-direction:column;align-items:flex-start}.tabs a{padding:6px 9px;font-size:14px}input[type=number],input[type=email]{width:100%}label.row input{width:auto}
+.tnbar{font-size:12px}.dlg{margin:12px}td,th{padding:5px;font-size:13px}pre{font-size:12px}.ill{font-size:13px}}
+@media(max-width:600px){.tw table,.tw tbody,.tw tr,.tw td{display:block;width:100%}.tw thead{position:absolute;left:-9999px}
+.tw tr{border:1px solid #e4e4e7;border-radius:6px;margin:0 0 8px;padding:4px 8px}.tw td{border:0;padding:3px 0;display:flex;gap:8px}
+.tw td::before{content:attr(data-l);flex:0 0 42%;font-size:12px;color:#52525b;font-weight:600}}
+.err-t{color:#b91c1c;font-size:13px}
+.sgrid{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.scard{display:flex;gap:12px;border:1px solid #d4d4d8;border-radius:8px;padding:12px;background:#fff}.scard h3{margin:0 0 4px}.scard p{margin:4px 0}
+.scard.soon{background:#f4f4f5;color:#52525b}.av{border-radius:12px;flex:0 0 auto;background:#0b1020}.av.grey{filter:grayscale(1);opacity:.55}
+.rchip{display:inline-block;border:1px solid #a1a1aa;border-radius:10px;padding:0 8px;font-size:12px;margin:2px 0}.chip2{font-size:12px;background:#15803d;color:#fff;border-radius:4px;padding:0 6px}
+fieldset{border:1px solid #d4d4d8;border-radius:6px;margin:8px 0}
+@media(max-width:600px){.sgrid{grid-template-columns:1fr}.scard{flex-direction:column}.scard .av{width:56px;height:56px}}
+.av{border-radius:14px;background:radial-gradient(circle at 50% 40%,#1e2a4a,#0a0f1e);padding:6px;box-shadow:inset 0 0 0 1px #2a3556}
+.av.grey{filter:grayscale(1);opacity:.6}
+.linkbtn{background:none;border:0;padding:0;color:inherit;text-decoration:underline;font:inherit;cursor:pointer}
+.tokdlg{max-width:440px;border:1px solid #ccc;border-radius:10px;padding:20px}.tokdlg input{width:100%;margin:6px 0 12px}.tokdlg::backdrop{background:rgba(0,0,0,.4)}
+.ptab{width:100%;margin:8px 0 12px}.ptab th{text-align:left;font-weight:500;width:55%}.ptab code{font-size:.8em;color:#666}.ptab caption{text-align:left;font-weight:600;padding:4px 0}
+
+/* --- Brand tokens: black + lime (rebrand 2026-10-18). Lime is used only as a fill on dark or with #0A0A0A text; #3F6212 for text/links/focus on light. --- */
+:root{--sc-ink:#0A0A0A;--sc-lime:#C6FF3D;--sc-lime-ink:#3F6212}
+a{color:var(--sc-lime-ink)}
+:focus-visible{outline-color:var(--sc-lime-ink)!important}
+.tnbar{background:var(--sc-ink)}.tnbar a{color:var(--sc-lime)}
+button,.btn{background:var(--sc-ink);border-color:var(--sc-ink);color:var(--sc-lime)}
+button.sec,.btn.sec{background:#fff;color:var(--sc-ink)}button.danger{background:#fff;color:#b91c1c;border-color:#b91c1c}
+.badge{background:var(--sc-lime);border-color:var(--sc-ink);color:var(--sc-ink)}
+.steps .on,.tabs a[aria-current=page]{background:var(--sc-ink);color:var(--sc-lime)}
+.chip2{background:var(--sc-lime);color:var(--sc-ink)}
+.logo{display:inline-block;width:132px;height:40px;background:var(--sc-ink) url(logo-lockup.svg) no-repeat center/104px auto;border-radius:8px;color:transparent!important;overflow:hidden;white-space:nowrap}
