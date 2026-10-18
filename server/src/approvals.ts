@@ -149,7 +149,8 @@ async function execApproved(a: Approval) {
     a.status = "executed"; a.txHash = txHash;
     a.exitApproval = { type: "SellApproval", vault, amountUsd: Number(amountUsd) / 1e6, expiry: new Date(expiry * 1000).toISOString(), nonce: nonce.toString(), signature, relayedBy: "keeper", relayTxHash: relay.hash, minOut: Number(minOut) / 1e6, amountOut: out };
     put(a);
-    svc._pushHistory({ txHash, explorerUrl: svc._txOut(txHash).explorerUrl, type: "swap", in: `${a.amountIn.toFixed(2)} ${a.ticker}`, out: `${out.toFixed(6)} mUSDG`, fee: `${(a.amountIn * 0.003).toFixed(6)} ${a.ticker}`, ts: nowIso(), status: "filled", side: "sell", reason: "owner-approved sell" });
+    svc._pushHistory({ txHash, explorerUrl: svc._txOut(txHash).explorerUrl, type: "swap", in: `${a.amountIn.toFixed(2)} ${a.ticker}`, out: `${out.toFixed(6)} mUSDG`, fee: `${(a.amountIn * 0.003).toFixed(6)} ${a.ticker}`, ts: nowIso(), status: "filled", side: "sell", reason: "owner-approved sell", keyId: a.agentKeyId, usd: a.estUsd });
+    svc._trade()?.record(a.agentKeyId, "sell", a.estUsd, `approval:${id}`);
     log.info("approved sell executed", { approvalId: id, txHash, relayTxHash: relay.hash });
     return pub(a);
   } catch (e) {

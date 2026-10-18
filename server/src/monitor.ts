@@ -5,6 +5,7 @@ import { formatEther } from "viem";
 import * as svc from "./service.js";
 import { pub, nonceState } from "./chain.js";
 import * as jobs from "./jobs.js";
+import * as brk from "./breaker.js";
 import { getDb } from "./db.js";
 import { log } from "./log.js";
 import { KEEPER_INTERVAL_MS } from "./config.js";
@@ -61,6 +62,7 @@ export async function health() {
     if (total >= 5 && bad / total > 0.2) alerts.push({ code: "TX_FAILURE_RATE", severity: "warn", message: `${bad}/${total} txs failed in the last hour` });
   } catch (e) { db = { ok: false, error: (e as Error).message }; alerts.push({ code: "DB_ERROR", severity: "critical", message: (e as Error).message.slice(0, 120) }); }
   if (keeperOn && st.lastTickOk && Date.now() - st.lastTickOk > KEEPER_INTERVAL_MS + 120_000 && !codesHas(alerts, "KEEPER_STALLED")) alerts.push({ code: "KEEPER_LATE", severity: "warn", message: "keeper tick more than 2 min late" });
+  for (const t of brk.tripped()) alerts.push({ code: "KEY_BREAKER_TRIPPED", severity: "warn", message: `agent key ${t.key_id} paused: ${t.reason}` });
   st.capBlocks = st.capBlocks.filter((t) => Date.now() - t < 3600_000);
   if (st.capBlocks.length >= CAP_SPIKE) alerts.push({ code: "CAP_BLOCK_SPIKE", severity: "warn", message: `${st.capBlocks.length} cap-blocked trades in the last hour` });
   const codes = new Set(alerts.map((a) => a.code));

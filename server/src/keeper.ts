@@ -82,6 +82,9 @@ export async function executeDue() {
     if (Number(execs) >= i.maxExecs) { o.status = "filled"; continue; }
     const due = Number(nextAt) === 0 ? i.startTime : Number(nextAt);
     if (now < due) continue;
+    const keyId = svc.keyIdOf(o.agent);
+    try { svc._trade()?.guard(keyId, `${o.intentId}:${o.execsDone}`); }
+    catch (e) { if (o.lastError !== (e as Error).message) { o.lastError = (e as Error).message; } results.push({ intentId: o.intentId, result: `held: ${(e as Error).message}` }); continue; }
     try {
       const outTok = (o.tokenOut === "mUSDG" ? d.usdg : d.stocks[o.tokenOut].token);
       const before = await read<bigint>(outTok, C.usdg.abi, "balanceOf", [i.account]);
@@ -91,7 +94,9 @@ export async function executeDue() {
       o.execsDone = Number(n2); o.txHashes.push(hash); o.lastError = undefined;
       o.nextRunAt = o.type === "DCA" && o.execsDone < o.maxExecs ? new Date(Number(next2) * 1000).toISOString() : null;
       if (o.execsDone >= o.maxExecs) o.status = "filled";
-      S.history.unshift({ txHash: hash, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: `→ ${o.tokenOut}`, fee: `${(o.amount * 0.003).toFixed(4)} ${o.tokenIn}`, ts: new Date().toISOString(), status: "filled" });
+      const side = o.tokenIn === "mUSDG" ? "buy" : "sell", usdV = side === "buy" ? o.amount : o.amount * Number((await svc.priceE8(o.tokenIn)).p) / 1e8;
+      svc._pushHistory({ txHash: hash, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: `${received.toFixed(6)} ${o.tokenOut}`, fee: `${(o.amount * 0.003).toFixed(4)} ${o.tokenIn}`, ts: new Date().toISOString(), status: "filled", side, keyId, usd: +usdV.toFixed(2) });
+      svc._trade()?.record(keyId, side, usdV, `${o.intentId}:${o.execsDone - 1}`);
       results.push({ intentId: o.intentId, result: `executed ${o.execsDone}/${o.maxExecs}` });
       if (o.activationId) { const stock = o.tokenOut === "mUSDG" ? o.tokenIn : o.tokenOut; await strat.onFill(o, received, Number((await svc.priceE8(stock)).p) / 1e8, hash); }
     } catch (e) {
@@ -101,7 +106,7 @@ export async function executeDue() {
       if (CAP_ERRORS.has(name)) mon.recordCapBlock();
       if (CAP_ERRORS.has(name)) backoff.set(o.intentId, now + 3600); // hourly buckets: retry when the window can have moved
       if (name === "NonceIsCancelled") o.status = "cancelled";
-      if (!BENIGN.has(name) && prev !== reason) S.history.unshift({ txHash: null, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: "—", fee: "—", ts: new Date().toISOString(), status: "blocked", reason });
+      if (!BENIGN.has(name) && prev !== reason) svc._pushHistory({ txHash: null, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: "—", fee: "—", ts: new Date().toISOString(), status: "blocked", reason });
       results.push({ intentId: o.intentId, result: `skipped: ${reason}` });
     }
   }

@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS sells(id INTEGER PRIMARY KEY AUTOINCREMENT, vault TEX
 CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, vault TEXT, status TEXT, created_at TEXT, expires_at TEXT, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS passkeys(id TEXT PRIMARY KEY, owner TEXT, public_key TEXT, counter INTEGER, created_at TEXT);
 CREATE TABLE IF NOT EXISTS webauthn_challenges(k TEXT PRIMARY KEY, challenge TEXT, created_at INTEGER);
+CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, kind TEXT, key_id TEXT, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS key_trades(id INTEGER PRIMARY KEY AUTOINCREMENT, key_id TEXT, ts INTEGER, side TEXT, usd REAL, ref TEXT);
+CREATE INDEX IF NOT EXISTS key_trades_k ON key_trades(key_id, ts);
+CREATE TABLE IF NOT EXISTS key_breaker(key_id TEXT PRIMARY KEY, tripped INTEGER, tripped_at INTEGER, resumed_at INTEGER, reason TEXT);
 CREATE TABLE IF NOT EXISTS nonces(signer TEXT PRIMARY KEY, next INTEGER NOT NULL, updated_at TEXT);
 `;
 export function getDb() {

@@ -12,6 +12,13 @@ type SellGuard = (p: { tokenIn: string; tokenOut: string; amountIn: number }) =>
 let sellGuard: SellGuard | undefined, sellRecorder: ((p: { vault: Address; ts: number; usd: number; txHash: string }) => void) | undefined;
 export const setSellGuard = (f: SellGuard) => { sellGuard = f; };
 export const setSellRecorder = (f: typeof sellRecorder) => { sellRecorder = f; };
+type TradeHooks = { guard: (keyId: string, ref: string) => void; record: (keyId: string, side: "buy" | "sell", usd: number, ref: string) => void };
+let tradeHooks: TradeHooks | undefined;
+export const setTradeHooks = (h: TradeHooks) => { tradeHooks = h; };
+type ActivityHook = (h: HistoryRow) => void;
+let activityHook: ActivityHook | undefined;
+export const setActivityHook = (f: ActivityHook) => { activityHook = f; };
+export const keyIdOf = (addr: string) => "sk_" + addr.slice(2, 8).toLowerCase();
 let onCapBlock: (() => void) | undefined;
 export const setCapBlockHook = (f: () => void) => { onCapBlock = f; };
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
@@ -26,7 +33,7 @@ type Order = {
   agent: Address; intent: Record<string, string | number>; sig: Hex; hash: Hex; lastError?: string; txHashes: string[];
   activationId?: string; role?: "dca" | "rung" | "take-profit"; rung?: number; parent?: string;
 };
-type HistoryRow = { txHash: string | null; explorerUrl?: string; type: string; in: string; out: string; fee: string; ts: string; status: "filled" | "blocked" | "failed"; reason?: string; side?: "buy" | "sell"; executionId?: string };
+type HistoryRow = { txHash: string | null; explorerUrl?: string; type: string; in: string; out: string; fee: string; ts: string; status: "filled" | "blocked" | "failed"; reason?: string; side?: "buy" | "sell"; executionId?: string; keyId?: string; usd?: number };
 type State = {
   country?: string; attestation?: { sig: string; ts: string; expiresAt: string; signer: Address; txHash: string };
   vault?: Address; nextAgentIdx: number;
@@ -308,7 +315,7 @@ export async function quote_swap(tokenIn: string, tokenOut: string, amountIn: nu
   const feeAmount = fmt(fee, ti.decimals);
   return { amountIn, feeAmount, feeBps: Number(await read(dep().router, C.router.abi, "feeBps")), netIn: amountIn - feeAmount, amountOut, minOut: fmt(minOutRaw, to.decimals), route: "StockClawPool", priceImpact: fair ? +Math.max(0, (1 - amountOut / fair) * 100).toFixed(4) : 0, quoteId, expiresAt: new Date(expiresAt).toISOString() };
 }
-function pushHistory(h: HistoryRow) { S.history.unshift(h); S.history = S.history.slice(0, 500); save(); }
+function pushHistory(h: HistoryRow) { S.history.unshift(h); S.history = S.history.slice(0, 500); save(); if (h.status === "filled") activityHook?.(h); }
 
 export async function execute_swap(arg: string | { tokenIn: string; tokenOut: string; amountIn: number; minOut?: number }) {
   await requireEligible();
@@ -329,6 +336,8 @@ export async function execute_swap(arg: string | { tokenIn: string; tokenOut: st
     pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason: "Agent key revoked (paused)", side });
     throw new ApiError(403, "Agent key revoked (paused)");
   }
+  const ref = "swap_" + randomBytes(6).toString("hex"), estUsd = await usdOf(ti.symbol, p.amountIn);
+  tradeHooks?.guard(S.agent.id, ref);
   let sellUsd = 0;
   if (side === "sell" && to.symbol === "mUSDG" && sellGuard) { const g = await sellGuard({ tokenIn: ti.symbol, tokenOut: to.symbol, amountIn: p.amountIn }); if (g.hold) return g.result as any; sellUsd = g.estUsd; }
   const a = agentWallet(), raw = units(p.amountIn, ti.decimals), deadline = BigInt((await chainNow()) + 300);
@@ -338,7 +347,8 @@ export async function execute_swap(arg: string | { tokenIn: string; tokenOut: st
     const { hash } = await a.write(S.vault, C.vault.abi, "agentSwap", [await poolFor(p.tokenIn, p.tokenOut), ti.address, to.address, raw, p.minOutRaw, deadline]);
     const out = fmt((await read<bigint>(to.address, C.usdg.abi, "balanceOf", [S.vault])) - before, to.decimals);
     const fee = p.amountIn * Number(await read(dep().router, C.router.abi, "feeBps")) / 10_000;
-    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: inStr, out: `${out.toFixed(6)} ${to.symbol}`, fee: `${fee.toFixed(4)} ${ti.symbol}`, ts, status: "filled", side });
+    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: inStr, out: `${out.toFixed(6)} ${to.symbol}`, fee: `${fee.toFixed(4)} ${ti.symbol}`, ts, status: "filled", side, keyId: S.agent.id, usd: +estUsd.toFixed(2) });
+    tradeHooks?.record(S.agent.id, side, estUsd, ref);
     return { ...txOut(hash), amountOut: out };
   } catch (e) {
     if (e instanceof ApiError || !isRevert(e)) throw e;
@@ -469,4 +479,5 @@ export function countCall() { get_usage(); S.usage.calls++; save(); }
 
 // ---------------------------------------------------------------- keeper hooks
 export const _state = () => S;
-export { save as _save, pushHistory as _pushHistory, poolFor as _poolFor, token as _token, units as _units, fmt as _fmt, agentWallet as _agentWallet, requireEligible as _requireEligible, txOut as _txOut, humanReason, priceE8, chainNow, keeper as keeperWallet, updater as updaterWallet };
+export const _trade = () => tradeHooks;
+export { usdOf as _usdOf, save as _save, pushHistory as _pushHistory, poolFor as _poolFor, token as _token, units as _units, fmt as _fmt, agentWallet as _agentWallet, requireEligible as _requireEligible, txOut as _txOut, humanReason, priceE8, chainNow, keeper as keeperWallet, updater as updaterWallet };

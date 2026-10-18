@@ -1,5 +1,5 @@
 // Themed baskets (BASKETS.md): registry (baskets.json + server/baskets/<id>/<version>.json, sha256-pinned),
-// preview (split <= $98, >= $5 legs, headroom), agent proposes / owner confirms (S-3), sequential leg execution as a
+// preview (split <= $98, >= $5 legs, headroom), auto-execution within the onchain limits, sequential leg execution as a
 // durable job with idempotency keys, persisted per-leg state, partial status and one retry on transport errors only.
 import fs from "node:fs";
 import path from "node:path";
@@ -153,50 +153,33 @@ export async function preview_basket_buy(id: string, usd: number, o: { version?:
     legs: p.legs.map(({ idx: _i, ...l }) => ({ symbol: l.ticker, ...l })), totalFeeUsd: +p.legs.reduce((s, l) => s + l.feeUsd, 0).toFixed(4), skipped: p.skipped, swaps: p.legs.length,
     capHeadroom: pf.headroom, scaledDown, marketOpen: pf.marketOpen, oracleFresh: pf.oracleFresh, preflight: { ok: !failures.length, failures },
     status: "preview", createdAt: new Date(now).toISOString(), expiresAt: new Date(now + RULES.previewTtlSec * 1000).toISOString(),
-    requiresOwnerConfirmation: true, atomic: false, disclaimer: DISCLAIMER };
+    requiresOwnerConfirmation: false, autoExecutesWithinLimits: true, atomic: false, disclaimer: DISCLAIMER };
   putProposal(preview);
   return preview;
 }
 
 // ---------------------------------------------------------------- propose / confirm
-/** Agent (or owner) asks to buy. Agent => pending proposal the owner must confirm; owner => confirm immediately. */
-export async function buy_basket(a: { previewId?: string; id?: string; usd?: number; version?: string; allowScaleDown?: boolean }, by: "agent" | "owner", idemKey?: string) {
-  if (idemKey) { const prev = idemGet(`buy:${idemKey}`); if (prev) return prev.kind === "execution" ? get_execution(prev.ref) : getProposalPublic(prev.ref); }
+/** Policy (Julius 2026-10-18): trades inside the onchain limits auto-execute. A basket buy (agent or owner) that passes
+ * preflight runs right away; the owner sees every leg in the activity feed and can revoke the key. */
+export async function buy_basket(a: { previewId?: string; id?: string; usd?: number; version?: string; allowScaleDown?: boolean }, _by: "agent" | "owner", idemKey?: string) {
+  if (idemKey) { const prev = idemGet(`buy:${idemKey}`); if (prev) return get_execution(prev.ref); }
   let p = a.previewId ? getProposal(a.previewId) : null;
   if (a.previewId && !p) throw new ApiError(404, "Unknown previewId");
   if (!p) { if (!a.id || !a.usd) throw new ApiError(400, "previewId or (id, usd) required"); p = await preview_basket_buy(a.id, a.usd, { version: a.version, allowScaleDown: a.allowScaleDown }); }
-  if (p.status === "preview" && Date.parse(p.expiresAt) < Date.now()) throw new ApiError(410, "Preview expired (quotes are stale after 60s); preview again");
-  if (p.status === "confirmed") { const exId = p.executionId; idemKey && idemPut(`buy:${idemKey}`, "execution", exId); return get_execution(exId); }
+  if (p.status === "confirmed") { idemKey && idemPut(`buy:${idemKey}`, "execution", p.executionId); return get_execution(p.executionId); }
+  if (Date.parse(p.expiresAt) < Date.now()) throw new ApiError(410, "Preview expired (quotes are stale after 60s); preview again");
   if (!p.preflight.ok) throw new ApiError(409, `Preflight failed: ${p.preflight.failures.join("; ")}`);
-  if (by === "agent") {
-    p.status = "pending_confirmation"; p.proposedBy = "agent"; p.proposalExpiresAt = new Date(Date.now() + RULES.proposalTtlSec * 1000).toISOString(); putProposal(p);
-    idemKey && idemPut(`buy:${idemKey}`, "proposal", p.previewId);
-    log.info("basket proposed", { previewId: p.previewId, basketId: p.basketId, totalUsd: p.totalUsd });
-    return getProposalPublic(p.previewId);
-  }
-  return confirm_basket(p.previewId, idemKey);
+  const s = svc._agent(); if (s) svc._trade()?.guard(s.id, "basket-preflight:" + p.previewId); // tripped key => refuse before creating the execution
+  return start_execution(p.previewId, idemKey);
 }
-function getProposalPublic(id: string) {
-  const p = getProposal(id); if (!p) throw new ApiError(404, "Unknown proposal");
-  return { proposalId: p.previewId, previewId: p.previewId, status: p.status, basketId: p.basketId, basketVersion: p.basketVersion, basketHash: p.basketHash, totalUsd: p.totalUsd, legs: p.legs, executionId: p.executionId ?? null,
-    requiresOwnerConfirmation: p.status === "pending_confirmation", confirmVia: p.status === "pending_confirmation" ? `POST /api/baskets/proposals/${p.previewId}/confirm (owner token)` : null,
-    message: p.status === "pending_confirmation" ? "Basket buy is pending owner confirmation in the StockClaw dashboard. Nothing has been bought yet." : undefined, expiresAt: p.proposalExpiresAt ?? p.expiresAt };
-}
-export function list_basket_proposals(status?: string) {
-  return (getDb().prepare("SELECT id FROM basket_proposals WHERE status != 'preview' ORDER BY created_at DESC").all() as { id: string }[]).map((r) => getProposalPublic(r.id)).filter((p) => !status || p.status === status);
-}
-export function reject_basket(id: string) { const p = getProposal(id); if (!p || p.status !== "pending_confirmation") throw new ApiError(409, "No pending proposal"); p.status = "rejected"; putProposal(p); return getProposalPublic(id); }
-
-/** Owner confirmation: pins the basket hash, creates the execution + legs (pending) and enqueues the job. */
-export function confirm_basket(proposalId: string, idemKey?: string) {
-  const key = `buy:${idemKey ?? "proposal:" + proposalId}`;
+/** Pins the basket hash, creates the execution + legs (pending) and enqueues the job. Idempotent per key / preview. */
+export function start_execution(proposalId: string, idemKey?: string) {
+  const key = `buy:${idemKey ?? "preview:" + proposalId}`;
   const r = tx(() => {
     const prev = idemGet(key); if (prev) return { id: prev.ref, fresh: false };
     const p = getProposal(proposalId); if (!p) throw new ApiError(404, "Unknown proposal");
     if (p.status === "confirmed") { idemPut(key, "execution", p.executionId); return { id: p.executionId as string, fresh: false }; }
-    if (p.status === "rejected") throw new ApiError(409, "Proposal was rejected");
-    if (p.status === "pending_confirmation" && Date.parse(p.proposalExpiresAt) < Date.now()) throw new ApiError(410, "Proposal expired; preview again");
-    if (p.status === "preview" && Date.parse(p.expiresAt) < Date.now()) throw new ApiError(410, "Preview expired; preview again");
+    if (Date.parse(p.expiresAt) < Date.now()) throw new ApiError(410, "Preview expired; preview again");
     if (findBasket(p.basketId, p.basketVersion).hash !== p.basketHash) throw new ApiError(409, "Basket definition changed since preview (hash mismatch); preview again");
     const id = "bx_" + randomBytes(6).toString("hex"), now = nowIso();
     const ex = { id, basketId: p.basketId, basketVersion: p.basketVersion, basketHash: p.basketHash, totalUsd: p.totalUsd, slippageBps: p.slippageBps, proposalId, idempotencyKey: key, createdAt: now, updatedAt: now };
@@ -206,7 +189,7 @@ export function confirm_basket(proposalId: string, idemKey?: string) {
     p.status = "confirmed"; p.executionId = id; putProposal(p); idemPut(key, "execution", id);
     return { id, fresh: true };
   });
-  if (r.fresh) { jobs.enqueue("basket.execute", { executionId: r.id }, { dedupe: `basket:${r.id}`, maxAttempts: 3 }); log.info("basket confirmed", { executionId: r.id, idempotencyKey: key }); }
+  if (r.fresh) { jobs.enqueue("basket.execute", { executionId: r.id }, { dedupe: `basket:${r.id}`, maxAttempts: 3 }); log.info("basket started", { executionId: r.id, idempotencyKey: key }); }
   return get_execution(r.id);
 }
 
@@ -260,6 +243,7 @@ async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: nu
       setLeg(exId, { ...l, status: "filling", txHash: undefined, error: undefined, attempts: (l.attempts ?? 0) + 1 });
       try {
         if (faults.transientOnceLeg === l.idx) { faults.transientOnceLeg = undefined; throw Object.assign(new Error("HTTP request failed: fetch failed (simulated RPC timeout)"), { transient: true }); }
+        svc._trade()?.guard(svc._agent()!.id, exId); // anomaly breaker: a basket counts as one trade
         const q = await svc.quote_swap("mUSDG", l.ticker, l.targetUsd, slippageBps);
         let minOutRaw = svc._units(q.minOut, t.decimals);
         if (faults.revertLeg === l.idx) { faults.revertLeg = undefined; minOutRaw = minOutRaw * 1000n; } // forces InsufficientOutput onchain
@@ -271,11 +255,13 @@ async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: nu
         });
         const r = await outFromReceipt(hash, t.address, vault, t.decimals);
         setLeg(exId, { ...l, status: "filled", filledUsd: l.targetUsd, amountOut: r.out, txHash: hash });
-        svc._pushHistory({ txHash: hash, explorerUrl: svc._txOut(hash).explorerUrl, type: "basket", in: `${l.targetUsd.toFixed(2)} mUSDG`, out: `${r.out.toFixed(6)} ${l.ticker}`, fee: `${(l.targetUsd * 0.003).toFixed(4)} mUSDG`, ts: nowIso(), status: "filled", side: "buy", executionId: exId });
+        svc._pushHistory({ txHash: hash, explorerUrl: svc._txOut(hash).explorerUrl, type: "basket", in: `${l.targetUsd.toFixed(2)} mUSDG`, out: `${r.out.toFixed(6)} ${l.ticker}`, fee: `${(l.targetUsd * 0.003).toFixed(4)} mUSDG`, ts: nowIso(), status: "filled", side: "buy", executionId: exId, keyId: svc._agent()!.id, usd: l.targetUsd });
+        svc._trade()?.record(svc._agent()!.id, "buy", l.targetUsd, exId);
         log.info("leg filled", { txHash: hash, usd: l.targetUsd, out: r.out });
         return true;
       } catch (e) {
         if (e instanceof jobs.SimulatedCrash) throw e;
+        if (e instanceof ApiError) { const cur0 = legsOf(exId).find((x) => x.legId === l.legId)!; setLeg(exId, { ...cur0, status: "failed", error: e.message }); log.warn("leg refused", { reason: e.message }); return false; }
         const reverted = isRevert(e) || /tx reverted/.test((e as Error).message);
         const cur = legsOf(exId).find((x) => x.legId === l.legId)!;
         if (!reverted && !cur.txHash && attempt === 0) { log.warn("leg transport error; one retry", { error: (e as Error).message.slice(0, 200) }); continue; } // tx never sent => safe to retry once

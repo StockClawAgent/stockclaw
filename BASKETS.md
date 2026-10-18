@@ -183,8 +183,9 @@ REST mirror: `GET /api/baskets`, `GET /api/baskets/:id`, `POST /api/baskets/prev
 3. **Partial fills:** if a leg reverts mid-way (price moved past the floor, oracle went stale, market closed), stop, record `status: partial` with per-leg results, and **don't retry automatically**. Offer the user "retry remaining legs" (new preview) or "sell filled legs". No atomicity across legs in v1; say so in the preview.
 4. Preview expires in 60 s (quotes go stale).
 
-### Owner confirmation (recommendation)
-Plain swaps by the agent key within caps are already allowed today. For baskets, though, **follow the S-3 model: the agent proposes (`preview_basket_buy`), the owner confirms (`buy_basket` is a `destructiveHint` write tool, so the client asks the user).** No server-side auto-execute in v1, even for small amounts: one sentence like "get me some AI" fans out into many swaps, and a confirmation step is the main defence against prompt injection. Revisit later with a user-set auto-approve threshold (for example ≤ $50), still within caps.
+### Execution policy (updated 2026-10-18, Julius): auto-execute within limits
+~~Agent proposes, owner confirms each basket buy.~~ Superseded: **every trade inside the onchain limits auto-executes with no owner prompt** ($100/trade, $500 rolling-24h buys, agent sells up to $500 rolling-24h). A basket buy that passes preflight runs right away (`buy_basket` from MCP or REST returns the execution; there is no confirm step and no "owner confirms split" screen). The only remaining owner approval is an agent **sell over the $500/24h sell cap** (passkey-approved `SellApproval`, R4-1). Strategy activation keeps its owner confirmation (S-3).
+Guardrails that replace the confirm step (Gaius): (1) an in-app owner activity feed for every auto-executed trade, each with a revoke-key action (`GET /api/activity`, SSE `GET /api/activity/stream`); (2) a per-key anomaly breaker (80% of either 24h cap within 1h, or > 5 trades in 10 min; a basket counts as one trade) that stops relaying for the key until the owner resumes or revokes it; (3) a per-key MCP limit of 10 trade-tool calls/min.
 
 ## 4. Contract changes
 - Checked `src/FeeRouter.sol` and `src/AgentVault.sol`: **no multicall or batch-swap function exists** (only single `swap`/`swapWithPermit2`/`executeIntent` and `agentSwap`).

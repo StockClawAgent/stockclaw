@@ -5,6 +5,13 @@ import * as svc from "./service.js";
 import * as strat from "./strategies.js";
 import * as bk from "./baskets.js";
 import "./approvals.js";
+import "./breaker.js";
+import { Limiter } from "./limiter.js";
+// Gaius guardrail 3: per-agent-key limit on trading tools (on top of the per-IP/per-token REST+MCP limits).
+const TRADE_TOOLS = new Set(["execute_swap", "create_dca", "create_limit_order", "cancel_order", "buy_basket"]);
+const tradeLimiter = new Limiter(Number(process.env.MCP_TRADE_PER_MIN ?? 10));
+export const _resetTradeLimiter = () => tradeLimiter.clear();
+
 
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], structuredContent: (Array.isArray(data) ? { items: data } : data) as Record<string, unknown> });
 const wrap = <A>(fn: (a: A) => Promise<unknown> | unknown) => async (a: A) => {
@@ -18,6 +25,8 @@ const sym = z.string().describe("Token symbol: mUSDG, TSLA, AMZN, PLTR, NFLX, AM
 
 export function buildMcpServer() {
   const s = new McpServer({ name: "stockclaw", version: "0.1.0-testnet" }, { instructions: "StockClaw (TESTNET 46630, mock tokens). Trades run from the user's AgentVault under onchain caps ($100/trade, $500 rolling 24h, allowlist). Over-limit trades are hard-blocked. Not available to US persons or blocked regions." });
+  const reg = s.registerTool.bind(s) as any;
+  (s as any).registerTool = (name: string, cfg: any, handler: any) => reg(name, cfg, TRADE_TOOLS.has(name) ? async (a: any) => { const key = svc._agent()?.id ?? "no-key", w = tradeLimiter.hit(key); if (w) return { isError: true, content: [{ type: "text", text: `Rate limit: ${tradeLimiter.perMin} trade calls/min per agent key (${key}); retry in ${w}s` }] }; return handler(a); } : handler);
   // S-5: read-only; the agent cannot declare the user's country.
   s.registerTool("check_eligibility", { description: "Eligibility status of the connected account (blocked: US, CA, GB, CH, AE, sanctioned).", annotations: RO }, wrap(() => svc.check_eligibility()));
   s.registerTool("get_wallet", { description: "Smart wallet (AgentVault) address, chain and agent session-key caps / spend in the rolling 24h.", annotations: RO }, wrap(() => svc.get_wallet()));
@@ -47,7 +56,7 @@ export function buildMcpServer() {
   s.registerTool("list_baskets", { description: "Themed baskets (fixed, published, market-cap weights; editorial groupings, not funds). Only executable ones can be bought on this chain.", annotations: RO }, wrap(() => bk.list_baskets()));
   s.registerTool("get_basket", { description: "Full basket definition: legs, weights, prices, tradability, disclaimer.", inputSchema: { id: z.string(), version: z.string().optional() }, annotations: RO }, wrap((a: any) => bk.get_basket(a.id, a.version)));
   s.registerTool("preview_basket_buy", { description: "Preview a basket buy: legs (<= $98 each), quotes, fees, skipped names, cap headroom, preflight. No transaction. Expires in 60s.", inputSchema: { id: z.string(), usd: z.number().positive(), version: z.string().optional(), allowScaleDown: z.boolean().optional() }, annotations: RO }, wrap((a: any) => bk.preview_basket_buy(a.id, a.usd, { version: a.version, allowScaleDown: a.allowScaleDown })));
-  s.registerTool("buy_basket", { description: "Propose buying a previewed basket. Creates a PENDING proposal only: the user must confirm it in the StockClaw dashboard before any leg executes. Legs then execute one by one (no atomicity).", inputSchema: { previewId: z.string().optional(), id: z.string().optional(), usd: z.number().positive().optional(), idempotencyKey: z.string().max(128).optional() }, annotations: W }, wrap((a: any) => bk.buy_basket(a, "agent", a.idempotencyKey)));
+  s.registerTool("buy_basket", { description: "Buy a previewed basket. Within the vault's onchain limits it executes right away (legs one by one, no atomicity); the owner sees every leg in the activity feed. Poll get_basket_execution for progress.", inputSchema: { previewId: z.string().optional(), id: z.string().optional(), usd: z.number().positive().optional(), idempotencyKey: z.string().max(128).optional() }, annotations: W }, wrap((a: any) => bk.buy_basket(a, "agent", a.idempotencyKey)));
   s.registerTool("get_basket_execution", { description: "Status of a basket execution (per-leg status, tx hashes, errors).", inputSchema: { executionId: z.string() }, annotations: RO }, wrap((a: any) => bk.get_execution(a.executionId)));
   for (const p of strat.promptsForMcp()) s.registerPrompt(p.name, { title: p.title, description: `${p.title} explainer (StockClaw strategy template)` }, () => ({ messages: [{ role: "user", content: { type: "text", text: p.text } }] }));
   return s;

@@ -16,6 +16,7 @@ process.env.RATE_LIMIT_REST_PER_MIN = process.env.RATE_LIMIT_IP_PER_MIN = "10000
 process.env.MARKET_MODE = "open";
 process.env.WEBAUTHN_ORIGINS = `http://localhost:${PORT_API}`;
 process.env.LOG_LEVEL ??= "silent";
+process.env.BREAKER = "off"; // legacy steps test the onchain caps directly; the breaker steps turn it on
 const OWNER = (process.env.OWNER_API_TOKEN = "owner-e2e-token"), MCPT = (process.env.MCP_API_TOKEN = "mcp-e2e-token");
 const ANVIL = process.env.ANVIL_BIN ?? (fs.existsSync(`${os.homedir()}/.foundry/bin/anvil`) ? `${os.homedir()}/.foundry/bin/anvil` : "anvil");
 
@@ -393,25 +394,23 @@ try {
   });
 
   let ex1: any;
-  await step("basket: agent proposes via MCP (pending, nothing bought); MCP token can't confirm; owner confirms; 3 legs fill; same Idempotency-Key replays with no new txs", async () => {
+  await step("basket: within limits the agent's MCP buy runs right away (no owner step); 3 legs fill; same Idempotency-Key replays with no new txs", async () => {
     const c = await mcpClient();
     const pv = mcpJson(await c.callTool({ name: "preview_basket_buy", arguments: { id: "ai-tech-mini", usd: 150 } }));
+    assert.equal(pv.requiresOwnerConfirmation, false);
     const usdg0 = await bal("mUSDG");
-    const pr = mcpJson(await c.callTool({ name: "buy_basket", arguments: { previewId: pv.previewId } }));
-    assert.equal(pr.status, "pending_confirmation"); assert.equal(pr.requiresOwnerConfirmation, true); assert.match(pr.message, /pending owner confirmation/);
-    await c.close();
-    assert.equal(await bal("mUSDG"), usdg0, "nothing bought before owner confirms");
-    assert.equal((await callH("POST", `baskets/proposals/${pr.proposalId}/confirm`, {}, MCPT)).status, 403);
-    const cf = await callH("POST", `baskets/proposals/${pr.proposalId}/confirm`, {}, OWNER, { "idempotency-key": "e2e-k1" });
-    assert.equal(cf.status, 200, JSON.stringify(cf.body)); assert.ok(["pending", "running", "filled"].includes(cf.body.status));
-    ex1 = await waitExec(cf.body.id);
+    const ex0 = mcpJson(await c.callTool({ name: "buy_basket", arguments: { previewId: pv.previewId, idempotencyKey: "e2e-k1" } }));
+    assert.ok(["pending", "running", "filled"].includes(ex0.status), JSON.stringify(ex0));
+    ex1 = await waitExec(ex0.id);
     assert.equal(ex1.status, "filled", JSON.stringify(ex1));
     assert.deepEqual(Object.keys(ex1).sort(), ["basketHash", "basketId", "basketVersion", "createdAt", "id", "legs", "status", "totalUsd", "updatedAt"].sort());
     assert.equal(ex1.legs.length, 3);
     for (const l of ex1.legs) { assert.deepEqual(Object.keys(l).sort(), ["filledUsd", "legId", "status", "targetUsd", "ticker", "txHash", "weight"].sort()); assert.equal(l.status, "filled"); assert.equal(l.filledUsd, l.targetUsd); }
     const n = txCount("basket:%");
-    const again = await callH("POST", `baskets/proposals/${pr.proposalId}/confirm`, {}, OWNER, { "idempotency-key": "e2e-k1" });
-    assert.equal(again.body.id, ex1.id); assert.equal(txCount("basket:%"), n, "replay: no new txs");
+    const again = mcpJson(await c.callTool({ name: "buy_basket", arguments: { previewId: pv.previewId, idempotencyKey: "e2e-k1" } }));
+    assert.equal(again.id, ex1.id); assert.equal(txCount("basket:%"), n, "replay: no new txs");
+    const again2 = await callH("POST", "baskets/buy", { previewId: pv.previewId }); assert.equal(again2.body.id, ex1.id, "same preview => same execution");
+    await c.close();
     assert.ok(Math.abs((await bal("mUSDG")) - (usdg0 - 150)) < 0.01);
   });
 
@@ -525,6 +524,67 @@ try {
     fs.writeFileSync(path.resolve("fixtures/blocked-sell.json"), JSON.stringify(fixture, null, 2) + "\n");
   });
 
+
+  await step("activity feed: every auto-executed trade (swap, basket legs, approved sell) has an entry with a revoke-key action; owner-only; SSE pushes new entries", async () => {
+    const feed = (await callH("GET", "activity", { limit: 100 })).body;
+    assert.ok(feed.length >= 10, String(feed.length));
+    assert.ok(feed.every((e: any) => e.kind !== "trade" || e.actions.some((x: any) => x.type === "revoke_key" && x.href === "/api/revoke_session_key")));
+    assert.ok(feed.some((e: any) => e.source === "basket" && e.executionId)); assert.ok(feed.some((e: any) => e.side === "sell" && /owner-approved/.test(e.title)));
+    assert.equal((await callH("GET", "activity", undefined, MCPT)).status, 403);
+    const top = feed[0].id;
+    const ac = new AbortController();
+    const sse = await fetch(`${API}/activity/stream?since=${top}`, { headers: { "x-owner-token": OWNER }, signal: ac.signal });
+    assert.equal(sse.headers.get("content-type"), "text/event-stream");
+    const reader = sse.body!.getReader();
+    assert.equal((await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 5 })).status, 200);
+    let txt = ""; const t0 = Date.now();
+    while (!/event: activity/.test(txt) && Date.now() - t0 < 5000) txt += new TextDecoder().decode((await reader.read()).value);
+    ac.abort();
+    const ev = JSON.parse(/data: (.*)/.exec(txt)![1]); assert.equal(ev.kind, "trade"); assert.ok(ev.id > top); assert.match(ev.title, /Agent bought: 5.00 mUSDG/);
+    assert.equal((await callH("GET", "activity", { since: top })).body.length, 1, "polling with since");
+  });
+
+  await step("anomaly breaker: a 6th trade within 10 min trips the key (alert, feed, health); swaps, baskets and keeper intents stop; owner resumes; 80% of the buy cap or sell cap within 1h trips", async () => {
+    await freshUser();
+    process.env.BREAKER = "on";
+    try {
+      for (let i = 0; i < 5; i++) assert.equal((await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 5 })).status, 200, `trade ${i + 1}`);
+      const six = await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 5 });
+      assert.equal(six.status, 423); assert.match(six.body.error, /anomaly breaker \(more than 5 trades in 10 minutes\)/);
+      const keyId = svc._agent()!.id;
+      const feed = (await callH("GET", "activity")).body; const tripE = feed.find((e: any) => e.kind === "breaker");
+      assert.ok(tripE && tripE.keyId === keyId); assert.deepEqual(tripE.actions.map((x: any) => x.type).sort(), ["resume_key", "revoke_key"]);
+      assert.ok((await callH("GET", "health", undefined, null)).body.alerts.some((x: any) => x.code === "KEY_BREAKER_TRIPPED"));
+      assert.equal((await callH("GET", "keys/breaker")).body.tripped[0].keyId, keyId);
+      assert.equal((await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 30 })).status, 423, "baskets stop");
+      const lim = await call("POST", "create_limit_order", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 5, limitPrice: 1000 }); assert.equal(lim.status, 200);
+      const ex = await keeper.executeDue(); assert.match(ex.find((r: any) => r.intentId === lim.body.intentId)!.result, /held: Agent key paused/, "keeper doesn't relay");
+      await call("POST", "cancel_order", { intentId: lim.body.intentId });
+      assert.equal((await callH("POST", `keys/${keyId}/resume`, {}, MCPT)).status, 403, "owner only");
+      assert.equal((await callH("POST", `keys/${keyId}/resume`)).body.breaker.tripped, false);
+      // buys within 1h (counted from resume): 4 x $98 + $20 = $412 >= 80% of $500 => trips after that fill, blocks the next trade
+      for (const amt of [98, 98, 98, 98, 20]) assert.equal((await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: amt })).status, 200);
+      const nxt = await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 5 });
+      assert.equal(nxt.status, 423); assert.match(nxt.body.error, /buys reached \$\d+\.\d+ \(>= 80% of the \$500 24h buy cap\)/);
+      await callH("POST", `keys/${keyId}/resume`);
+      // sells: 5 x ~$85 => >= $400 of the $500 sell cap within 1h => trips
+      for (let i = 0; i < 5; i++) { const r = await call("POST", "execute_swap", { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.57 }); assert.equal(r.status, 200, JSON.stringify(r.body)); }
+      const s6 = await call("POST", "execute_swap", { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.01 });
+      assert.equal(s6.status, 423); assert.match(s6.body.error, /sells reached .*80% of the \$500 24h sell cap/);
+      await callH("POST", `keys/${keyId}/resume`);
+    } finally { process.env.BREAKER = "off"; }
+  });
+
+  await step("MCP per-key trade limit: 10 trade-tool calls/min per agent key, then refused; read tools unaffected", async () => {
+    const { _resetTradeLimiter } = await import("../src/mcp.js"); _resetTradeLimiter();
+    const c = await mcpClient();
+    for (let i = 0; i < 10; i++) { const r: any = await c.callTool({ name: "execute_swap", arguments: { tokenIn: "TSLA", tokenOut: "AMZN", amountIn: 0.01 } }); assert.match(r.content[0].text, /Pair not supported/, `call ${i + 1}`); }
+    const r11: any = await c.callTool({ name: "execute_swap", arguments: { tokenIn: "TSLA", tokenOut: "AMZN", amountIn: 0.01 } });
+    assert.equal(r11.isError, true); assert.match(r11.content[0].text, /Rate limit: 10 trade calls\/min per agent key/);
+    const r12: any = await c.callTool({ name: "create_dca", arguments: { tokenIn: "mUSDG", tokenOut: "AMD", amountPerExec: 5, interval: "daily", maxExecs: 2 } }); assert.match(r12.content[0].text, /Rate limit/);
+    const p: any = await c.callTool({ name: "get_price", arguments: { symbol: "AMD" } }); assert.ok(!p.isError);
+    await c.close(); _resetTradeLimiter();
+  });
   await step("health: /api/health reports rpc, sqlite, job queue, signers (keeper/updater/owner) with nonces, tx stats; /healthz 200", async () => {
     const hh = (await callH("GET", "health", undefined, null)).body;
     assert.equal(hh.rpc.ok, true); assert.equal(hh.db.ok, true); assert.ok("queued" in hh.queue && "running" in hh.queue);

@@ -7,6 +7,8 @@ import { buildMcpServer } from "./mcp.js";
 import * as mon from "./monitor.js";
 import * as bk from "./baskets.js";
 import * as apr from "./approvals.js";
+import * as act from "./activity.js";
+import * as brk from "./breaker.js";
 import { randomUUID } from "node:crypto";
 import { log, withCtx } from "./log.js";
 import { REPO, ownerToken, mcpToken } from "./config.js";
@@ -21,25 +23,8 @@ const ownerOnly: express.RequestHandler = (req, res, next) => (ownerToken() && b
 const anyRole: express.RequestHandler = (req, res, next) => (isOwner(req) || isAgent(req) ? next() : res.status(401).json({ error: "Missing or bad bearer token" }));
 const mcpOnly: express.RequestHandler = (req, res, next) => (mcpToken() && bearer(req) !== mcpToken() ? res.status(401).json({ error: "MCP token required" }) : next());
 
-// B8 / SC-2: fixed-window limiter with TTL + max-size eviction.
-export class Limiter {
-  private hits = new Map<string, { win: number; n: number; seen: number }>();
-  constructor(public perMin: number, private maxKeys = 50_000, private ttlMs = 120_000) {}
-  /** returns seconds to wait (>0) if over the limit, else 0 */
-  hit(key: string): number {
-    const now = Date.now(), win = Math.floor(now / 60_000);
-    if (this.hits.size >= this.maxKeys) this.evict(now);
-    const h = this.hits.get(key);
-    if (!h || h.win !== win) { this.hits.delete(key); this.hits.set(key, { win, n: 1, seen: now }); return 0; }
-    h.seen = now;
-    return ++h.n > this.perMin ? 60 - Math.floor((now / 1000) % 60) : 0;
-  }
-  private evict(now: number) {
-    for (const [k, v] of this.hits) if (now - v.seen > this.ttlMs) this.hits.delete(k);
-    while (this.hits.size >= this.maxKeys) this.hits.delete(this.hits.keys().next().value as string); // oldest first (insertion order)
-  }
-  get size() { return this.hits.size; }
-}
+import { Limiter } from "./limiter.js";
+export { Limiter };
 const deny = (res: express.Response, wait: number) => { res.setHeader("Retry-After", String(wait)); res.status(429).json({ error: "Rate limit exceeded" }); };
 const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?";
 
@@ -126,15 +111,12 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.post("/strategies/activations/:id/pause", anyRole, h((q) => strat.pause_strategy(String(q.params.id))));
   r.post("/strategies/activations/:id/stop", anyRole, h((q) => strat.stop_strategy(String(q.params.id))));
   r.post("/strategies/activations/:id/resume", ownerOnly, h((q) => strat.resume_strategy(String(q.params.id))));
-  // themed baskets (BASKETS.md §3). Agent proposes, owner confirms (S-3).
+  // themed baskets (BASKETS.md §3). Within the onchain limits a basket buy runs right away (policy 2026-10-18).
   const idem = (q: express.Request) => (q.headers["idempotency-key"] as string | undefined)?.slice(0, 128) || q.body?.idempotencyKey;
   r.get("/baskets", anyRole, h(() => bk.list_baskets()));
   r.get("/baskets/executions", anyRole, h((q) => bk.list_executions(q.query.limit ? Number(q.query.limit) : undefined)));
   r.get("/baskets/executions/:id", anyRole, h((q) => bk.get_execution(String(q.params.id))));
   r.post("/baskets/executions/:id/legs/:legId/retry", ownerOnly, h((q) => bk.retry_leg(String(q.params.id), String(q.params.legId))));
-  r.get("/baskets/proposals", anyRole, h((q) => bk.list_basket_proposals(q.query.status as string | undefined)));
-  r.post("/baskets/proposals/:id/confirm", ownerOnly, h((q) => bk.confirm_basket(String(q.params.id), idem(q))));
-  r.post("/baskets/proposals/:id/reject", ownerOnly, h((q) => bk.reject_basket(String(q.params.id))));
   r.post("/baskets/preview", anyRole, h((q) => bk.preview_basket_buy(q.body.id, Number(q.body.usd), { version: q.body.version, allowScaleDown: !!q.body.allowScaleDown, slippageBps: q.body.slippageBps })));
   r.post("/baskets/buy", anyRole, h((q) => bk.buy_basket(q.body, role(q), idem(q))));
   r.get("/baskets/:id", anyRole, h((q) => bk.get_basket(String(q.params.id), q.query.version as string | undefined)));
@@ -143,6 +125,18 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.get("/approvals/:id/options", ownerOnly, h((q) => apr.approval_options(String(q.params.id))));
   r.post("/approvals/:id/approve", ownerOnly, h((q) => apr.approve(String(q.params.id), q.body?.webauthnAssertion)));
   r.post("/approvals/:id/reject", ownerOnly, h((q) => apr.reject(String(q.params.id))));
+  // activity feed (owner): polling + SSE; anomaly breaker
+  r.get("/activity", ownerOnly, h((q) => act.list(q.query.since ? Number(q.query.since) : undefined, q.query.limit ? Number(q.query.limit) : undefined)));
+  r.get("/activity/stream", ownerOnly, (req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", "x-accel-buffering": "no" });
+    const since = Number(req.query.since ?? req.headers["last-event-id"] ?? 0);
+    for (const e of act.list(since, 50).reverse()) res.write(`id: ${e.id}\nevent: activity\ndata: ${JSON.stringify(e)}\n\n`);
+    const off = act.subscribe((e) => res.write(`id: ${e.id}\nevent: activity\ndata: ${JSON.stringify(e)}\n\n`));
+    const hb = setInterval(() => res.write(": ping\n\n"), 25_000);
+    req.on("close", () => { off(); clearInterval(hb); });
+  });
+  r.get("/keys/breaker", ownerOnly, h(() => ({ tripped: brk.tripped().map((t) => ({ keyId: t.key_id, reason: t.reason, trippedAt: new Date(t.tripped_at).toISOString() })) })));
+  r.post("/keys/:keyId/resume", ownerOnly, h((q) => brk.resume(String(q.params.keyId))));
   r.post("/passkey/register/options", ownerOnly, h((q) => apr.passkey_register_options(q.body?.webauthnAssertion)));
   r.post("/passkey/register/verify", ownerOnly, h((q) => apr.passkey_register_verify(q.body?.response ?? q.body)));
   app.use("/api", r);
