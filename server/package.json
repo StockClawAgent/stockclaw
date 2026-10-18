@@ -20,6 +20,9 @@
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@simplewebauthn/server": "^14.0.3",
+    "@types/better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^11.10.0",
     "express": "^5.3.0",
     "viem": "^2.57.7",
     "zod": "^4.6.7"

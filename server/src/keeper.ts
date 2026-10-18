@@ -9,6 +9,8 @@ import { BASE_PRICES } from "./deploy.js";
 import { sessionFor } from "./marketCalendar.js";
 import * as strat from "./strategies.js";
 import * as mon from "./monitor.js";
+import * as jobs from "./jobs.js";
+import { log } from "./log.js";
 
 const MAX_DRIFT = 0.03; // stay inside the pools' 5% oracle band
 
@@ -114,14 +116,20 @@ export async function tick() {
   return { prices, executed };
 }
 
-export function startKeeper(log = console.log) {
-  let busy = false;
-  const run = async () => {
-    if (busy) return; busy = true;
-    try { const r = await tick(); mon.recordTick(true); log(`[keeper] ${new Date().toISOString()} prices ${JSON.stringify(r.prices)} ${r.executed.length ? JSON.stringify(r.executed) : ""}`); }
-    catch (e) { mon.recordTick(false, (e as Error).message.slice(0, 200)); log(`[keeper] error: ${(e as Error).message}`); void mon.health(); }
-    finally { busy = false; }
-  };
-  run();
-  return setInterval(run, KEEPER_INTERVAL_MS);
+// Keeper work runs through the durable job queue: one "keeper.tick" job per interval slot (dedupe key), executed by
+// the worker. A tick missed while the process was down is not replayed (no catch-up): stale slots are skipped.
+jobs.register("keeper.tick", async (p: { slot: number }) => {
+  if (Date.now() - p.slot * KEEPER_INTERVAL_MS > 3 * KEEPER_INTERVAL_MS) { log.info("keeper tick skipped (stale slot, no catch-up)", { slot: p.slot }); return; }
+  try {
+    const r = await tick(); mon.recordTick(true);
+    log.info("keeper tick", { prices: r.prices, executed: r.executed });
+  } catch (e) {
+    mon.recordTick(false, (e as Error).message.slice(0, 200)); log.error("keeper tick failed", { error: (e as Error).message.slice(0, 300) }); void mon.health();
+    throw e;
+  }
+});
+export function startKeeper() {
+  const schedule = () => { const slot = Math.floor(Date.now() / KEEPER_INTERVAL_MS); jobs.enqueue("keeper.tick", { slot }, { dedupe: `tick:${slot}`, maxAttempts: 1 }); };
+  schedule(); jobs.startWorker();
+  return setInterval(schedule, Math.min(KEEPER_INTERVAL_MS, 15_000));
 }

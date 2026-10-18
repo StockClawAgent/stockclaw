@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createPublicClient, createWalletClient, http, defineChain, type Abi, type Hex, type Address, BaseError, ContractFunctionRevertedError, decodeErrorResult } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { getDb, nowIso } from "./db.js";
+import { log } from "./log.js";
 import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE } from "./config.js";
 
 export const chain = defineChain({
@@ -27,8 +29,29 @@ export const C = {
 };
 export const ALL_ABIS: Abi[] = Object.values(C).map((c) => c.abi);
 
-// Per-account serialized tx queue (avoids nonce races between REST, MCP and keeper).
+// Per-account serialized tx queue (avoids nonce races between REST, MCP, jobs and keeper) + nonce manager.
+// Nonce manager (BACKEND_PLAN §3): one counter per signer, seeded from getTransactionCount(pending) on first use in
+// this process, incremented locally inside the signer's serial queue (so concurrent callers never share a nonce),
+// persisted to SQLite (nonces), resynced from the chain on "nonce too low"/send failures. Every tx goes to tx_log
+// (submitted -> mined | reverted | dropped) so a restart can reconcile in-flight txs by hash.
 const queues = new Map<string, Promise<unknown>>();
+const nonceNext = new Map<string, number>();
+const NONCE_ERR = /nonce too low|nonce.*(already|has been) used|replacement transaction underpriced|already known|NonceTooLow/i;
+async function takeNonce(addr: Address) {
+  if (!nonceNext.has(addr)) nonceNext.set(addr, await pub.getTransactionCount({ address: addr, blockTag: "pending" }));
+  const n = nonceNext.get(addr)!;
+  nonceNext.set(addr, n + 1);
+  getDb().prepare("INSERT INTO nonces(signer, next, updated_at) VALUES(?,?,?) ON CONFLICT(signer) DO UPDATE SET next=excluded.next, updated_at=excluded.updated_at").run(addr, n + 1, nowIso());
+  return n;
+}
+export const resyncNonce = (addr: string) => { nonceNext.delete(addr as Address); };
+export const nonceState = () => Object.fromEntries(nonceNext);
+const txLog = (hash: string, f: Partial<{ signer: string; nonce: number; label: string; status: string; error: string }>) => {
+  const d = getDb();
+  if (f.signer) d.prepare("INSERT OR IGNORE INTO tx_log(hash, signer, nonce, label, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)").run(hash, f.signer, f.nonce ?? null, f.label ?? null, f.status ?? "submitted", nowIso(), nowIso());
+  else d.prepare("UPDATE tx_log SET status=?, error=?, updated_at=? WHERE hash=?").run(f.status, f.error ?? null, nowIso(), hash);
+};
+export type WriteOpts = { label?: string; onSubmitted?: (hash: Hex) => void };
 export function wallet(pk: Hex) {
   const account = privateKeyToAccount(pk);
   const client = createWalletClient({ account, chain, transport: http(RPC_URL) });
@@ -38,23 +61,59 @@ export function wallet(pk: Hex) {
     queues.set(account.address, next);
     return next;
   };
+  const send = async (label: string, fn: (nonce: number) => Promise<Hex>): Promise<Hex> => {
+    for (let attempt = 0; ; attempt++) {
+      const nonce = await takeNonce(account.address);
+      try {
+        const hash = await fn(nonce);
+        txLog(hash, { signer: account.address, nonce, label, status: "submitted" });
+        log.debug("tx submitted", { signer: account.address, nonce, label, txHash: hash });
+        return hash;
+      } catch (e) {
+        resyncNonce(account.address); // the nonce may or may not be consumed: re-read pending from the chain
+        if (attempt === 0 && NONCE_ERR.test(String((e as Error)?.message))) { log.warn("nonce conflict, resynced", { signer: account.address, nonce, label }); continue; }
+        throw e;
+      }
+    }
+  };
+  const settle = async (hash: Hex, label: string) => {
+    const r = await pub.waitForTransactionReceipt({ hash });
+    txLog(hash, { status: r.status === "success" ? "mined" : "reverted" });
+    if (r.status !== "success") throw new Error(`tx reverted: ${label} ${hash}`);
+    return r;
+  };
   return {
     account, address: account.address, client,
-    /** simulate (surfaces revert reason) then send and wait for success */
-    write: (address: Address, abi: Abi, functionName: string, args: unknown[] = []) => run(async () => {
+    /** simulate (surfaces revert reason) then send with a managed nonce and wait for success */
+    write: (address: Address, abi: Abi, functionName: string, args: unknown[] = [], opts: WriteOpts = {}) => run(async () => {
       const { request } = await pub.simulateContract({ account, address, abi, functionName, args } as any);
-      const hash = await client.writeContract(request as any);
-      const r = await pub.waitForTransactionReceipt({ hash });
-      if (r.status !== "success") throw new Error(`tx reverted: ${functionName} ${hash}`);
-      return { hash, receipt: r };
+      const label = opts.label ?? functionName;
+      const hash = await send(label, (nonce) => client.writeContract({ ...(request as any), nonce }));
+      opts.onSubmitted?.(hash);
+      const receipt = await settle(hash, label);
+      return { hash, receipt };
     }),
     deploy: (c: { abi: Abi; bytecode: Hex }, args: unknown[] = []) => run(async () => {
-      const hash = await client.deployContract({ abi: c.abi, bytecode: c.bytecode, args } as any);
-      const r = await pub.waitForTransactionReceipt({ hash });
-      if (!r.contractAddress || r.status !== "success") throw new Error("deploy failed");
+      const hash = await send("deploy", (nonce) => client.deployContract({ abi: c.abi, bytecode: c.bytecode, args, nonce } as any));
+      const r = await settle(hash, "deploy");
+      if (!r.contractAddress) throw new Error("deploy failed");
       return r.contractAddress as Address;
     }),
   };
+}
+/** Restart recovery: settle every tx still marked submitted (receipt by hash; unknown to the node => dropped). */
+export async function reconcileTxLog() {
+  const rows = getDb().prepare("SELECT hash, label FROM tx_log WHERE status='submitted'").all() as { hash: Hex; label: string }[];
+  const out: Record<string, string> = {};
+  for (const r of rows) {
+    let status = "submitted";
+    try { const rc = await pub.getTransactionReceipt({ hash: r.hash }); status = rc.status === "success" ? "mined" : "reverted"; }
+    catch { try { await pub.getTransaction({ hash: r.hash }); status = "submitted"; } catch { status = "dropped"; } }
+    if (status !== "submitted") txLog(r.hash, { status });
+    out[r.hash] = status;
+  }
+  if (rows.length) log.info("reconciled in-flight txs", { count: rows.length, result: out });
+  return out;
 }
 export type Wallet = ReturnType<typeof wallet>;
 

@@ -1,14 +1,17 @@
 // StockClaw application service: one function per api.js stub / MCP tool (ARCHITECTURE.md §7).
 // Demo scope: single user. The user's wallet is simulated by DEMO_OWNER_KEY (no wallet-connect yet);
 // agent session keys are held server-side (stand-in for KMS) and are AgentVault delegates.
-import fs from "node:fs";
-import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { formatUnits, parseUnits, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, type Deployment } from "./chain.js";
 import * as cfg from "./config.js";
+import { getDb, migrateFromJson, tx, nowIso } from "./db.js";
 
+type SellGuard = (p: { tokenIn: string; tokenOut: string; amountIn: number }) => Promise<{ hold: boolean; estUsd: number; result?: unknown }>;
+let sellGuard: SellGuard | undefined, sellRecorder: ((p: { vault: Address; ts: number; usd: number; txHash: string }) => void) | undefined;
+export const setSellGuard = (f: SellGuard) => { sellGuard = f; };
+export const setSellRecorder = (f: typeof sellRecorder) => { sellRecorder = f; };
 let onCapBlock: (() => void) | undefined;
 export const setCapBlockHook = (f: () => void) => { onCapBlock = f; };
 export class ApiError extends Error { constructor(public status: number, msg: string) { super(msg); } }
@@ -23,7 +26,7 @@ type Order = {
   agent: Address; intent: Record<string, string | number>; sig: Hex; hash: Hex; lastError?: string; txHashes: string[];
   activationId?: string; role?: "dca" | "rung" | "take-profit"; rung?: number; parent?: string;
 };
-type HistoryRow = { txHash: string | null; explorerUrl?: string; type: string; in: string; out: string; fee: string; ts: string; status: "filled" | "blocked" | "failed"; reason?: string };
+type HistoryRow = { txHash: string | null; explorerUrl?: string; type: string; in: string; out: string; fee: string; ts: string; status: "filled" | "blocked" | "failed"; reason?: string; side?: "buy" | "sell"; executionId?: string };
 type State = {
   country?: string; attestation?: { sig: string; ts: string; expiresAt: string; signer: Address; txHash: string };
   vault?: Address; nextAgentIdx: number;
@@ -32,10 +35,39 @@ type State = {
   activations?: Record<string, any>;
 };
 
-const STATE_FILE = path.join(cfg.DATA_DIR, "state.json");
-let S: State = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, "utf8")) : { nextAgentIdx: 0, orders: {}, history: [], usage: { day: "", calls: 0 } };
+// State lives in SQLite (db.ts). S is the in-memory view; save() writes it back in one transaction.
+const empty = (): State => ({ nextAgentIdx: 0, orders: {}, history: [], usage: { day: "", calls: 0 } });
+function loadState(): State {
+  const d = getDb(), legacy = migrateFromJson();
+  if (legacy) { S = { ...empty(), ...legacy }; save(); return S; }
+  const acc = d.prepare("SELECT json FROM accounts WHERE id='default'").get() as { json: string } | undefined;
+  const st: State = { ...empty(), ...(acc ? JSON.parse(acc.json) : {}) };
+  st.orders = Object.fromEntries((d.prepare("SELECT id, json FROM intents").all() as { id: string; json: string }[]).map((r) => [r.id, JSON.parse(r.json)]));
+  st.activations = Object.fromEntries((d.prepare("SELECT id, json FROM activations").all() as { id: string; json: string }[]).map((r) => [r.id, JSON.parse(r.json)]));
+  st.history = (d.prepare("SELECT json FROM history ORDER BY seq DESC LIMIT 500").all() as { json: string }[]).map((r) => JSON.parse(r.json));
+  return st;
+}
+let S: State = empty();
+const save = () => tx(() => {
+  const d = getDb(), { orders, history, activations, ...acc } = S;
+  d.prepare("INSERT INTO accounts(id, json, updated_at) VALUES('default', ?, ?) ON CONFLICT(id) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at").run(JSON.stringify(acc), nowIso());
+  const ui = d.prepare("INSERT INTO intents(id, status, activation_id, json) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, activation_id=excluded.activation_id, json=excluded.json");
+  const ids = Object.keys(orders);
+  for (const o of Object.values(orders)) ui.run(o.intentId, o.status, o.activationId ?? null, JSON.stringify(o));
+  if (!ids.length) d.prepare("DELETE FROM intents").run();
+  const ua = d.prepare("INSERT INTO activations(id, status, json) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, json=excluded.json");
+  for (const a of Object.values(activations ?? {})) ua.run(a.activationId, a.status, JSON.stringify(a));
+  if (!Object.keys(activations ?? {}).length) d.prepare("DELETE FROM activations").run();
+  d.prepare("DELETE FROM history").run();
+  const ih = d.prepare("INSERT INTO history(ts, json) VALUES(?, ?)");
+  for (const h of [...history].reverse()) ih.run(h.ts, JSON.stringify(h));
+});
+S = loadState();
 if (S.epoch) cfg.setUserEpoch(S.epoch);
-const save = () => { fs.mkdirSync(cfg.DATA_DIR, { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(S, null, 2)); };
+/** Restart simulation (e2e) / recovery: rebuild the in-memory view from SQLite. */
+export function _reloadFromDb() { S = loadState(); if (S.epoch) cfg.setUserEpoch(S.epoch); return S; }
+const resetHooks: (() => void)[] = [];
+export const onReset = (f: () => void) => { resetHooks.push(f); };
 /** Dev reset (local chain only): fresh user = new owner key + fresh agent-key pool, all derived deterministically
  * from the anvil mnemonic at a new HD offset and funded with ETH via anvil_setBalance. Contracts stay deployed. */
 export async function dev_reset() {
@@ -44,11 +76,11 @@ export async function dev_reset() {
   cfg.setUserEpoch(epoch);
   const addrs = [owner().address, ...cfg.keys.agentPool().map((k) => privateKeyToAccount(k).address)];
   for (const a of addrs) await pub.request({ method: "anvil_setBalance" as any, params: [a, "0x56BC75E2D63100000"] as any }); // 100 ETH
-  S = { nextAgentIdx: 0, orders: {}, history: [], usage: { day: "", calls: 0 }, epoch };
-  save();
+  S = { ...empty(), epoch };
+  save(); resetHooks.forEach((f) => f());
   return { ok: true, epoch, owner: owner().address, agentKeys: addrs.length - 1 };
 }
-export function resetState() { S = { nextAgentIdx: 0, orders: {}, history: [], usage: { day: "", calls: 0 } }; save(); }
+export function resetState() { S = empty(); save(); resetHooks.forEach((f) => f()); }
 
 let D: Deployment | undefined;
 export const dep = () => (D ??= loadDeployment());
@@ -95,6 +127,9 @@ function humanReason(e: unknown): string {
     case "TransferBlocked": return "Token issuer blocked the transfer (frozen / paused / registry)";
     case "ComplianceBlocked": return "Compliance check blocked the transfer";
     case "PairNotSupported": return "Pair not supported by any registered pool";
+    case "VaultSellCapExceeded": return `Daily agent sell limit reached (needs ${usd(args[1])}, ${usd(args[2])} left): owner approval required`;
+    case "BadSellApproval": return "Sell approval signature invalid";
+    case "SellNonceUsed": return "Sell approval already used or cancelled";
     case "ZeroMinOut": return "minOut must be > 0";
     case "InsufficientLiquidity": return "Pool liquidity too low for this size";
     case "DailyCapExceeded": return `Over ${usd(args[1])} rolling-24h cap (would be ${usd(args[0])})`;
@@ -289,11 +324,13 @@ export async function execute_swap(arg: string | { tokenIn: string; tokenOut: st
     p = { ...arg, minOutRaw: arg.minOut != null && units(arg.minOut, token(arg.tokenOut).decimals) > floor ? units(arg.minOut, token(arg.tokenOut).decimals) : floor };
   }
   const ti = token(p.tokenIn), to = token(p.tokenOut);
-  const inStr = `${p.amountIn.toFixed(2)} ${ti.symbol}`, ts = new Date().toISOString();
+  const inStr = `${p.amountIn.toFixed(2)} ${ti.symbol}`, ts = new Date().toISOString(), side: "buy" | "sell" = ti.symbol === "mUSDG" ? "buy" : "sell";
   if (!S.agent || S.agent.status !== "active") {
-    pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason: "Agent key revoked (paused)" });
+    pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason: "Agent key revoked (paused)", side });
     throw new ApiError(403, "Agent key revoked (paused)");
   }
+  let sellUsd = 0;
+  if (side === "sell" && to.symbol === "mUSDG" && sellGuard) { const g = await sellGuard({ tokenIn: ti.symbol, tokenOut: to.symbol, amountIn: p.amountIn }); if (g.hold) return g.result as any; sellUsd = g.estUsd; }
   const a = agentWallet(), raw = units(p.amountIn, ti.decimals), deadline = BigInt((await chainNow()) + 300);
   const before = await read<bigint>(to.address, C.usdg.abi, "balanceOf", [S.vault]);
   try {
@@ -301,12 +338,12 @@ export async function execute_swap(arg: string | { tokenIn: string; tokenOut: st
     const { hash } = await a.write(S.vault, C.vault.abi, "agentSwap", [await poolFor(p.tokenIn, p.tokenOut), ti.address, to.address, raw, p.minOutRaw, deadline]);
     const out = fmt((await read<bigint>(to.address, C.usdg.abi, "balanceOf", [S.vault])) - before, to.decimals);
     const fee = p.amountIn * Number(await read(dep().router, C.router.abi, "feeBps")) / 10_000;
-    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: inStr, out: `${out.toFixed(6)} ${to.symbol}`, fee: `${fee.toFixed(4)} ${ti.symbol}`, ts, status: "filled" });
+    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: inStr, out: `${out.toFixed(6)} ${to.symbol}`, fee: `${fee.toFixed(4)} ${ti.symbol}`, ts, status: "filled", side });
     return { ...txOut(hash), amountOut: out };
   } catch (e) {
     if (e instanceof ApiError || !isRevert(e)) throw e;
     const reason = humanReason(e);
-    pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason });
+    pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason, side });
     if (/rolling-24h cap/.test(reason)) onCapBlock?.();
     throw new ApiError(403, `Blocked: ${reason}`);
   }
@@ -432,4 +469,4 @@ export function countCall() { get_usage(); S.usage.calls++; save(); }
 
 // ---------------------------------------------------------------- keeper hooks
 export const _state = () => S;
-export { save as _save, humanReason, priceE8, chainNow, keeper as keeperWallet, updater as updaterWallet };
+export { save as _save, pushHistory as _pushHistory, poolFor as _poolFor, token as _token, units as _units, fmt as _fmt, agentWallet as _agentWallet, requireEligible as _requireEligible, txOut as _txOut, humanReason, priceE8, chainNow, keeper as keeperWallet, updater as updaterWallet };
