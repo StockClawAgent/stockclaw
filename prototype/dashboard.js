@@ -53,7 +53,7 @@ function Home(){initData();if(ST.status===undefined)loadStrats().then(()=>{if(la
 <div class="dx-nums"><div><p class="dx-k">Portfolio value</p>${pf?`<span class="dx-big">${money(pf.v)}</span><span class="dx-sub">${pf.partial?"Some tokens have no price yet":"Mock prices"} · <span class="badge">Testnet, not real stocks</span></span>`:`<span class="dx-big dx-mut">…</span><span class="dx-sub">Loading</span>`}</div>
 <div><p class="dx-k">Today's P&amp;L</p>${plTxt}</div></div></section>
 <section class="dx-sec" aria-labelledby="dx-lim"><h2 id="dx-lim">Limits</h2>${meter("buy headroom (24h)",used,500,"(buys only, all agents)")}
-<p class="dx-mut">Each trade is capped at ${money(k?Math.min(+k.perTradeCap||100,100):100).replace(".00","")}. Trades over a limit are blocked. <a href="#/dashboard/key">Change limits</a></p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG in $100 slices; agent sells over $500 in 24h need your approval.</p></section>
+<p class="dx-mut">Each trade is capped at ${money(k?Math.min(+k.perTradeCap||100,100):100).replace(".00","")}. Trades over a limit are blocked. <a href="#/dashboard/key">Change limits</a></p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG, up to $100 per sale; agent sells over $500 in any rolling 24h, across all your agent keys, need your approval.</p></section>
 <section class="dx-sec" aria-labelledby="dx-act"><h2 id="dx-act">Activity</h2>${feed()}</section>
 <details class="dx-details" id="dxDet" ${S.dxOpen?"open":""}><summary>Details</summary><p class="dx-mut"><span id="ago" role="status">Updated ${ago()}s ago</span> · <button class="dx-link" id="rf">Refresh</button></p>
 <h2 class="dx-h3">Balances and prices</h2>${strip(details[0])}<h2 class="dx-h3">Orders</h2>${strip(details[1])}<h2 class="dx-h3">History</h2>${strip(details[2])}<h2 class="dx-h3">Fees</h2>${strip(details[3])}</details>
@@ -92,16 +92,16 @@ function Wbind(){const b=$("#wgo");b&&(b.onclick=async()=>{S.err=null;try{
   if(!S.sa){wbusy="s";render();if(S.dev.walletfail){await new Promise(r=>setTimeout(r,500));throw Object.assign(new Error("wallet"),{w:1})}const r=await api.create_smart_account(S.owner);S.sa=r.address;save()}
   wbusy=null;render();say("Wallet ready");$(".dx-primary")?.focus()}catch(e){const step=wbusy;wbusy=null;if(step=="s")S.err="wallet";if(e&&e.w)return render();fail({c:"get_wallet",a:"submit_attestation",s:"create_smart_account"}[step]||"wallet",e)}})}
 R["/onboarding/wallet"]=[W,Wbind];
-// Step 3: agent key = confirm defaults; test funds are claimed automatically right after
+// Step 3: agent key = defaults, one tap; test funds are claimed automatically right after
 let kbusy=null,editLimits=false;
 function K(){if(editLimits)return reskin(2,O3)();const d=defaults();const k=S.key;
- return obx(2,`<h1>${k?"Your agent is ready":"Confirm your agent's limits"}</h1><p class="dx-lede">Your AI trades with a limited key. It can only trade these tickers, within these limits, and it expires in 7 days.</p>
+ return obx(2,`<h1>${k?"Your agent is ready":"Your agent's limits"}</h1><p class="dx-lede">Your AI trades with a limited key. It can only trade these tickers, within these limits, and it expires in 7 days.</p>
 ${!S.sa?`<div class="st err" role="alert">Set up your wallet first. <a href="#/onboarding/wallet">Back to step 2</a></div>`:""}
 <dl class="dx-facts"><div><dt>Per trade</dt><dd>${money(k?k.perTradeCap:d.perTradeCap).replace(".00","")}</dd></div><div><dt>Buy headroom (24h)</dt><dd>${money(k?k.dailyCap:d.dailyCap).replace(".00","")}</dd></div><div><dt>Tickers</dt><dd>${(k?k.allowlist:d.allowlist).join(" ")}</dd></div><div><dt>Expires</dt><dd>${k?fmtD(k.expiresAt):"in 7 days"}</dd></div></dl>
-<p class="dx-mut dx-small">Up to $100 per trade and $500 of buys per rolling 24h on testnet. Sells don't count toward it. <span class="badge">Testnet, not real stocks</span></p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG in $100 slices; agent sells over $500 in 24h need your approval.</p>
+<p class="dx-mut dx-small">Up to $100 per trade and $500 of buys per rolling 24h on testnet. Sells have their own $500 limit. <span class="badge">Testnet, not real stocks</span></p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG, up to $100 per sale; agent sells over $500 in any rolling 24h, across all your agent keys, need your approval.</p>
 ${k?prog([[true,"Agent key created"],[S.funded,S.funded?"Test tokens added (mUSDG and stock tokens, no value)":"Adding test tokens",kbusy=="f"]]):kbusy?prog([[false,"Creating agent key (1 signature)",kbusy=="k"],[false,"Adding test tokens"]]):""}
 ${S.err=="rate"?`<div class="st err" role="alert">The faucet's daily limit was reached. <a href="#/onboarding/faucet">Try the faucet again</a> or continue if you already have test tokens.</div>`:""}
-${k?`<a class="dx-primary" href="#/onboarding/passkey">Continue</a>${!S.funded&&!kbusy?` <button class="dx-link" id="fgo">Add test tokens</button>`:""}`:`<button class="dx-primary" id="kgo" ${S.sa&&!kbusy?"":"disabled"}>Confirm and create key</button> <button class="dx-link" id="kedit">Change limits</button>`}<p id="kerr" class="st err" role="alert" hidden></p>`)}
+${k?`<a class="dx-primary" href="#/onboarding/passkey">Continue</a>${!S.funded&&!kbusy?` <button class="dx-link" id="fgo">Add test tokens</button>`:""}`:`<button class="dx-primary" id="kgo" ${S.sa&&!kbusy?"":"disabled"}>Create agent key</button> <button class="dx-link" id="kedit">Change limits</button>`}<p id="kerr" class="st err" role="alert" hidden></p>`)}
 async function fund(){kbusy="f";render();try{await api.faucet_testnet();if(S.dev.ratelimit)throw {status:429};S.funded=true;S.err=null}catch(e){if(e&&e.status==429)S.err="rate";else{kbusy=null;return fail("faucet_testnet",e)}}kbusy=null;save();render();say(S.funded?"Test tokens added":"Faucet limit reached")}
 function Kbind(){if(editLimits){O3bind();const f=$("#kf");f&&f.addEventListener("submit",()=>setTimeout(()=>{if(S.key){editLimits=false;render();if(!S.funded)fund()}},50));return}
  const e=$("#kedit");e&&(e.onclick=()=>{editLimits=true;draft=defaults();render()});const f=$("#fgo");f&&(f.onclick=fund);
@@ -115,27 +115,27 @@ R["/onboarding/strategy"]=[reskin(4,O6),statusBind];
 function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.body.classList.toggle("sc-app",p!=="/"&&p in R||/^\/(dashboard|onboarding)\//.test(p))}
 addEventListener("hashchange",mark);mark();render();
 
-// ---------- Basket buy (confirm → live fill donut) and latest-basket card. Data via BasketFill.adapter (sim until api.js ships it). ----------
+// ---------- Basket buy (Home entry → live fill donut, no confirm step) and latest-basket card. Data via BasketFill.adapter (sim until api.js ships it). ----------
 let bkSel=null,bkAmt=500,bkBusy=false;
-function BuyBasket(){const list=(window.SCBaskets&&SCBaskets.data&&SCBaskets.data.baskets)||[];if(!list.length)return dash("overview",`<p class="dx-quiet">Loading baskets…</p>`);
- const b=list.find(x=>x.id==bkSel)||list[0];bkSel=b.id;const run=S.lastBasket&&S.lastBasket.basketId==b.id&&S.lastBasket.fresh;
- return dash("overview",`<section class="dx-ob"><p class="dx-k">Buy a basket</p><h1>${run?"Buying "+esc(b.theme||b.name||b.id):"Get me some "+esc(b.theme||b.name||b.id)+"."}</h1>
-${run?`<div id="bfBuy" class="bf-card"></div><p class="dx-mut dx-small">Each order is a separate trade of $100 or less, within your buy headroom (24h). Simulated fills (demo).</p><a class="dx-primary" href="#/dashboard/overview">Back to Home</a> <button class="dx-link" id="bkNew">Buy another basket</button>`:
-`<div class="lp-tabs" role="radiogroup" aria-label="Basket">${list.map(x=>`<button role="radio" aria-checked="${x.id==b.id}" class="${x.id==b.id?"on":""}" data-bksel="${esc(x.id)}">${esc(x.theme||x.name||x.id)}</button>`).join("")}</div>
-<label class="dx-amt">Amount <input id="bkAmt" type="number" min="10" max="500" step="10" value="${bkAmt}"> <span class="dx-mut">mUSDG, up to $500 per basket</span></label>
-<p class="dx-mut dx-small">${(b.tickers||[]).length} stocks, market-cap weighted. Split into orders of $100 or less. You confirm every buy.</p>
-<button class="dx-primary" id="bkGo" ${bkBusy?"disabled":""}>Buy basket</button><p id="bkErr" class="st err" role="alert" hidden></p>`}</section>`)}
-function BuyBasketBind(){document.querySelectorAll("[data-bksel]").forEach(x=>x.onclick=()=>{bkSel=x.dataset.bksel;render()});
+const BKS=()=>(window.SCBaskets&&SCBaskets.data&&SCBaskets.data.baskets)||[];
+// Order entry lives on Home (no confirm step): pick a basket + amount, "Buy basket" goes straight to the filling donut.
+function bkEntry(){const list=BKS();if(!list.length)return "";const b=list.find(x=>x.id==bkSel)||list[0];bkSel=b.id;
+ return `<section class="dx-sec" aria-labelledby="dx-bkb"><h2 id="dx-bkb">Buy a basket</h2><div class="lp-tabs" role="radiogroup" aria-label="Basket">${list.map(x=>`<button role="radio" aria-checked="${x.id==b.id}" class="${x.id==b.id?"on":""}" data-bksel="${esc(x.id)}">${esc(x.theme||x.name||x.id)}</button>`).join("")}</div>
+<p class="dx-amt"><label>Amount <input id="bkAmt" type="number" min="10" max="500" step="10" value="${bkAmt}"></label> <span class="dx-mut">mUSDG, up to $500 per basket, in orders of $100 or less</span></p>
+<button class="dx-link dx-bkgo" id="bkGo" ${bkBusy?"disabled":""}>Buy ${esc(b.theme||b.name||b.id)} basket</button><p id="bkErr" class="st err" role="alert" hidden></p></section>`}
+function bkEntryBind(){document.querySelectorAll("[data-bksel]").forEach(x=>x.onclick=()=>{bkSel=x.dataset.bksel;render()});
  const a=$("#bkAmt");a&&(a.oninput=()=>{bkAmt=Math.max(10,Math.min(500,+a.value||0))});
- const n=$("#bkNew");n&&(n.onclick=()=>{S.lastBasket.fresh=false;save();render()});
- const g=$("#bkGo");g&&(g.onclick=async()=>{const b=SCBaskets.data.baskets.find(x=>x.id==bkSel);bkBusy=true;render();try{const r=await BasketFill.adapter.start(b,bkAmt);S.lastBasket={id:r.id,basketId:b.id,name:b.theme||b.name||b.id,fresh:true};save()}catch(err){bkBusy=false;render();const x=$("#bkErr");x.hidden=false;x.textContent="Couldn't start the basket: "+err.message;return}bkBusy=false;render();$("#bfBuy")?.focus()});
- const el=$("#bfBuy");if(el&&S.lastBasket)BasketFill.mount(el,S.lastBasket.id)}
+ const g=$("#bkGo");g&&(g.onclick=async()=>{const b=BKS().find(x=>x.id==bkSel);bkBusy=true;g.disabled=true;try{const r=await BasketFill.adapter.start(b,bkAmt);S.lastBasket={id:r.id,basketId:b.id,name:b.theme||b.name||b.id};save()}catch(err){bkBusy=false;g.disabled=false;const x=$("#bkErr");x.hidden=false;x.textContent="Couldn't start the basket: "+err.message;return}bkBusy=false;location.hash="#/dashboard/basket"})}
+function BuyBasket(){const lb=S.lastBasket;if(!lb)return dash("overview",`<p class="dx-quiet">No basket order yet. <a href="#/dashboard/overview">Buy one from Home</a></p>`);
+ return dash("overview",`<section class="dx-ob"><p class="dx-k">Basket order</p><h1>Buying ${esc(lb.name||lb.basketId)}</h1><div id="bfBuy" class="bf-card" tabindex="-1"></div>
+<p class="dx-mut dx-small">Each order is a separate trade of $100 or less, within your buy headroom (24h). Simulated fills (demo).</p><a class="dx-primary" href="#/dashboard/overview">Back to Home</a></section>`)}
+function BuyBasketBind(){const el=$("#bfBuy");if(el&&S.lastBasket){BasketFill.mount(el,S.lastBasket.id);el.focus()}}
 R["/dashboard/basket"]=[BuyBasket,BuyBasketBind];
 {const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/dashboard/basket"){document.body.classList.remove("is-landing");document.body.classList.add("sc-app");render()}}
 {const H0=Home,HB0=HomeBind;
- Home=function(){const h=H0();const lb=S.lastBasket;const card=lb?`<section class="dx-sec" aria-labelledby="dx-bk"><h2 id="dx-bk">Latest basket: ${esc(lb.name||lb.basketId)}</h2><div id="bfHome" class="bf-card"></div></section>`:`<p class="dx-mut"><a href="#/dashboard/basket">Buy a basket</a></p>`;
-  return h.replace('<section class="dx-sec" aria-labelledby="dx-act">',card+'<section class="dx-sec" aria-labelledby="dx-act">')};
- HomeBind=function(){HB0();const el=$("#bfHome");if(el&&S.lastBasket)BasketFill.mount(el,S.lastBasket.id,{onError:()=>{}})};
+ Home=function(){const h=H0();const lb=S.lastBasket;const card=lb?`<section class="dx-sec" aria-labelledby="dx-bk"><h2 id="dx-bk">Latest basket: ${esc(lb.name||lb.basketId)}</h2><div id="bfHome" class="bf-card"></div></section>`:"";
+  return h.replace('<section class="dx-sec" aria-labelledby="dx-act">',card+bkEntry()+'<section class="dx-sec" aria-labelledby="dx-act">')};
+ HomeBind=function(){HB0();bkEntryBind();const el=$("#bfHome");if(el&&S.lastBasket)BasketFill.mount(el,S.lastBasket.id,{onError:()=>{}})};
  R["/dashboard/overview"]=[Home,HomeBind]}
 
 window.SCdx={obx,money};
