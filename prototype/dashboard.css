@@ -91,3 +91,4 @@ body.sc-app .logo{background-color:transparent;background-position:left center;w
 @media (prefers-reduced-motion:reduce){.dx-agent .lp-bot{animation:none}}
 .dx-agent .lp-bot{margin:0}
 body.sc-app .tnbar button{background:none!important;border:0!important;color:var(--lime)!important;text-decoration:underline;padding:0 0 0 10px!important;font:inherit;font-weight:600}
+.fine{font-size:12px!important;color:#9a978f!important;margin:6px 0 0!important}

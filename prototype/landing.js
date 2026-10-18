@@ -16,6 +16,12 @@ let BK=null,BKerr=null;
 fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d;buildColors(d.baskets)}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/")render()});
 // Fixed ticker→color map: same ticker, same color in every basket. Greedy coloring over all baskets (NVDA first = lime),
 // so no basket ever shows two identical colors (palette 12 > max basket size). Rebuilt whenever baskets.json loads.
+// Headline word = the basket display name from data/baskets.json, verbatim.
+const hw=b=>(b&&(b.name||b.theme))||"AI";
+function swapWord(b){const w=document.querySelector(".lp-hw");if(!w)return;const t=hw(b),old=w.querySelector(".lp-hw-i:not(.out)");if(old&&old.textContent==t)return;
+ if(matchMedia("(prefers-reduced-motion: reduce)").matches||!old){w.innerHTML=`<span class="lp-hw-i">${esc(t)}</span>`;return}
+ w.querySelectorAll(".out").forEach(x=>x.remove());old.classList.add("out");old.setAttribute("aria-hidden","true");const n=document.createElement("span");n.className="lp-hw-i in";n.textContent=t;w.appendChild(n);
+ requestAnimationFrame(()=>requestAnimationFrame(()=>n.classList.remove("in")));setTimeout(()=>old.remove(),280)}
 const PAL=["#C6FF3D","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
 let TCOL={};function buildColors(bs){const nb={},ord=[];(bs||[]).forEach(b=>{const s=(b.tickers||[]).map(t=>t.symbol||t.ticker);s.forEach(x=>{if(!nb[x]){nb[x]=new Set();ord.push(x)}s.forEach(y=>y!=x&&nb[x].add(y))})});
  ord.sort((a,b)=>(b=="NVDA")-(a=="NVDA")||nb[b].size-nb[a].size);TCOL={};for(const x of ord){const used=new Set([...nb[x]].map(y=>TCOL[y]));TCOL[x]=PAL.find(c=>!used.has(c))||PAL[ord.indexOf(x)%PAL.length]}}
@@ -34,7 +40,7 @@ function panel(b,ph,tag){if(!b)return"";const name=b.theme||b.name||b.id;const t
 <div class="lp-dn-wrap"><div class="lp-dn"><svg viewBox="0 0 180 180" width="220" height="220" aria-hidden="true" focusable="false">${segs}</svg><div class="lp-dn-c" aria-live="polite"><b>${t.length}</b><span>names</span></div></div>
 <ul class="lp-lg" aria-label="${esc(name)} basket weights">${t.map((x,i)=>`<li tabindex="0" data-i="${i}" title="${esc(x.nm)}"><span class="lp-sw" style="background:${col(x.sym)}" aria-hidden="true"></span><span class="lp-lg-t" style="color:${col(x.sym)}">${esc(x.sym)}</span><span class="lp-lg-w">${pct(x.w)}</span></li>`).join("")}</ul></div>`}
 function bindBaskets(){const tabs=[...document.querySelectorAll('.lp-tabs [role=tab]')];if(!tabs.length)return;
- const show=(i,focus)=>{BKsel=i;tabs.forEach((t,j)=>{t.setAttribute("aria-selected",j==i);t.tabIndex=j==i?0:-1});const p=document.getElementById("bkp");p.setAttribute("aria-labelledby","bkt-"+i);p.innerHTML=panel(BK.baskets[i],BK.status==="placeholder",'<span class="lp-ph">Placeholder weights, not real data</span>');wire(p);focus&&tabs[i].focus();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))};
+ const show=(i,focus)=>{BKsel=i;swapWord(BK.baskets[i]);tabs.forEach((t,j)=>{t.setAttribute("aria-selected",j==i);t.tabIndex=j==i?0:-1});const p=document.getElementById("bkp");p.setAttribute("aria-labelledby","bkt-"+i);p.innerHTML=panel(BK.baskets[i],BK.status==="placeholder",'<span class="lp-ph">Placeholder weights, not real data</span>');wire(p);focus&&tabs[i].focus();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))};
  tabs.forEach((t,i)=>{t.onclick=()=>show(i);t.onkeydown=e=>{const k={ArrowRight:1,ArrowLeft:-1}[e.key];if(k){e.preventDefault();show((i+k+tabs.length)%tabs.length,true)}else if(e.key=="Home"){e.preventDefault();show(0,true)}else if(e.key=="End"){e.preventDefault();show(tabs.length-1,true)}}});
  wire(document.getElementById("bkp"))}
 function wire(p){if(!p)return;const t=rows(BK.baskets[BKsel]);const c=p.querySelector(".lp-dn-c"),dn=p.querySelector(".lp-dn-wrap");const def=c.innerHTML;
@@ -45,9 +51,9 @@ function baskets(){const ph=!BK||BK.status==="placeholder";const tag='<span clas
  const list=(BK&&BK.baskets)||[];const R_=(BK&&BK.rules)||{};
  const body=!BK?`<p class="lp-muted">${BKerr?"Basket data couldn't load.":"Loading baskets…"}</p>`:`<div class="lp-tabs" role="tablist" aria-label="Baskets">${list.map((b,i)=>`<button role="tab" id="bkt-${i}" aria-controls="bkp" aria-selected="${i==BKsel}" tabindex="${i==BKsel?0:-1}" data-bk="${i}">${esc(b.theme||b.name||b.id)}</button>`).join("")}</div><div class="lp-bkp" id="bkp" role="tabpanel" aria-labelledby="bkt-${BKsel}">${panel(list[BKsel],ph,tag)}</div>`;
  const tip=BK?`Source: ${BK.source||"—"}. Market caps as of ${BK.asOf||"—"}. Version ${BK.version||"—"}.`:"";
- return `<section class="lp-sec" id="lp-baskets" aria-labelledby="lp-bk-h"><p class="lp-k">01</p><h2 id="lp-bk-h">Say “get me some AI.” ${ph?tag:""}</h2>
+ return `<section class="lp-sec" id="lp-baskets" aria-labelledby="lp-bk-h"><p class="lp-k">01</p><h2 id="lp-bk-h">Say “get me some <span class="lp-nw"><span class="lp-hw" aria-live="polite"><span class="lp-hw-i">${esc(hw(list[BKsel]))}</span></span>.”</span> ${ph?tag:""}</h2>
 <p class="lp-bk-intro">Themed baskets of tokenized stocks, bought in one go.</p>${body}
-<p class="lp-fine"><span class="lp-tip" tabindex="0" aria-describedby="lp-tipt">Market-cap weighted<span role="tooltip" id="lp-tipt">${esc(tip)}</span></span> · Baskets are not ETFs or funds. Not investment advice. You confirm every buy.</p></section>`}
+<p class="lp-fine"><span class="lp-tip" tabindex="0" aria-describedby="lp-tipt">Market-cap weighted<span role="tooltip" id="lp-tipt">${esc(tip)}</span></span> · Baskets are not ETFs or funds. Not investment advice. You confirm every buy. Stock tokens can be frozen or restricted by their issuer; a frozen token can't be sold.</p></section>`}
 const esc=(v)=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function Landing(){return `<div class="lp">
 <header class="lp-nav"><a class="lp-logo" href="#/"><img src="logo-lockup.svg" width="110" height="28" alt="StockClaw home"></a>

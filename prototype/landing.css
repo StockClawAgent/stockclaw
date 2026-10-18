@@ -140,3 +140,11 @@ html{scroll-padding-top:72px}.lp [id]{scroll-margin-top:72px}body.is-landing .tn
 .lp-tip:hover [role=tooltip],.lp-tip:focus [role=tooltip]{opacity:1;visibility:visible}
 .lp-tip:focus-visible{outline:2px solid var(--or);outline-offset:2px}
 .lp-bkp-h{align-items:center}
+/* Baskets headline word swap: stacked in one grid cell so the line never jumps; old slides up/out, new slides in. */
+.lp-hw{display:inline-grid;vertical-align:bottom;overflow:hidden;padding-bottom:.08em;margin-bottom:-.08em}
+.lp-hw-i{grid-area:1/1;transition:transform .25s ease,opacity .25s ease;white-space:nowrap}
+.lp-hw-i.out{transform:translateY(-60%);opacity:0}
+.lp-hw-i.in{transform:translateY(60%);opacity:0;transition:none}
+@media (prefers-reduced-motion:reduce){.lp-hw-i{transition:none}}
+.lp-nw{white-space:nowrap}
+@media (max-width:520px){#lp-bk-h{font-size:30px!important}}
