@@ -1,0 +1,209 @@
+{
+ "status": "final",
+ "source": "BASKETS.md \u00a78 Results v1.0.0 (Lucius): market-cap weighted, 25% single-name cap, 5% floor; market caps as of the 2026-10-16 close (companiesmarketcap.com export)",
+ "updated": "2026-10-18",
+ "baskets": [
+  {
+   "id": "ai",
+   "name": "AI",
+   "tickers": [
+    {
+     "symbol": "NVDA",
+     "weight": 25.0
+    },
+    {
+     "symbol": "GOOGL",
+     "weight": 21.23
+    },
+    {
+     "symbol": "MSFT",
+     "weight": 20.24
+    },
+    {
+     "symbol": "TSM",
+     "weight": 11.02
+    },
+    {
+     "symbol": "META",
+     "weight": 9.31
+    },
+    {
+     "symbol": "AVGO",
+     "weight": 8.08
+    },
+    {
+     "symbol": "MU",
+     "weight": 5.12
+    }
+   ]
+  },
+  {
+   "id": "chips",
+   "name": "Chips",
+   "tickers": [
+    {
+     "symbol": "NVDA",
+     "weight": 25.0
+    },
+    {
+     "symbol": "TSM",
+     "weight": 24.05
+    },
+    {
+     "symbol": "AVGO",
+     "weight": 17.63
+    },
+    {
+     "symbol": "MU",
+     "weight": 11.17
+    },
+    {
+     "symbol": "AMD",
+     "weight": 9.7
+    },
+    {
+     "symbol": "ASML",
+     "weight": 7.11
+    },
+    {
+     "symbol": "INTC",
+     "weight": 5.34
+    }
+   ]
+  },
+  {
+   "id": "power-nuclear",
+   "name": "Power/Nuclear",
+   "tickers": [
+    {
+     "symbol": "GEV",
+     "weight": 25.0
+    },
+    {
+     "symbol": "CEG",
+     "weight": 23.46
+    },
+    {
+     "symbol": "PWR",
+     "weight": 23.18
+    },
+    {
+     "symbol": "BE",
+     "weight": 15.91
+    },
+    {
+     "symbol": "VST",
+     "weight": 12.45
+    }
+   ]
+  },
+  {
+   "id": "defense",
+   "name": "Defense",
+   "tickers": [
+    {
+     "symbol": "LHX",
+     "weight": 25.0
+    },
+    {
+     "symbol": "BA",
+     "weight": 25.0
+    },
+    {
+     "symbol": "LMT",
+     "weight": 25.0
+    },
+    {
+     "symbol": "HWM",
+     "weight": 25.0
+    }
+   ]
+  },
+  {
+   "id": "space",
+   "name": "Space",
+   "tickers": [
+    {
+     "symbol": "SPCX",
+     "weight": 25.0
+    },
+    {
+     "symbol": "RKLB",
+     "weight": 25.0
+    },
+    {
+     "symbol": "ASTS",
+     "weight": 25.0
+    },
+    {
+     "symbol": "PL",
+     "weight": 12.54
+    },
+    {
+     "symbol": "FLY",
+     "weight": 7.13
+    },
+    {
+     "symbol": "RDW",
+     "weight": 5.33
+    }
+   ]
+  },
+  {
+   "id": "quantum",
+   "name": "Quantum",
+   "tickers": [
+    {
+     "symbol": "IONQ",
+     "weight": 24.99
+    },
+    {
+     "symbol": "QBTS",
+     "weight": 25.0
+    },
+    {
+     "symbol": "RGTI",
+     "weight": 23.93
+    },
+    {
+     "symbol": "INFQ",
+     "weight": 11.71
+    },
+    {
+     "symbol": "QUBT",
+     "weight": 8.75
+    },
+    {
+     "symbol": "XNDU",
+     "weight": 5.62
+    }
+   ]
+  },
+  {
+   "id": "cyber",
+   "name": "Cyber",
+   "tickers": [
+    {
+     "symbol": "PANW",
+     "weight": 25.0
+    },
+    {
+     "symbol": "CRWD",
+     "weight": 25.0
+    },
+    {
+     "symbol": "FTNT",
+     "weight": 23.55
+    },
+    {
+     "symbol": "NET",
+     "weight": 20.03
+    },
+    {
+     "symbol": "ZS",
+     "weight": 6.42
+    }
+   ]
+  }
+ ]
+}
