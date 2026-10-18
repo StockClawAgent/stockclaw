@@ -575,6 +575,32 @@ try {
     } finally { process.env.BREAKER = "off"; }
   });
 
+  await step("breaker: one $500 basket never pauses (80% alert in feed + /healthz only); basket + another buy past 80% within 1h trips; each basket = 1 trade, so a 6th basket in 10 min trips", async () => {
+    process.env.BREAKER = "on";
+    try {
+      await freshUser();
+      const b1 = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 500 }); assert.equal(b1.status, 200, JSON.stringify(b1.body));
+      const e1 = await waitExec(b1.body.id); assert.equal(e1.status, "filled", JSON.stringify(e1)); assert.equal(e1.legs.length, 6);
+      assert.equal((await callH("GET", "keys/breaker")).body.tripped.length, 0, "single basket doesn't trip");
+      const al = (await callH("GET", "activity")).body.find((x: any) => x.kind === "alert"); assert.ok(al && al.code === "KEY_SINGLE_EXECUTION_80PCT" && al.ref === b1.body.id, "single-execution 80% alert in the feed");
+      const hz = await fetch(`http://127.0.0.1:${PORT_API}/healthz`); assert.equal(hz.status, 200); assert.ok((await hz.json()).alerts.includes("KEY_SINGLE_EXECUTION_80PCT"), "alert in /healthz");
+      assert.equal((await call("POST", "execute_swap", { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.05 })).status, 200, "key still relays");
+      await freshUser();
+      const b2 = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 390 }); const e2 = await waitExec(b2.body.id); assert.equal(e2.status, "filled");
+      assert.equal((await callH("GET", "keys/breaker")).body.tripped.length, 0);
+      assert.equal((await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 20 })).status, 200);
+      const nx = await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 5 });
+      assert.equal(nx.status, 423); assert.match(nx.body.error, /buys reached \$410\.00 \(>= 80% of the \$500 24h buy cap\)/);
+      await callH("POST", `keys/${svc._agent()!.id}/resume`);
+      // each basket = one trade toward "> 5 trades in 10 min" (legs aren't counted): 5 baskets ok, the 6th trips
+      await freshUser();
+      for (let i = 0; i < 5; i++) { const b = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 15 }); assert.equal(b.status, 200, `basket ${i + 1} ${JSON.stringify(b.body)}`); assert.equal((await waitExec(b.body.id)).status, "filled"); }
+      const b6 = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 15 });
+      assert.equal(b6.status, 423); assert.match(b6.body.error, /more than 5 trades in 10 minutes/);
+      await callH("POST", `keys/${svc._agent()!.id}/resume`);
+    } finally { process.env.BREAKER = "off"; }
+  });
+
   await step("MCP per-key trade limit: 10 trade-tool calls/min per agent key, then refused; read tools unaffected", async () => {
     const { _resetTradeLimiter } = await import("../src/mcp.js"); _resetTradeLimiter();
     const c = await mcpClient();

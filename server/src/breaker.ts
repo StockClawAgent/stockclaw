@@ -1,5 +1,5 @@
 // Per-key anomaly breaker (Gaius guardrail 2). A key trips when, within 1h, its buys reach 80% of its 24h buy cap or
-// its sells reach 80% of the vault's $500 sell cap, or when it starts a 6th trade within 10 minutes (a basket counts
+// its sells reach 80% of the vault's $500 sell cap, counting only when the usage comes from >= 2 separate executions, or when it starts a 6th trade within 10 minutes (a basket counts
 // as ONE trade: its legs share a ref). A tripped key is not relayed for (agent swaps, basket legs, keeper intents)
 // until the owner resumes or revokes it; trips are logged as alerts and shown in the activity feed and /api/health.
 // Counting restarts at resume. BREAKER=off disables it (used by legacy e2e steps that test the onchain caps directly).
@@ -16,6 +16,7 @@ export function state(keyId: string): State {
   const r = getDb().prepare("SELECT tripped, tripped_at, resumed_at, reason FROM key_breaker WHERE key_id=?").get(keyId) as any;
   return r ? { tripped: !!r.tripped, trippedAt: r.tripped_at, resumedAt: r.resumed_at, reason: r.reason } : { tripped: false, trippedAt: null, resumedAt: null, reason: null };
 }
+export const recentAlerts = () => getDb().prepare("SELECT key_id, json FROM activity WHERE kind='alert' AND ts > ?").all(new Date(Date.now() - 3600_000).toISOString()) as { key_id: string; json: string }[];
 export const tripped = () => (getDb().prepare("SELECT key_id, reason, tripped_at FROM key_breaker WHERE tripped=1").all() as { key_id: string; reason: string; tripped_at: number }[]);
 function trip(keyId: string, reason: string) {
   getDb().prepare("INSERT INTO key_breaker(key_id, tripped, tripped_at, reason) VALUES(?,1,?,?) ON CONFLICT(key_id) DO UPDATE SET tripped=1, tripped_at=excluded.tripped_at, reason=excluded.reason").run(keyId, Date.now(), reason);
@@ -39,8 +40,15 @@ export function record(keyId: string, side: "buy" | "sell", usd: number, ref: st
   const d = getDb();
   d.prepare("INSERT INTO key_trades(key_id, ts, side, usd, ref) VALUES(?,?,?,?,?)").run(keyId, Date.now(), side, usd, ref);
   if (!enabled() || state(keyId).tripped) return;
-  const t0 = since(keyId, 3600_000), sum = (sd: string) => (d.prepare("SELECT COALESCE(SUM(usd),0) s FROM key_trades WHERE key_id=? AND side=? AND ts>?").get(keyId, sd, t0) as { s: number }).s;
-  const buyCap = Math.min(svc._agent()?.dailyCap ?? cfg.MAX_PER_DAY_USD, cfg.MAX_PER_DAY_USD), b = sum("buy"), s = sum("sell");
+  // 80% rule needs usage from >= 2 separate executions (a basket = one execution; one basket alone never trips: the onchain caps bound it)
+  const t0 = since(keyId, 3600_000), q = (sd: string) => d.prepare("SELECT COALESCE(SUM(usd),0) s, COUNT(DISTINCT ref) n FROM key_trades WHERE key_id=? AND side=? AND ts>?").get(keyId, sd, t0) as { s: number; n: number };
+  const buyCap = Math.min(svc._agent()?.dailyCap ?? cfg.MAX_PER_DAY_USD, cfg.MAX_PER_DAY_USD), B = q("buy"), S = q("sell"), b = B.n >= 2 ? B.s : 0, s = S.n >= 2 ? S.s : 0;
+  // Gaius: a single execution reaching 80% alerts (feed + health) but doesn't pause
+  for (const [side, X, cap] of [["buy", B, buyCap], ["sell", S, SELL_CAP]] as const)
+    if (X.n < 2 && X.s >= PCT * cap && !d.prepare("SELECT 1 FROM activity WHERE kind='alert' AND key_id=? AND json LIKE ?").get(keyId, `%"ref":"${ref}"%`)) {
+      log.error("ALERT", { code: "KEY_SINGLE_EXECUTION_80PCT", severity: "warn", keyId, ref, message: `${side}s $${X.s.toFixed(2)} from one execution (>= 80% of the $${cap} cap); not paused` });
+      act.add({ kind: "alert", keyId, ref, code: "KEY_SINGLE_EXECUTION_80PCT", title: `Agent key ${keyId}: one execution used $${X.s.toFixed(2)} of the $${cap} 24h ${side} cap (>= 80%). Not paused; the onchain cap still applies.`, actions: [act.revokeAction(keyId)] } as any);
+    }
   if (b >= PCT * buyCap) trip(keyId, `buys reached $${b.toFixed(2)} (>= 80% of the $${buyCap} 24h buy cap) within 1h`);
   else if (s >= PCT * SELL_CAP) trip(keyId, `sells reached $${s.toFixed(2)} (>= 80% of the $${SELL_CAP} 24h sell cap) within 1h`);
 }

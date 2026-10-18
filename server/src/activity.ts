@@ -5,7 +5,7 @@ import { getDb, nowIso } from "./db.js";
 import { log } from "./log.js";
 
 export type Action = { type: "revoke_key" | "resume_key"; label: string; method: "POST"; href: string; keyId?: string };
-export type Entry = { id: number; ts: string; kind: "trade" | "breaker" | "breaker_resumed"; keyId: string | null; title: string; side?: "buy" | "sell"; usd?: number; txHash?: string | null; executionId?: string; source?: string; actions: Action[] };
+export type Entry = { id: number; ts: string; kind: "trade" | "breaker" | "breaker_resumed" | "alert"; ref?: string; code?: string; keyId: string | null; title: string; side?: "buy" | "sell"; usd?: number; txHash?: string | null; executionId?: string; source?: string; actions: Action[] };
 const subs = new Set<(e: Entry) => void>();
 export const revokeAction = (keyId?: string | null): Action => ({ type: "revoke_key", label: "Revoke agent key", method: "POST", href: "/api/revoke_session_key", ...(keyId ? { keyId } : {}) });
 export const resumeAction = (keyId: string): Action => ({ type: "resume_key", label: "Resume agent key", method: "POST", href: `/api/keys/${keyId}/resume`, keyId });
