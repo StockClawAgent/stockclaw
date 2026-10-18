@@ -197,3 +197,6 @@ Position strategies as **tools the user configures and controls**, not recommend
 2. **[DECISION]** One active strategy per vault for v1 (recommended) vs several sharing the $500 cap.
 3. **[DECISION]** S3 is now Trend Flip (9 EMA / VWAP) (decided). Name: Trend Flip (decided). Open: sells vs $500 cap (Quintus); candle/volume data source.
 4. Basket composition is limited to the 5 testnet tokens; "mag-7/SPY-style" naming should not appear in the UI until those assets exist.
+
+## 14. Update: exit exemption (2026-10-18)
+Julius approved exempting stock→USDG sells from the $500/24h cap; Quintus is implementing it (in the working tree of `src/AgentVault.sol`, not yet committed or reviewed). **Once it lands and passes Gaius's review**, the Trend Flip (S3) 2-round-trip limit can be revisited: buys alone would count ($98 each), so up to 5 entries per 24h fit the cap. Recommendation: raise `maxEntriesPerDay` max to 4 (default stays 2) to leave headroom for other strategies, and drop the exit-reserve rule for USDG exits. The same applies to Dip Hunter take-profits. **No defaults change until then.**

@@ -210,3 +210,60 @@ Plain swaps by the agent key within caps are already allowed today. For baskets,
 
 ## Decision (2026-10-18, Julius via Cassius)
 Launch themes: AI, Chips, Power/Nuclear, Defense, Space, Quantum, Cyber (7). Robotics and Oil/Energy are dropped for now. Default cap: $250 per basket. Friday: the mini AI & Tech basket (AMD, PLTR, AMZN) stays a stretch goal.
+
+## 8. Market-cap weighting (decided 2026-10-18, Julius via Cassius) — supersedes the static example weights in §2
+**Data:** `data/basket-mcaps-2026-10-18.csv`, from the companiesmarketcap.com full CSV export (https://companiesmarketcap.com/?download=csv), fetched 2026-10-18 19:02 ET (Sunday, so values reflect the Friday 2026-10-16 close; not independently cross-checked). Raw export saved at `data/companiesmarketcap-all-2026-10-18.csv`. Notes: GOOGL uses Alphabet's company total (listed under GOOG). **SATS (Space) is UNAVAILABLE**: the source lists EchoStar under "ECHO" and we haven't verified that mapping, so SATS is excluded.
+**Script:** `python3 data/compute_weights.py [--usd 100 250] [--json out.json]` (deterministic, stdlib only).
+
+**Rules (chosen):**
+1. Raw weight = market cap / sum of the basket's market caps.
+2. **Single-name cap 25%**, iterative redistribution pro rata to the uncapped names. 25% keeps a mega-cap (NVDA, GOOGL, MSFT) from becoming most of a basket, and needs only 4 names to be feasible.
+3. **Min weight 5%**: after capping, drop the smallest name below 5%, recompute, repeat; never go below 4 names. Effect: long-tail small caps drop out of AI/Chips/Power/Defense. With exactly 4 survivors (Defense), the cap forces equal weight (25% each). That's a property of the rules, so we disclose it.
+4. **Min leg $5** (0.30% fee = $0.015, about $0.02–0.03 total per leg with the pool spread, and room for cent rounding). Because min weight is 5%, every leg is ≥ $5 at $100. For smaller buys, drop the smallest-cap name and recompute weights (same rules) until every leg is ≥ $5. So a $50 buy uses fewer names. Never pad names.
+5. **Max leg $98**: legs above $98 split into sub-legs. With a 25% cap, no leg goes over $98 until the basket is above $392, so the $100 and $250 sizes need one swap per name.
+6. Rounding: floor each leg to the cent, remainder to the largest leg. That leg can therefore exceed 25% by a few cents.
+7. Weights are stored in basis points (sum 10000) and hashed (`sha256` of canonical JSON, see script output) into a versioned basket file `server/baskets/<id>/1.0.0.json`, pinned in every preview and buy, like strategies.
+
+**Results (v1.0.0, market caps as of the 2026-10-16 close):**
+```
+
+== AI  (sha256:831b0ab12402…)
+  NVDA 25.00%, GOOGL 21.23%, MSFT 20.24%, TSM 11.02%, META 9.31%, AVGO 8.08%, MU 5.12%
+  $100: NVDA $25.03, GOOGL $21.22, MSFT $20.23, TSM $11.02, META $9.30, AVGO $8.08, MU $5.12  | names 7, swaps 7
+  $250: NVDA $62.52, GOOGL $53.06, MSFT $50.59, TSM $27.55, META $23.27, AVGO $20.21, MU $12.80  | names 7, swaps 7
+
+== Chips  (sha256:caed7cd0e335…)
+  NVDA 25.00%, TSM 24.05%, AVGO 17.63%, MU 11.17%, AMD 9.70%, ASML 7.11%, INTC 5.34%
+  $100: NVDA $25.04, TSM $24.04, AVGO $17.63, MU $11.17, AMD $9.69, ASML $7.10, INTC $5.33  | names 7, swaps 7
+  $250: NVDA $62.53, TSM $60.11, AVGO $44.08, MU $27.93, AMD $24.24, ASML $17.77, INTC $13.34  | names 7, swaps 7
+
+== Power/Nuclear  (sha256:cc239dbbf9d9…)
+  GEV 25.00%, CEG 23.46%, PWR 23.18%, BE 15.91%, VST 12.45%
+  $100: GEV $25.01, CEG $23.46, PWR $23.18, BE $15.90, VST $12.45  | names 5, swaps 5
+  $250: GEV $62.52, CEG $58.65, PWR $57.95, BE $39.76, VST $31.12  | names 5, swaps 5
+
+== Defense  (sha256:19a63d89a856…)
+  LHX 25.00%, BA 25.00%, LMT 25.00%, HWM 25.00%
+  $100: BA $25.00, LMT $25.00, HWM $25.00, LHX $25.00  | names 4, swaps 4
+  $250: BA $62.50, LMT $62.50, HWM $62.50, LHX $62.50  | names 4, swaps 4
+
+== Space  (sha256:0b4a75d1afb1…)
+  SPCX 25.00%, RKLB 25.00%, ASTS 25.00%, PL 12.54%, FLY 7.13%, RDW 5.33%
+  $100: SPCX $25.01, RKLB $25.00, ASTS $25.00, PL $12.54, FLY $7.12, RDW $5.33  | names 6, swaps 6
+  $250: SPCX $62.52, RKLB $62.50, ASTS $62.50, PL $31.35, FLY $17.81, RDW $13.32  | names 6, swaps 6
+
+== Quantum  (sha256:1956d5069260…)
+  IONQ 24.99%, QBTS 25.00%, RGTI 23.93%, INFQ 11.71%, QUBT 8.75%, XNDU 5.62%
+  $100: IONQ $25.02, QBTS $25.00, RGTI $23.92, INFQ $11.70, QUBT $8.74, XNDU $5.62  | names 6, swaps 6
+  $250: IONQ $62.52, QBTS $62.50, RGTI $59.81, INFQ $29.26, QUBT $21.86, XNDU $14.05  | names 6, swaps 6
+
+== Cyber  (sha256:2992a44b3416…)
+  PANW 25.00%, CRWD 25.00%, FTNT 23.55%, NET 20.03%, ZS 6.42%
+  $100: PANW $25.02, CRWD $25.00, FTNT $23.55, NET $20.02, ZS $6.41  | names 5, swaps 5
+  $250: PANW $62.52, CRWD $62.50, FTNT $58.88, NET $50.06, ZS $16.04  | names 5, swaps 5
+```
+Swaps per buy = names (no sub-legs at these sizes). Weights show what's left after the 5% floor; excluded names are listed in the CSV and can return at rebalance.
+
+**Rebalance cadence (proposal):** recompute monthly (first trading day, from a fresh market-cap snapshot), plus an off-cycle trigger if any name's target weight moves more than 5 percentage points, or a name falls below 5% or rises above the cap. Each recompute creates a new version with a new hash. Existing holders are never rebalanced automatically; `rebalance_basket` previews the trades to the new target and the owner confirms (agent proposes, owner confirms). Membership changes (adding or removing a ticker from a theme) follow the same versioning plus a Cassius/Marcus review.
+
+**Exit exemption (Julius approved; Quintus implementing, present in the working tree of `src/AgentVault.sol` but not yet committed or reviewed):** stock→USDG sells won't count toward the $500/24h cap. **Once it lands and passes Gaius's review**, the $250 default basket cap can be revisited. Recommendation: raise the default to $400, which leaves $100 of buy headroom in the day; exits no longer need reserving. Keep the $250 default until then; no defaults change now.
