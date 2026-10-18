@@ -148,3 +148,12 @@ html{scroll-padding-top:72px}.lp [id]{scroll-margin-top:72px}body.is-landing .tn
 @media (prefers-reduced-motion:reduce){.lp-hw-i{transition:none}}
 .lp-nw{white-space:nowrap}
 @media (max-width:520px){#lp-bk-h{font-size:30px!important}}
+/* 3D primary logo */
+.sc-logo{display:inline-flex!important;align-items:flex-end;gap:7px;line-height:0;text-decoration:none}
+.sc-logo img{display:block}
+.lp-logo.sc-logo img.sc-l3b,.sc-logo .sc-l3b{height:24px;width:34px;object-fit:contain}
+.lp-logo.sc-logo img.sc-lw,.sc-logo .sc-lw{height:24px;width:auto}
+.lp-h3d{display:block;margin:0 auto 18px;width:320px;max-width:70vw}
+.lp-h3d img{display:block;width:100%;height:auto;filter:drop-shadow(0 18px 40px rgba(198,255,61,.12))}
+@media(max-width:600px){.lp-h3d{width:220px}}
+.lp-fam-meet{margin:8px auto 20px}

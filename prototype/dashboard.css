@@ -110,3 +110,4 @@ body.sc-app .tnbar button{background:none!important;border:0!important;color:var
 .dx-demoted{background:none!important;color:#ecebe8!important;border:1px solid #4a4a50!important}
 @media (max-width:520px){.af-title{min-width:100%;order:2}.af-t{order:1}.af-side,.af-usd,.af-tx{order:3}.af-acts{order:4}}
 #brSlot:not(:empty) ~ * .dx-primary{background:none!important;color:#ecebe8!important;border:1px solid #4a4a50!important}
+body.sc-app .logo.sc-logo,.logo.sc-logo{background:none!important;width:auto;height:auto;color:inherit!important;border-radius:0;overflow:visible}

@@ -38,7 +38,7 @@ dash=function(t,body){if(INNER)return body;const k=S.key,act=k&&k.status=="activ
  let ban=S.dev.service?`<div class="st err" role="alert"><b>Service issue.</b> Trading paused. Funds stay in your wallet.</div>`:"";
  if(!act)ban+=`<div class="st err" role="alert">Your agent key is ${k?k.status:"not created yet"}. <a href="#/dashboard/key">${k?"Create a new key":"Create one"}</a></div>`;
  if(!S.connected)ban+=`<div class="st wait" role="status">Your AI isn't connected yet. <a href="#/onboarding/client">Connect it</a></div>`;
- return `<header class="dx-top"><a class="logo" href="#/">StockClaw</a><nav aria-label="Dashboard">${NAV.map(([id,l])=>`<a href="#/dashboard/${id}" ${id==t||(t!="strategies"&&t!="key"&&id=="overview")?'aria-current="page"':""}>${l}</a>`).join("")}</nav>${act?`<button class="dx-link" id="topRevoke">Revoke key</button>`:""}</header>
+ return `<header class="dx-top"><a class="logo sc-logo" href="#/" aria-label="StockClaw home">${SCLogo()}</a><nav aria-label="Dashboard">${NAV.map(([id,l])=>`<a href="#/dashboard/${id}" ${id==t||(t!="strategies"&&t!="key"&&id=="overview")?'aria-current="page"':""}>${l}</a>`).join("")}</nav>${act?`<button class="dx-link" id="topRevoke">Revoke key</button>`:""}</header>
 ${ban}${dataErr()}<div class="dx-body">${body}</div>${DISC}`};
 
 // ---------- Home ----------
@@ -71,7 +71,7 @@ R["/dashboard/overview"]=[Home,HomeBind];
 // ---------- simplified onboarding ----------
 const OSTEPS=[["eligibility","Check"],["wallet","Wallet"],["key","Agent key"],["client","Connect AI"],["strategy","Strategy"]];
 const stepper=(n)=>`<ol class="dx-steps" aria-label="Setup progress">${OSTEPS.map(([r,l],i)=>`<li class="${i<n?"done":i==n?"on":""}" ${i==n?'aria-current="step"':""}><span>${i+1}</span>${l}</li>`).join("")}</ol>`;
-const obx=(n,body)=>`<header class="dx-top"><a class="logo" href="#/">StockClaw</a><span class="dx-mut dx-small">Step ${n+1} of ${OSTEPS.length}</span></header>${stepper(n)}<div class="dx-ob">${body}</div>${DISC}`;
+const obx=(n,body)=>`<header class="dx-top"><a class="logo sc-logo" href="#/" aria-label="StockClaw home">${SCLogo()}</a><span class="dx-mut dx-small">Step ${n+1} of ${OSTEPS.length}</span></header>${stepper(n)}<div class="dx-ob">${body}</div>${DISC}`;
 // Reuse an existing app.js screen but swap its stepper/header for the new one.
 const reskin=(n,fn)=>()=>obx(n,fn().replace(/^<a class="logo"[^>]*>[^<]*<\/a><ol class="steps"[^]*?<\/ol><section class="card">/,"").replace(/<\/section><p class="disc">[^]*$/,""));
 const prog=(items)=>`<ul class="dx-prog">${items.map(([ok,l,busy])=>`<li class="${ok?"ok":busy?"busy":""}"><span aria-hidden="true">${ok?"✓":busy?"…":""}</span>${l}${ok?'<span class="sr"> (done)</span>':busy?'<span class="sr"> (in progress)</span>':""}</li>`).join("")}</ul>`;
