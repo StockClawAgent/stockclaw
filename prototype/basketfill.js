@@ -14,8 +14,7 @@ function assign(tickers){LOCAL={};const used=new Set(tickers.map(known).filter(B
 const color=t=>known(t)||LOCAL[t]||"#D4D4D4";
 
 // ---------------- the ONE adapter (api.js: Lucius 502b3f4) ----------------
-// preview -> buy {previewId, id, usd, idempotencyKey} (server reads the Idempotency-Key header OR body.idempotencyKey; api.js call()
-// can't set custom headers, so we send it in the body). One uuid per user action, reused on retry of the same action.
+// preview -> buy {previewId, id, usd, idempotencyKey}; api.js sends it as the Idempotency-Key header (reused on "Try again").
 const uuid=()=>crypto.randomUUID?crypto.randomUUID():"k-"+Date.now().toString(36)+Math.random().toString(36).slice(2);
 const BFAdapter={
  newKey:uuid,

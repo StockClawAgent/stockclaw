@@ -26,19 +26,24 @@ const APRAdapter={
   if(/BadSellApproval/.test(m)||/expired/i.test(m))return {kind:"invalid",msg:"Approval expired or invalid. Ask your agent to re-propose."};
   if(/SellNonceUsed|Approval is (executed|approved)/.test(m))return {kind:"done",msg:"Already approved."};
   if(/price moved/i.test(m))return {kind:"moved",msg:String(err.message||err)};
-  return {kind:"error",msg:"Couldn't approve: "+String(err&&err.message||err)}},
- reasonText:a=>/VaultSellCapExceeded/.test(String(a.reason||""))?"Over the $500 agent sell limit, needs your approval":(a.reason||""), // supplied by the server/mock (approval id + params hash); we don't invent crypto
+  if(/per-trade cap/i.test(m))return {kind:"invalid",msg:"This sell is over the $100 per-sale limit, so it can't go through. Ask your agent to sell in smaller parts."};
+  if(err&&err.status===401)return {kind:"error",msg:"Your session ended. Reload the page to sign in again."};
+  if(err&&err.name==="NotAllowedError")return {kind:"error",msg:"Passkey check was cancelled. Try again when you're ready."};
+  return {kind:"error",msg:"Couldn't approve this sell right now. Try again in a moment."}},
+ // logic keys off reasonCode; reasonText is the server's display copy
+ reasonCode:a=>a.reasonCode||"",
+ reasonText:a=>a.reasonText||(a.reasonCode==="SELL_CAP_EXCEEDED"?"Over the $500 agent sell limit, needs your approval":"Needs your approval"), // supplied by the server/mock (approval id + params hash); we don't invent crypto
  // Card copy and actions live here (per-sell is final).
- copy:{title:a=>`${a.agentName&&!/^Agent key /.test(a.agentName)?a.agentName:"Your agent"} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} mUSDG`,primary:"Approve sell",secondary:"Decline",
+ copy:{title:a=>`${a.agentName||"Your agent"} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} mUSDG`,primary:"Approve sell",secondary:"Decline",
   note:"Simulated owner signature (demo)",expired:"Approval expired or invalid. Ask your agent to re-propose.",declined:"Declined. Your agent won't sell this.",approved:"Approved. The sell is going through."}};
 
 // ---------- passkey ----------
 const pk=()=>S.passkey||null;
 const toBuf=s=>fromB64u(s).buffer;
 async function createPasskey(){
- // A 2nd passkey needs a step-up assertion over the server's stepUpChallenge (returned in a 403). api.js call() drops that field
- // (and clears the owner token on 403), so until Lucius exposes it we stop with a clear message instead of looping.
- let o;try{o=await APRAdapter.pkOptions()}catch(err){if(/already registered/i.test(err.message))throw new Error("A passkey is already set up for this wallet. Adding another one isn't available in the demo yet.");throw err}
+ // A 2nd passkey: the server answers 403 + stepUpChallenge; sign it with the existing passkey and ask for options again.
+ let o;try{o=await APRAdapter.pkOptions()}catch(err){if(!(err&&err.status===403&&err.stepUpChallenge))throw err;
+  if(STUB)o=await APRAdapter.pkOptions({stub:true});else o=await APRAdapter.pkOptions(await assert(err.stepUpChallenge))}
  if(STUB){await new Promise(r=>setTimeout(r,300));const v=await APRAdapter.pkVerify({id:"stub",stub:true});return {id:v.credentialId||"stub",stub:true}}
  const pubKey={...o,challenge:toBuf(o.challenge),user:{...o.user,id:toBuf(o.user.id)},excludeCredentials:(o.excludeCredentials||[]).map(c=>({...c,id:toBuf(c.id)})),
   authenticatorSelection:{...(o.authenticatorSelection||{}),userVerification:"required"}};
@@ -57,7 +62,7 @@ ${has?`<p class="dx-mut">✓ Passkey saved on this device.</p><a class="dx-prima
 `<button class="dx-primary" id="pkGo" ${pkBusy?"disabled":""}>${pkBusy?"Waiting for your device…":"Set up passkey"}</button> <a class="dx-link" href="#/onboarding/client" id="pkSkip">Skip for now</a>
 <p class="dx-mut dx-small">Skipping is fine, but you'll need a passkey to approve large agent sells.</p>`}
 <p class="st err" role="alert" ${pkErr?"":"hidden"}>${e(pkErr)}</p><p class="dx-mut dx-small">${e(APRAdapter.copy.note)}</p>`)}
-function PKbind(){const b=document.getElementById("pkGo");b&&(b.onclick=async()=>{pkBusy=true;pkErr="";render();try{S.passkey=await createPasskey();save();say("Passkey saved")}catch(err){pkErr=err&&err.name=="NotAllowedError"?"Passkey setup was cancelled.":"Couldn't set up a passkey: "+(err.message||err)}pkBusy=false;render();document.querySelector(".dx-primary")?.focus()})}
+function PKbind(){const b=document.getElementById("pkGo");b&&(b.onclick=async()=>{pkBusy=true;pkErr="";render();try{S.passkey=await createPasskey();save();say("Passkey saved")}catch(err){pkErr=err&&err.name=="NotAllowedError"?"Passkey setup was cancelled. Try again when you're ready.":err&&err.status===403?"Confirm with your existing passkey to add a new one, then try again.":"Couldn't set up a passkey right now. Try again in a moment."}pkBusy=false;render();document.querySelector(".dx-primary")?.focus()})}
 R["/onboarding/passkey"]=[PK,PKbind];
 {const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/onboarding/passkey"){document.body.classList.remove("is-landing");document.body.classList.add("sc-app");render()}}
 
@@ -85,7 +90,7 @@ async function approve(id){const a=ui.items.find(x=>x.id==id);if(!a)return;if(!l
  try{await APRAdapter.approve(id,as);as=null;set(id,"approved",null,false);retire(id)}
  catch(err){as=null;const f=APRAdapter.friendly(err);if(f.kind=="done"){ui.st[id]={k:"approved",msg:f.msg};draw();retire(id)}else if(f.kind=="moved"){set(id,"moved",f.msg,true);retire(id,4000)}else if(f.kind=="invalid"){set(id,"expired",f.msg,true);retire(id,4000)}else set(id,"pending",f.msg,true)}}
 function retire(id,ms=1800){if(q.get("aprHold")==="1")return;setTimeout(()=>{const li=document.querySelector(`.apr[data-id="${CSS.escape(id)}"]`);li&&li.classList.add("apr-fade");setTimeout(()=>{ui.items=ui.items.filter(x=>x.id!=id);draw();document.querySelector(".apr-list .dx-primary")?.focus()},400)},ms)}
-async function decline(id){try{await APRAdapter.reject(id);set(id,"declined",null,true);retire(id,1500)}catch(err){set(id,"pending","Couldn't decline: "+(err.message||err),true)}}
+async function decline(id){try{await APRAdapter.reject(id);set(id,"declined",null,true);retire(id,1500)}catch(err){set(id,"pending","Couldn't decline right now. Try again in a moment.",true)}}
 function tickCd(){document.querySelectorAll("[data-cd]").forEach(s=>{const a=ui.items.find(x=>x.id==s.dataset.cd);if(!a)return;const l=left(a);if(!l&&(!ui.st[a.id]||ui.st[a.id].k=="pending")){set(a.id,"expired");retire(a.id,4000)}else s.textContent=fmtLeft(l)})}
 async function mount(){clearInterval(ui.timer);try{const got=await APRAdapter.list();const keep=ui.items.filter(x=>ui.st[x.id]&&ui.st[x.id].k!="pending");ui.items=[...got.filter(g=>!keep.some(k=>k.id==g.id)),...keep]}catch(_){}
  draw();ui.timer=setInterval(()=>{if(!document.getElementById("aprSlot"))return clearInterval(ui.timer);tickCd()},1000)}
