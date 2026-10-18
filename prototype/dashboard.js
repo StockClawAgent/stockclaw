@@ -101,7 +101,7 @@ ${!S.sa?`<div class="st err" role="alert">Set up your wallet first. <a href="#/o
 <p class="dx-mut dx-small">Up to $100 per trade and $500 of buys per rolling 24h on testnet. Sells don't count toward it. <span class="badge">Testnet, not real stocks</span></p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG in $100 slices; agent sells over $500 in 24h need your approval.</p>
 ${k?prog([[true,"Agent key created"],[S.funded,S.funded?"Test tokens added (mUSDG and stock tokens, no value)":"Adding test tokens",kbusy=="f"]]):kbusy?prog([[false,"Creating agent key (1 signature)",kbusy=="k"],[false,"Adding test tokens"]]):""}
 ${S.err=="rate"?`<div class="st err" role="alert">The faucet's daily limit was reached. <a href="#/onboarding/faucet">Try the faucet again</a> or continue if you already have test tokens.</div>`:""}
-${k?`<a class="dx-primary" href="#/onboarding/client">Continue</a>${!S.funded&&!kbusy?` <button class="dx-link" id="fgo">Add test tokens</button>`:""}`:`<button class="dx-primary" id="kgo" ${S.sa&&!kbusy?"":"disabled"}>Confirm and create key</button> <button class="dx-link" id="kedit">Change limits</button>`}<p id="kerr" class="st err" role="alert" hidden></p>`)}
+${k?`<a class="dx-primary" href="#/onboarding/passkey">Continue</a>${!S.funded&&!kbusy?` <button class="dx-link" id="fgo">Add test tokens</button>`:""}`:`<button class="dx-primary" id="kgo" ${S.sa&&!kbusy?"":"disabled"}>Confirm and create key</button> <button class="dx-link" id="kedit">Change limits</button>`}<p id="kerr" class="st err" role="alert" hidden></p>`)}
 async function fund(){kbusy="f";render();try{await api.faucet_testnet();if(S.dev.ratelimit)throw {status:429};S.funded=true;S.err=null}catch(e){if(e&&e.status==429)S.err="rate";else{kbusy=null;return fail("faucet_testnet",e)}}kbusy=null;save();render();say(S.funded?"Test tokens added":"Faucet limit reached")}
 function Kbind(){if(editLimits){O3bind();const f=$("#kf");f&&f.addEventListener("submit",()=>setTimeout(()=>{if(S.key){editLimits=false;render();if(!S.funded)fund()}},50));return}
  const e=$("#kedit");e&&(e.onclick=()=>{editLimits=true;draft=defaults();render()});const f=$("#fgo");f&&(f.onclick=fund);
@@ -138,4 +138,5 @@ R["/dashboard/basket"]=[BuyBasket,BuyBasketBind];
  HomeBind=function(){HB0();const el=$("#bfHome");if(el&&S.lastBasket)BasketFill.mount(el,S.lastBasket.id,{onError:()=>{}})};
  R["/dashboard/overview"]=[Home,HomeBind]}
 
+window.SCdx={obx,money};
 })();
