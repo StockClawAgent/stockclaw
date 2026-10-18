@@ -378,4 +378,116 @@ contract AgentVaultTest is Base {
         }
         assertLe(spent, 500e6);
     }
+
+    // ---------------- exit exemption (stock -> USDG via registered pool)
+    function _sell(uint256 tslaAmt) internal returns (uint256) {
+        vm.prank(agent);
+        return vault.agentSwap(address(pool), address(tsla), address(usdg), tslaAmt, 1, block.timestamp + 60);
+    }
+
+    function test_exit_buy500ThenFullExitSameDay() public {
+        _allowBoth();
+        uint256 t0 = tsla.balanceOf(address(vault));
+        _spend500();
+        uint256 bought = tsla.balanceOf(address(vault)) - t0;
+        assertEq(vault.vaultSpentLast24h(), 500e6);
+        uint256 slice = 0.392e18; // $98 at $250
+        uint256 left = bought;
+        while (left > 0) {
+            uint256 amt = left > slice ? slice : left;
+            _sell(amt);
+            left -= amt;
+        }
+        assertEq(tsla.balanceOf(address(vault)), t0);
+        assertEq(vault.vaultSpentLast24h(), 500e6); // exits didn't consume the window
+        assertTrue(vault.isExemptExit(address(pool), address(tsla), address(usdg)));
+    }
+
+    function test_exit_cyclingCannotExceed500BuysPer24h() public {
+        _allowBoth();
+        _spend500();
+        _sell(0.392e18);
+        _sell(0.392e18);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.DailyCapExceeded.selector, 500e6 + 1, 500e6));
+        _buy(1);
+        // a second agent key shares the vault window
+        address agent2 = makeAddr("agent2");
+        vm.prank(alice);
+        vault.grantAgent(agent2, uint40(block.timestamp + 1 days));
+        vm.prank(agent2);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.VaultDailyCapExceeded.selector, 500e6 + 1, 500e6));
+        vault.agentSwap(address(pool), address(usdg), address(tsla), 1, 1, block.timestamp + 60);
+    }
+
+    function test_exit_sellOver100Reverts() public {
+        _allowBoth();
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.PerTradeCapExceeded.selector, 100000001, 100e6));
+        _sell(0.4e18 + 4e9);
+    }
+
+    function test_exit_stillNeedsAllowlistAndMarketHours() public {
+        vm.prank(alice);
+        vault.setAllowedToken(address(tsla), true); // USDG not allowlisted
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.TokenNotAllowed.selector, address(usdg)));
+        _sell(0.1e18);
+        _allowBoth();
+        vm.prank(owner);
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceClosed);
+        vm.expectRevert(PriceOracle.MarketClosed.selector);
+        _sell(0.1e18);
+    }
+
+    function _amdSetup() internal returns (MockStockToken amd) {
+        amd = new MockStockToken("AMD (test)", "AMD");
+        MockAggregatorV3 f2 = new MockAggregatorV3(owner, updater, 8, "AMD / USD");
+        vm.prank(updater);
+        f2.updateAnswer(125e8);
+        vm.prank(owner);
+        oracle.setFeed(address(amd), f2, 1 hours);
+        amd.mint(address(bad), 1_000e18);
+        bad.setHaircut(0);
+        vm.prank(alice);
+        vault.setAllowedToken(address(amd), true);
+        _allowBoth();
+    }
+
+    function test_exit_tokenToTokenCounts() public {
+        MockStockToken amd = _amdSetup();
+        vm.prank(agent);
+        vault.agentSwap(address(bad), address(tsla), address(amd), 0.2e18, 1, block.timestamp + 60); // $50
+        assertEq(vault.vaultSpentLast24h(), 50e6);
+        assertFalse(vault.isExemptExit(address(bad), address(tsla), address(amd)));
+    }
+
+    function test_exit_spoofs() public {
+        _allowBoth();
+        // unregistered adapter: not exempt (and the router rejects it anyway)
+        assertFalse(vault.isExemptExit(bob, address(tsla), address(usdg)));
+        // registered pool for a DIFFERENT stock can't be used for this pair
+        MockStockToken amd = new MockStockToken("AMD", "AMD");
+        StockClawPool amdPool = new StockClawPool(owner, address(amd), address(usdg), oracle, 20);
+        vm.prank(owner);
+        router.setAdapter(address(amdPool), true);
+        assertFalse(vault.isExemptExit(address(amdPool), address(tsla), address(usdg)));
+        vm.prank(agent);
+        vm.expectRevert(
+            abi.encodeWithSelector(FeeRouter.PairNotSupported.selector, address(amdPool), address(tsla), address(usdg))
+        );
+        vault.agentSwap(address(amdPool), address(tsla), address(usdg), 0.1e18, 1, block.timestamp + 60);
+        // USDG -> USDG-like spoof: tokenIn == USDG is never exempt
+        assertFalse(vault.isExemptExit(address(pool), address(usdg), address(usdg)));
+    }
+
+    function test_exit_viaIntentAlsoExempt() public {
+        _allowBoth();
+        _spend500();
+        FeeRouter.Intent memory i = _vaultIntent(77);
+        i.tokenIn = address(tsla);
+        i.tokenOut = address(usdg);
+        i.amountPerExec = 0.392e18;
+        bytes memory sig = _sign(agentPk, router.hashIntent(i));
+        vm.prank(keeper);
+        vault.executeIntent(i, sig);
+        assertEq(vault.vaultSpentLast24h(), 500e6);
+    }
 }

@@ -21,6 +21,10 @@ import {TokenTransfers} from "./libraries/TokenTransfers.sol";
 /// Any limit breach hard-reverts (no partial fills). USD value of `amountIn` comes from
 /// PriceOracle (USDG pinned 1:1; stocks via Chainlink-style feed, staleness-checked).
 /// Agents can only trade through StockClawRouter; outputs always return to this vault.
+/// Exit exemption (CTO decision): a sell of an allowlisted stock into USDG (tokenOut == oracle.usdg(),
+/// tokenIn != USDG) through a router-registered adapter that serves exactly that pair, delivered to
+/// this vault, does NOT count toward the rolling 24h caps (agent or vault). It still needs the
+/// $100 per-trade cap, the allowlist, the oracle floor and market hours. Buys and token->token count.
 ///
 /// Rolling window: spend is recorded in hourly buckets (ring of 25, two buckets per storage word,
 /// 13 words). A check sums buckets for hours [now-24h, now]. A spend therefore stops counting
@@ -124,7 +128,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         nonReentrant
         returns (uint256)
     {
-        _consume(msg.sender, tokenIn, tokenOut, amountIn);
+        _consume(msg.sender, adapter, tokenIn, tokenOut, amountIn);
         // H-1(d): never weaker than the oracle-implied amount minus the router's max slippage.
         uint256 net = amountIn - amountIn * router.feeBps() / 10_000;
         uint256 floor = oracle.convert(tokenIn, tokenOut, net) * (10_000 - router.maxSlippageBps()) / 10_000;
@@ -143,7 +147,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         if (i.account != address(this)) revert WrongAccount();
         address agent = ECDSA.recover(router.hashIntent(i), agentSig);
         if (policies[agent].expiry == 0) revert BadAgentSignature();
-        _consume(agent, i.tokenIn, i.tokenOut, i.amountPerExec);
+        _consume(agent, i.adapter, i.tokenIn, i.tokenOut, i.amountPerExec);
         IERC20(i.tokenIn).forceApprove(address(router), i.amountPerExec);
         out = router.executeIntent(i, "");
         IERC20(i.tokenIn).forceApprove(address(router), 0);
@@ -198,7 +202,17 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     }
 
     // ================================================================ internals
-    function _consume(address agent, address tokenIn, address tokenOut, uint256 amountIn) internal {
+    /// @notice True iff this trade is an exempt exit (stock -> USDG via a registered pool for that pair).
+    /// The recipient is always this vault on every agent path (agentSwap hardcodes it; intents use
+    /// account = this vault and the router delivers to the account).
+    function isExemptExit(address adapter, address tokenIn, address tokenOut) public view returns (bool) {
+        address u = oracle.usdg();
+        return tokenOut == u && tokenIn != u && router.isRouteSupported(adapter, tokenIn, tokenOut);
+    }
+
+    function _consume(address agent, address adapter, address tokenIn, address tokenOut, uint256 amountIn)
+        internal
+    {
         AgentPolicy memory p = policies[agent];
         if (!p.active) revert NotAgent();
         if (block.timestamp > p.expiry) revert AgentExpired();
@@ -207,6 +221,11 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
 
         uint256 usd = oracle.usdValue(tokenIn, amountIn);
         if (usd > p.perTradeUsd) revert PerTradeCapExceeded(usd, p.perTradeUsd);
+
+        if (isExemptExit(adapter, tokenIn, tokenOut)) {
+            emit AgentSpent(agent, usd, spentLast24h(agent)); // exits don't consume the 24h window
+            return;
+        }
 
         uint256 newSpent = spentLast24h(agent) + usd;
         if (newSpent > p.perDayUsd) revert DailyCapExceeded(newSpent, p.perDayUsd);
