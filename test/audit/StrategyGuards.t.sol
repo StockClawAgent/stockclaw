@@ -225,7 +225,7 @@ contract StrategyGuards is Base {
     function test_FINDING_S4_keeperControlsMarketMode() public {
         vm.prank(owner); oracle.setKeeper(keeper);
         vm.prank(keeper);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, keeper));
         oracle.setMarketMode(PriceOracle.MarketMode.ForceOpen);
         assertTrue(feed.updater() != keeper);
         vm.prank(keeper);
