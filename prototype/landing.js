@@ -74,7 +74,7 @@ ${baskets()}
 <ol class="lp-steps"><li><b>Check eligibility</b> and sign with your wallet.</li><li><b>Set up your wallet.</b> You own it.</li><li><b>Confirm limits:</b> $100 a trade, $500 of buys per 24h.</li><li><b>Get test tokens</b> in one tap.</li><li><b>Connect your AI</b> and ask it to trade.</li></ol></section>
 <section class="lp-sec" id="lp-safety" aria-labelledby="lp-safe-h"><p class="lp-k">03</p><h2 id="lp-safe-h">Safety and limits</h2>
 <p class="lp-big">You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime.</p>
-<dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Buy headroom (24h)</dt><dd>Up to $500 of buys on testnet. Sells are exempt.</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
+<dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Buy headroom (24h)</dt><dd>Up to $500 of buys on testnet. Sells over $500 in 24h need your approval.</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
 <p class="lp-tickers">Tradeable on testnet: <span class="lp-mono">PLTR NFLX AMD AMZN TSLA</span> ${BADGE}</p></section>
 <section class="lp-sec" id="lp-faq" aria-labelledby="lp-faq-h"><p class="lp-k">04</p><h2 id="lp-faq-h">FAQ</h2>
 ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join("")}</section>
