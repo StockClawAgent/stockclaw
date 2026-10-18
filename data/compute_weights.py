@@ -72,5 +72,39 @@ def main():
             print(f"  ${s:.0f}: " + ", ".join(f"{k} ${v['usd']:.2f}" + (f" ({v['swaps']} swaps)" if v['swaps'] > 1 else "") for k, v in sp.items())
                   + f"  | names {len(sp)}, swaps {sum(v['swaps'] for v in sp.values())}")
     if out: json.dump(result, open(out, "w"), indent=1)
+    write_site_json(rows, baskets, result)
+
+THEMES = {"AI": "ai", "Chips": "chips", "Power/Nuclear": "power-nuclear", "Defense": "defense",
+          "Space": "space", "Quantum": "quantum", "Cyber": "cyber"}
+
+def write_site_json(rows, baskets, result):
+    """Write ../baskets.json for the website (Flavius)."""
+    meta = {r["ticker"]: r for r in rows}
+    out_b, excluded = [], []
+    for r in rows:
+        if not r["market_cap_usd"]:
+            excluded.append({"ticker": r["ticker"], "basket": r["basket"], "reason": r["note"] or "market cap unavailable"})
+    for b, m in baskets.items():
+        wr = result[b]["weightsBps"]
+        for t in m:
+            if t not in wr:
+                excluded.append({"ticker": t, "basket": b, "reason": "below 5% min weight after 25% cap"})
+        basket = {"id": THEMES.get(b, b.lower()), "theme": b, "version": "1.0.0",
+                  "tickers": [{"ticker": t, "name": meta[t]["company"], "weightPct": round(w / 100, 2),
+                               "marketCapUsd": int(float(m[t]))} for t, w in wr.items()]}
+        total = round(sum(x["weightPct"] for x in basket["tickers"]), 2)
+        assert total == 100.0, f"{b} weights sum to {total}"
+        canon = json.dumps(basket, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        basket["hash"] = "sha256:" + hashlib.sha256(canon.encode()).hexdigest()
+        out_b.append(basket)
+    r0 = rows[0]
+    site = {"version": "1.0.0", "asOf": "2026-10-16 close (fetched 2026-10-18 19:02 ET)",
+            "source": "companiesmarketcap.com CSV export", "sourceUrl": "https://companiesmarketcap.com/?download=csv",
+            "rules": {"singleNameCapPct": 25, "minWeightPct": 5, "minLegUsd": 5, "maxLegUsd": 98, "defaultMaxBasketUsd": 250},
+            "disclaimer": "Tools, not investment advice. Themes and weights are fixed, published groupings chosen by StockClaw for convenience; you confirm every buy. Testnet tokens have no value. Not an ETF or fund.",
+            "hashNote": "hash = sha256 of the canonical basket JSON (sorted keys, no whitespace, without the hash field).",
+            "baskets": out_b, "excluded": excluded}
+    json.dump(site, open(os.path.join(HERE, "..", "baskets.json"), "w"), indent=2, ensure_ascii=False)
+    print(f"\nwrote baskets.json: {len(out_b)} baskets, {len(excluded)} excluded")
 
 if __name__ == "__main__": main()
