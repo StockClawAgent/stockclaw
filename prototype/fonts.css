@@ -1,0 +1,15 @@
+/* Self-hosted fonts (SIL OFL, see fonts/OFL.txt). Display: Bricolage Grotesque (variable, 700–800). Body: Inter Tight (variable, 400–600). */
+@font-face{font-family:"Bricolage Grotesque";src:url(fonts/bricolage-grotesque-latin.woff2) format("woff2");font-weight:200 800;font-stretch:75% 100%;font-display:swap}
+@font-face{font-family:"Inter Tight";src:url(fonts/inter-tight-latin.woff2) format("woff2");font-weight:100 900;font-display:swap}
+:root{--f-display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;--f-body:"Inter Tight",ui-sans-serif,system-ui,sans-serif}
+body,.lp,body.sc-app{font-family:var(--f-body)}
+.lp h1,.lp h2,.lp h3,.lp-logo,body.sc-app h1,body.sc-app h2,.dx-big,.lp-dn-c b{font-family:var(--f-display);font-variation-settings:"opsz" 96}
+.lp h1,.lp h2,body.sc-app h1,body.sc-app h2{font-weight:800;letter-spacing:-.035em}
+.lp h3{font-weight:700;letter-spacing:-.02em}
+.lp-hero h1{font-size:clamp(56px,7vw,96px)!important;line-height:.98!important}
+.lp-sec h2,.lp-meet{font-size:clamp(36px,4.4vw,56px)!important;line-height:1.02;margin-bottom:20px}
+body.sc-app .dx-hero h1{font-size:clamp(48px,6vw,88px);line-height:.98}
+body.sc-app .dx-ob h1{font-size:clamp(40px,5vw,64px);line-height:1}
+.dx-big{font-weight:800!important;letter-spacing:-.04em}
+.lp-dn-c b{font-weight:800}
+@media (max-width:520px){.lp-hero h1{font-size:44px!important}.lp-sec h2,.lp-meet{font-size:34px!important}}

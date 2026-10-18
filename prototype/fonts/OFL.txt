@@ -1,0 +1,2 @@
+Bricolage Grotesque (Mathieu Triay) and Inter Tight (Rasmus Andersson) are licensed under the SIL Open Font License 1.1.
+https://openfontlicense.org — downloaded from Google Fonts (latin subset, variable woff2), self-hosted.

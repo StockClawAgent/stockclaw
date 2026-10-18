@@ -15,21 +15,34 @@ const bot=(id,n)=>window.SCEyes?SCEyes.html(id,n,144):`<img src="avatars/final-$
 let BK=null,BKerr=null;
 fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/")render()});
 const SH=["#C6FF3D","#B2EB33","#9DD62B","#89C224","#76AD1E","#649918","#538513"];
+const BLINE={ai:"The companies building and running AI.",chips:"Chipmakers and the tools that make chips.","power-nuclear":"Power for the data-center build-out.",defense:"Defense and aerospace contractors.",space:"Rockets, satellites and space networks.",quantum:"Early quantum computing companies.",cyber:"Security software companies."};
 const BAV={"power-nuclear":"power","power":"power"};
 // File disclaimer minus sentences our own line already says (Lucius's JSON is not edited).
 const discExtra=()=>String((BK&&BK.disclaimer)||"").split(/(?<=\.)\s+/).filter(x=>x&&!/^tools, not investment advice\.?$/i.test(x.trim())&&!/^not an etf or fund\.?$/i.test(x.trim())).join(" ");
 const pct=(v)=>(+v).toFixed(2).replace(/\.00$/,"")+"%";
+let BKsel=0;
+const rows=(b)=>(b.tickers||[]).map(x=>({sym:x.ticker||x.symbol,nm:x.name||"",w:+(x.weightPct??x.weight)||0})).sort((x,y)=>y.w-x.w);
+function panel(b,ph,tag){if(!b)return"";const name=b.theme||b.name||b.id;const t=rows(b);const sum=t.reduce((a,x)=>a+x.w,0);const ok=Math.abs(sum-100)<=0.5;
+ const R=70,C=2*Math.PI*R,G=2.2;let acc=0;
+ const segs=t.map((x,i)=>{const len=Math.max(0.5,x.w/sum*C-G);const rot=acc/C*360-90;acc+=x.w/sum*C;return `<circle class="lp-seg" data-i="${i}" r="${R}" cx="90" cy="90" fill="none" stroke="${SH[Math.min(i,SH.length-1)]}" stroke-width="26" stroke-dasharray="${len.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${len.toFixed(2)}" data-len="${len.toFixed(2)}" transform="rotate(${rot.toFixed(2)} 90 90)" style="transition-delay:${i*110}ms"></circle>`}).join("");
+ return `<div class="lp-bkp-h">${window.SCEyes?SCEyes.html("basket-"+(BAV[b.id]||b.id),"",64):""}<div><h3>${esc(name)}</h3>${BLINE[b.id]?`<p class="lp-bk-one">${BLINE[b.id]}</p>`:""}</div>${ph?tag:""}${ok?"":'<span class="lp-ph">Weights don\'t add up</span>'}</div>
+<div class="lp-dn-wrap"><div class="lp-dn"><svg viewBox="0 0 180 180" width="220" height="220" aria-hidden="true" focusable="false">${segs}</svg><div class="lp-dn-c" aria-live="polite"><b>${t.length}</b><span>names</span></div></div>
+<ul class="lp-lg" aria-label="${esc(name)} basket weights">${t.map((x,i)=>`<li tabindex="0" data-i="${i}" title="${esc(x.nm)}"><span class="lp-sw" style="background:${SH[Math.min(i,SH.length-1)]}" aria-hidden="true"></span><span class="lp-lg-t">${esc(x.sym)}</span><span class="lp-lg-w">${pct(x.w)}</span></li>`).join("")}</ul></div>`}
+function bindBaskets(){const tabs=[...document.querySelectorAll('.lp-tabs [role=tab]')];if(!tabs.length)return;
+ const show=(i,focus)=>{BKsel=i;tabs.forEach((t,j)=>{t.setAttribute("aria-selected",j==i);t.tabIndex=j==i?0:-1});const p=document.getElementById("bkp");p.setAttribute("aria-labelledby","bkt-"+i);p.innerHTML=panel(BK.baskets[i],BK.status==="placeholder",'<span class="lp-ph">Placeholder weights, not real data</span>');wire(p);focus&&tabs[i].focus();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))};
+ tabs.forEach((t,i)=>{t.onclick=()=>show(i);t.onkeydown=e=>{const k={ArrowRight:1,ArrowLeft:-1}[e.key];if(k){e.preventDefault();show((i+k+tabs.length)%tabs.length,true)}else if(e.key=="Home"){e.preventDefault();show(0,true)}else if(e.key=="End"){e.preventDefault();show(tabs.length-1,true)}}});
+ wire(document.getElementById("bkp"))}
+function wire(p){if(!p)return;const t=rows(BK.baskets[BKsel]);const c=p.querySelector(".lp-dn-c"),dn=p.querySelector(".lp-dn-wrap");const def=c.innerHTML;
+ const hi=(i)=>{dn.classList.toggle("hl",i!=null);p.querySelectorAll("[data-i]").forEach(e=>e.classList.toggle("on",e.dataset.i==i));c.innerHTML=i==null?def:`<b>${esc(t[i].sym)}</b><span>${pct(t[i].w)}</span>`};
+ p.querySelectorAll("[data-i]").forEach(e=>{const i=e.dataset.i;e.addEventListener("mouseenter",()=>hi(i));e.addEventListener("mouseleave",()=>hi(null));e.addEventListener("focus",()=>hi(i));e.addEventListener("blur",()=>hi(null))});
+ const segs=p.querySelectorAll(".lp-seg");requestAnimationFrame(()=>requestAnimationFrame(()=>segs.forEach(s=>s.setAttribute("stroke-dashoffset","0"))))}
 function baskets(){const ph=!BK||BK.status==="placeholder";const tag='<span class="lp-ph">Placeholder weights, not real data</span>';
  const list=(BK&&BK.baskets)||[];const R_=(BK&&BK.rules)||{};
- const body=!BK?`<p class="lp-muted">${BKerr?"Basket data couldn't load.":"Loading baskets…"}</p>`:`<ol class="lp-bk">${list.map(b=>{const name=b.theme||b.name||b.id;const t=(b.tickers||[]).map(x=>({sym:x.ticker||x.symbol,nm:x.name||"",w:+(x.weightPct??x.weight)||0})).sort((x,y)=>y.w-x.w);const sum=t.reduce((a,x)=>a+x.w,0);const ok=Math.abs(sum-100)<=0.5;
-  return `<li class="lp-bk-row">${window.SCEyes?SCEyes.html("basket-"+(BAV[b.id]||b.id),"",72):""}<div class="lp-bk-m"><div class="lp-bk-h"><h3>${esc(name)}</h3>${ph?tag:""}${ok?"":'<span class="lp-ph">Weights don\'t add up</span>'}</div><div class="lp-bar" aria-hidden="true">${t.map((x,i)=>`<i style="flex:${x.w};background:${SH[Math.min(i,SH.length-1)]}"></i>`).join("")}</div><ul class="lp-bk-l" aria-label="${esc(name)} basket weights">${t.map((x,i)=>`<li title="${esc(x.nm)}"><span class="lp-sw" style="background:${SH[Math.min(i,SH.length-1)]}" aria-hidden="true"></span>${esc(x.sym)} <span>${pct(x.w)}</span></li>`).join("")}</ul></div></li>`}).join("")}</ol>`;
- const rules=R_.singleNameCapPct?`Market-cap weighted, ${R_.singleNameCapPct}% single-name cap${R_.minWeightPct?`, ${R_.minWeightPct}% minimum weight`:""}, rebalanced periodically.`:"Market-cap weighted, single-name cap, rebalanced periodically.";
- const meta=BK?`Source: ${BK.sourceUrl?`<a href="${esc(BK.sourceUrl)}" rel="noopener" target="_blank">${esc(BK.source||"source")}</a>`:esc(BK.source||"—")}. Market caps as of ${esc(BK.asOf||"—")}. Version ${esc(BK.version||"—")}.${BK.verified===true?"":' <span class="lp-ph lp-nc">Not cross-checked yet</span>'}`:"";
- return `<section class="lp-sec" id="lp-baskets" aria-labelledby="lp-bk-h"><p class="lp-k">01</p><h2 id="lp-bk-h">Baskets ${ph?tag:""}</h2>
-<p class="lp-big lp-bk-intro">A basket is a themed group of tokenized stocks your agent buys in one go. Just say "get me some AI."</p>${body}
-<p class="lp-muted">${rules} ${meta}</p>
-<p class="lp-muted">Basket tickers are Robinhood Chain mainnet listings; the testnet demo trades only PLTR, NFLX, AMD, AMZN and TSLA.</p>
-<p class="lp-bk-disc">Baskets, not ETFs or funds. Tools, not investment advice.${discExtra()?` ${esc(discExtra())}`:""}</p></section>`}
+ const body=!BK?`<p class="lp-muted">${BKerr?"Basket data couldn't load.":"Loading baskets…"}</p>`:`<div class="lp-tabs" role="tablist" aria-label="Baskets">${list.map((b,i)=>`<button role="tab" id="bkt-${i}" aria-controls="bkp" aria-selected="${i==BKsel}" tabindex="${i==BKsel?0:-1}" data-bk="${i}">${esc(b.theme||b.name||b.id)}</button>`).join("")}</div><div class="lp-bkp" id="bkp" role="tabpanel" aria-labelledby="bkt-${BKsel}">${panel(list[BKsel],ph,tag)}</div>`;
+ const tip=BK?`Source: ${BK.source||"—"}. Market caps as of ${BK.asOf||"—"}. Version ${BK.version||"—"}.`:"";
+ return `<section class="lp-sec" id="lp-baskets" aria-labelledby="lp-bk-h"><p class="lp-k">01</p><h2 id="lp-bk-h">Say “get me some AI.” ${ph?tag:""}</h2>
+<p class="lp-bk-intro">Themed baskets of tokenized stocks, bought in one go.</p>${body}
+<p class="lp-fine"><span class="lp-tip" tabindex="0" aria-describedby="lp-tipt">Market-cap weighted<span role="tooltip" id="lp-tipt">${esc(tip)}</span></span> · Baskets are not ETFs or funds. Not investment advice. You confirm every buy.</p></section>`}
 const esc=(v)=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function Landing(){return `<div class="lp">
 <header class="lp-nav"><a class="lp-logo" href="#/"><img src="logo-lockup.svg" width="110" height="28" alt="StockClaw home"></a>
@@ -39,7 +52,7 @@ ${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104
 <h1 id="lp-h1">Your agent trades<br>tokenized stocks.<br><em>You set the limits.</em></h1>
 <p class="lp-sub">Pick an AI agent, connect your own AI, and let it trade tokenized stocks on Robinhood Chain within limits you set.</p>
 <p class="lp-chips" aria-label="Tradeable on testnet">${["PLTR","NFLX","AMD","AMZN","TSLA"].map(t=>`<span class="lp-chip">${t}</span>`).join("")}${BADGE}</p>
-<p class="lp-clients">Works in Claude <span aria-hidden="true">/</span> ChatGPT <span aria-hidden="true">/</span> Grok <span aria-hidden="true">/</span> Cursor, as an MCP connector for Robinhood Chain stock tokens and USDG.</p>
+<p class="lp-clients">Works in Claude, ChatGPT, Grok and Cursor as an MCP connector.</p>
 <div class="lp-cta"><a class="lp-btn" href="#/onboarding/eligibility">Try the testnet demo <span aria-hidden="true">→</span></a><a class="lp-ghost" href="#lp-wait">Join the waitlist</a></div>
 </section>
 <section class="lp-line" aria-labelledby="lp-bots"><h2 id="lp-bots" class="lp-meet">Meet the agents</h2>
@@ -47,11 +60,10 @@ ${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104
 <ol class="lp-intro">${BOTS.map(([id,n,live,intro,how,story],i)=>`<li class="${live?"":"soon"} ${i%2?"rev":""}">${bot(id,n)}<div class="lp-it"><h3>${n} <span class="lp-tag ${live?"live":""}">${live?"Live on testnet":"Coming soon"}</span></h3><p class="lp-intro-l">${intro}</p><p><span class="lp-lbl">Strategy</span>${how}</p><figure class="lp-story"><span class="lp-ill">Illustrative example, not a real result</span><blockquote>${story}</blockquote></figure></div></li>`).join("")}</ol></section>
 ${baskets()}
 <section class="lp-sec" id="lp-how" aria-labelledby="lp-how-h"><p class="lp-k">02</p><h2 id="lp-how-h">How it works</h2>
-<ol class="lp-steps"><li><b>Check eligibility.</b> Answer a few questions, then sign an attestation with your wallet.</li><li><b>Set up your wallet.</b> A smart wallet owned by your own wallet.</li><li><b>Create an agent key.</b> Limited to $100 per trade, $500 per day, allowlisted tickers only.</li><li><b>Fund it.</b> Get testnet mUSDG from the in-app faucet.</li><li><b>Connect your client.</b> Paste the connector URL into Claude, ChatGPT, Grok or Cursor, then ask your agent to trade.</li></ol></section>
+<ol class="lp-steps"><li><b>Check eligibility</b> and sign with your wallet.</li><li><b>Set up your wallet.</b> You own it.</li><li><b>Confirm limits:</b> $100 a trade, $500 a day.</li><li><b>Get test tokens</b> in one tap.</li><li><b>Connect your AI</b> and ask it to trade.</li></ol></section>
 <section class="lp-sec" id="lp-safety" aria-labelledby="lp-safe-h"><p class="lp-k">03</p><h2 id="lp-safe-h">Safety and limits</h2>
 <p class="lp-big">You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime.</p>
 <dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Per day</dt><dd>Up to $500 on testnet</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
-<p class="lp-muted">Quotes are shown net of the fee. Trades over a limit are blocked; you can raise limits from the dashboard.</p>
 <p class="lp-tickers">Tradeable on testnet: <span class="lp-mono">PLTR NFLX AMD AMZN TSLA</span> ${BADGE}</p></section>
 <section class="lp-sec" id="lp-faq" aria-labelledby="lp-faq-h"><p class="lp-k">04</p><h2 id="lp-faq-h">FAQ</h2>
 ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join("")}</section>
@@ -61,6 +73,6 @@ ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join
 </div>`}
 function LandingBind(){const f=document.getElementById("lp-form");if(!f)return;f.onsubmit=e=>{e.preventDefault();const i=f.querySelector("input"),m=document.getElementById("lp-msg");if(!i.checkValidity()){i.setAttribute("aria-invalid","true");m.textContent="Enter a valid email address.";i.focus();return}i.removeAttribute("aria-invalid");m.textContent="You're on the waitlist (mock, nothing is sent).";f.querySelector("button").disabled=true}}
 function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.body.classList.toggle("is-landing",!(p in R)||p==="/")}
-R["/"]=[Landing,()=>{LandingBind();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
+R["/"]=[Landing,()=>{LandingBind();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
 addEventListener("hashchange",mark);mark();render();
 })();
