@@ -8,6 +8,9 @@ interface IDexAdapter {
         external
         returns (uint256 amountOut);
 
+    /// @notice True iff this adapter can swap tokenIn -> tokenOut (cheap pair check, N-4).
+    function supportsPair(address tokenIn, address tokenOut) external view returns (bool);
+
     /// @notice Spot/indicative quote. NOT manipulation-resistant by itself; see ARCHITECTURE.md.
     function quote(address tokenIn, address tokenOut, uint256 amountIn) external view returns (uint256 amountOut);
 }

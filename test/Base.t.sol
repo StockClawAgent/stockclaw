@@ -26,6 +26,10 @@ contract BadAdapter {
         haircutBps = b;
     }
 
+    function supportsPair(address, address) external pure returns (bool) {
+        return true;
+    }
+
     function quote(address a, address b, uint256 amt) public view returns (uint256) {
         return oracle.convert(a, b, amt) * (10_000 - haircutBps) / 10_000;
     }

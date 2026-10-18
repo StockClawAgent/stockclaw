@@ -90,6 +90,10 @@ contract StockClawPool is IDexAdapter, Ownable2Step, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------- views
+    function supportsPair(address tokenIn, address tokenOut) external view returns (bool) {
+        return (tokenIn == stock && tokenOut == usdg) || (tokenIn == usdg && tokenOut == stock);
+    }
+
     /// @notice Exact output for `amountIn` at oracle price minus spread. Reverts if it exceeds reserves.
     function quote(address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256 out) {
         (, uint256 rOut) = _reserves(tokenIn, tokenOut);

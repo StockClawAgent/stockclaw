@@ -125,6 +125,7 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     error SlippageOutOfBounds(uint16 bps);
     error ComplianceBlocked(address token, address from, address to, bytes32 reason);
     error AdapterSwapFailed(address adapter, bytes reason);
+    error PairNotSupported(address adapter, address tokenIn, address tokenOut);
 
     constructor(
         address owner_,
@@ -202,6 +203,16 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     {
         fee = amountIn * feeBps / BPS;
         netOut = IDexAdapter(adapter).quote(tokenIn, tokenOut, amountIn - fee);
+    }
+
+    /// @notice N-4: adapter is registered AND serves exactly this token pair. Never reverts.
+    function isRouteSupported(address adapter, address tokenIn, address tokenOut) public view returns (bool) {
+        if (!isAdapter[adapter]) return false;
+        try IDexAdapter(adapter).supportsPair(tokenIn, tokenOut) returns (bool ok) {
+            return ok;
+        } catch {
+            return false;
+        }
     }
 
     function hashIntent(Intent calldata i) public view returns (bytes32) {
@@ -335,6 +346,7 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         if (recipient == address(0)) revert ZeroAddress();
         if (tokenIn == tokenOut) revert SameToken();
         if (!isAdapter[adapter]) revert AdapterNotAllowed(adapter);
+        if (!isRouteSupported(adapter, tokenIn, tokenOut)) revert PairNotSupported(adapter, tokenIn, tokenOut);
         if (!eligibility.isEligible(account)) revert NotEligible(account);
         if (recipient != account && !eligibility.isEligible(recipient)) revert NotEligible(recipient);
         if (!oracle.isMarketOpen()) revert MarketClosed();

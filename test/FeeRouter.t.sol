@@ -309,4 +309,21 @@ contract FeeRouterTest is Base {
         router.setMaxSlippageBps(0);
         vm.stopPrank();
     }
+
+    // ---- N-4
+    function test_N4_routeMustMatchRegisteredPoolPair() public {
+        assertTrue(router.isRouteSupported(address(pool), address(usdg), address(tsla)));
+        assertTrue(router.isRouteSupported(address(pool), address(tsla), address(usdg)));
+        assertFalse(router.isRouteSupported(bob, address(usdg), address(tsla))); // unregistered
+        MockStockToken amd = new MockStockToken("AMD", "AMD");
+        assertFalse(router.isRouteSupported(address(pool), address(usdg), address(amd))); // wrong pair
+        amd.mint(alice, 1e18);
+        vm.startPrank(alice);
+        amd.approve(address(router), type(uint256).max);
+        vm.expectRevert(
+            abi.encodeWithSelector(FeeRouter.PairNotSupported.selector, address(pool), address(amd), address(usdg))
+        );
+        router.swap(_params(address(amd), address(usdg), 1e18, 1, alice));
+        vm.stopPrank();
+    }
 }
