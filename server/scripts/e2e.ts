@@ -33,6 +33,7 @@ async function rpc(method: string, params: unknown[] = []) {
 for (let i = 0; i < 50; i++) { try { if (await rpc("eth_chainId")) break; } catch {} await new Promise((r) => setTimeout(r, 200)); }
 const warp = async (sec: number) => { await rpc("evm_increaseTime", [sec]); await rpc("evm_mine"); };
 
+function memStore(init: Record<string, string>) { const m = new Map(Object.entries(init)); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, String(v)), removeItem: (k: string) => void m.delete(k) }; }
 const API = `http://127.0.0.1:${PORT_API}/api`;
 async function call(method: "GET" | "POST", name: string, body?: Record<string, unknown>, token: string | null = OWNER) {
   let url = `${API}/${name}`;
@@ -175,7 +176,7 @@ try {
 
   await step("prototype/api.js (real calls, same shapes) works against the server", async () => {
     await warp(25 * 3600); await keeper.pushOracle(); // let the vault-wide rolling 24h window clear
-    const ctx: any = { fetch, URLSearchParams, console, setTimeout, localStorage: { getItem: () => JSON.stringify({ country: "Germany" }) }, window: { STOCKCLAW_API: `http://127.0.0.1:${PORT_API}`, STOCKCLAW_TOKEN: OWNER } };
+    const ctx: any = { fetch, URLSearchParams, console, setTimeout, localStorage: { getItem: () => JSON.stringify({ country: "Germany" }) }, sessionStorage: memStore({ "stockclaw-owner-token": OWNER }), window: { STOCKCLAW_API: `http://127.0.0.1:${PORT_API}` } };
     vm.createContext(ctx); vm.runInContext(fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8"), ctx);
     const api = ctx.window.api;
     const e = await api.check_eligibility(); assert.equal(e.eligible, true);
@@ -185,6 +186,16 @@ try {
     const k = await api.create_session_key({ perTradeCap: 50, dailyCap: 200, days: 3, allowlist: ["TSLA"] }); assert.equal(k.status, "active"); assert.equal(k.spentToday, 0); assert.equal(k.created.id, k.id); assert.equal(k.revoked, null, "old key was already revoked");
     const k2 = await api.create_session_key({ perTradeCap: 60, dailyCap: 200, days: 3, allowlist: ["TSLA"] }); assert.equal(k2.revoked.key, k.id); assert.match(k2.revoked.txHash, /^0x/); assert.equal(k2.perTradeCap, 60);
     const x = await api.execute_swap({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 40 }); assert.match(x.txHash, /^0x/);
+    // owner-token handling: missing -> clear error; __requestOwnerToken used if present; 403 on owner call clears it
+    const mk = (store: any, win: any = {}) => { const c: any = { fetch, URLSearchParams, console, setTimeout, localStorage: { getItem: () => null }, sessionStorage: store, window: { STOCKCLAW_API: `http://127.0.0.1:${PORT_API}`, ...win } }; vm.createContext(c); vm.runInContext(fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8"), c); return c.window.api; };
+    const empty = memStore({});
+    await assert.rejects(mk(empty).get_wallet(), /owner token required/);
+    let asked = 0; const s2 = memStore({});
+    assert.equal((await mk(s2, { __requestOwnerToken: async () => { asked++; return OWNER; } }).get_wallet()).chainId, 46630);
+    assert.equal(asked, 1); assert.equal(s2.getItem("stockclaw-owner-token"), OWNER);
+    const s3 = memStore({ "stockclaw-owner-token": MCPT });
+    await assert.rejects(mk(s3).revoke_session_key(), /Owner token required/); assert.equal(s3.getItem("stockclaw-owner-token"), null, "cleared after 403");
+    assert.ok(!fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8").includes("window.prompt("), "no unmasked prompt");
   });
 
   await step("order status enum + POST /api/dev/reset gives a fresh user and agent pool (repeatable demo)", async () => {
@@ -327,6 +338,13 @@ try {
     small3.close();
     const { Limiter } = await import("../src/rest.js");
     const L = new Limiter(10, 100); for (let i = 0; i < 1000; i++) L.hit("k" + i); assert.ok(L.size <= 100, "bounded size");
+    // /api/health has its own generous bucket: survives after the REST bucket is exhausted, but is still limited
+    const hz: number[] = [];
+    for (let i = 0; i < 4; i++) hz.push((await fetch(`http://127.0.0.1:${PORT_API + 1}/api/health`)).status);
+    assert.ok(hz.every((c) => c === 200), "health not blocked by the exhausted REST bucket: " + hz);
+    const small4 = buildApp({ healthPerMin: 3 }).listen(PORT_API + 14);
+    const hl: number[] = []; for (let i = 0; i < 4; i++) hl.push((await fetch(`http://127.0.0.1:${PORT_API + 14}/api/health`)).status);
+    assert.deepEqual(hl, [200, 200, 200, 429]); small4.close();
     small.close();
     // health: fresh pushes = no oracle alert; after 20 min without pushes ORACLE_STALE fires; cap-block spike counted
     await keeper.pushOracle();

@@ -39,7 +39,7 @@ export class Limiter {
 const deny = (res: express.Response, wait: number) => { res.setHeader("Retry-After", String(wait)); res.status(429).json({ error: "Rate limit exceeded" }); };
 const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?";
 
-export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerMin?: number } = {}) {
+export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerMin?: number; healthPerMin?: number } = {}) {
   const app = express();
   app.use(express.json({ limit: "100kb" }));
   mon && svc.setCapBlockHook(mon.recordCapBlock);
@@ -48,7 +48,11 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   // Stage 1 (before auth): per-IP per scope + a global per-IP limit. Fake tokens can't create new buckets.
   const ipGlobal = new Limiter(opts.ipPerMin ?? Number(process.env.RATE_LIMIT_IP_PER_MIN ?? 600));
   const ipRest = new Limiter(restPerMin), ipMcp = new Limiter(mcpPerMin);
+  // /api/health: its own generous per-IP bucket (dashboard polling), still limited.
+  const ipHealth = new Limiter(opts.healthPerMin ?? Number(process.env.RATE_LIMIT_HEALTH_PER_MIN ?? 60));
+  app.use("/api/health", (req, res, next) => { const w = ipHealth.hit(ipOf(req)); return w ? deny(res, w) : next(); });
   app.use(["/api", "/mcp"], (req, res, next) => {
+    if (req.baseUrl === "/api" && req.path === "/health") return next();
     const ip = ipOf(req), w = ipGlobal.hit(ip) || (req.baseUrl === "/mcp" ? ipMcp : ipRest).hit(ip);
     return w ? deny(res, w) : next();
   });
@@ -56,7 +60,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   const tokRest = new Limiter(restPerMin), tokMcp = new Limiter(mcpPerMin);
   app.use(["/api", "/mcp"], (req, res, next) => {
     const t = bearer(req), role = t && t === ownerToken() ? "owner" : t && t === mcpToken() ? "agent" : null;
-    if (!role) return next(); // invalid/absent token: auth middleware rejects; already IP-limited
+    if (!role || (req.baseUrl === "/api" && req.path === "/health")) return next(); // invalid/absent token: auth middleware rejects; already IP-limited
     const w = (req.baseUrl === "/mcp" ? tokMcp : tokRest).hit(role);
     return w ? deny(res, w) : next();
   });
