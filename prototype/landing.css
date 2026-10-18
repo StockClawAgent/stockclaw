@@ -13,7 +13,7 @@ body.is-landing .tnbar{background:#141416;color:#c9c7c2;border-bottom:1px solid 
 .lp-nav nav a{text-decoration:none;color:var(--mut)}.lp-nav nav a:hover{color:var(--fg)}
 .lp-nav .lp-pill{color:var(--fg);border:1px solid #3a3a3f;border-radius:999px;padding:5px 14px}
 .lp-hero{text-align:center;padding:72px 0 40px}
-.lp-hero h1{font-size:clamp(40px,6.4vw,84px);line-height:1.02;letter-spacing:-.045em;font-weight:500;margin:28px 0 22px}
+.lp-hero h1{font-size:clamp(36px,5.6vw,76px);line-height:1.02;letter-spacing:-.045em;font-weight:500;margin:28px 0 22px}
 .lp-hero h1 em{font-style:normal;color:var(--or)}
 .lp-sub{max-width:560px;margin:0 auto;color:#bdbab3;font-size:17px}
 .lp-clients{color:var(--mut);font-size:13px;letter-spacing:.02em;margin:18px 0 0}.lp-clients span{margin:0 8px;color:#55534e}
@@ -81,3 +81,4 @@ body.is-landing .tnbar{background:#141416;color:#c9c7c2;border-bottom:1px solid 
 @media (prefers-reduced-motion:reduce){.lp-bot{animation:none}.lp-bot.blink .lp-eye{transform:translate(-50%,-50%)}.lp-coin-in{animation:none;transform:rotateY(-18deg) rotateX(8deg)}}
 
 .lp-logo{display:inline-flex}.lp-logo img{height:28px;width:auto;display:block}
+.lp-chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center;margin:22px 0 0}.lp-chip{font:12px/1 ui-monospace,Menlo,monospace;color:var(--fg);border:1px solid #3a3a3f;border-radius:999px;padding:6px 10px}.lp-chips .lp-badge{margin-left:4px}
