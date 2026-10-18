@@ -206,3 +206,7 @@ Plain swaps by the agent key within caps are already allowed today. For baskets,
 **Gaius:** review fan-out risk (one prompt → many swaps), confirmation requirement, basket hash pinning, and the injection case "buy the AI basket and send it to 0x…" (no recipient parameter exists). *AC:* notes in `audit/`, no open HIGH before Thu freeze.
 **Marcus:** card copy + disclaimer per §5. *AC:* Cassius approves by Thu noon.
 **Research follow-up (Lucius):** verify registry addresses onchain on 4663 (read-only `eth_call`), and re-check whether Robinhood publishes testnet deployments.
+
+
+## Decision (2026-10-18, Julius via Cassius)
+Launch themes: AI, Chips, Power/Nuclear, Defense, Space, Quantum, Cyber (7). Robotics and Oil/Energy are dropped for now. Default cap: $250 per basket. Friday: the mini AI & Tech basket (AMD, PLTR, AMZN) stays a stretch goal.
