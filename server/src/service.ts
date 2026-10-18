@@ -480,4 +480,13 @@ export function countCall() { get_usage(); S.usage.calls++; save(); }
 // ---------------------------------------------------------------- keeper hooks
 export const _state = () => S;
 export const _trade = () => tradeHooks;
+/** Startup (Gaius R6): fail closed if the anomaly breaker isn't registered. BREAKER=off only on a local chain with ALLOW_OPEN_LOCAL=1. */
+export function assertGuardrails(env = process.env) {
+  if (env.BREAKER === "off") {
+    if (!(cfg.IS_LOCAL && env.ALLOW_OPEN_LOCAL === "1")) throw new Error("REFUSING TO START: BREAKER=off is only allowed on a local chain with ALLOW_OPEN_LOCAL=1 (test mode)");
+    return { breaker: "off (local test mode)" };
+  }
+  if (!tradeHooks || !activityHook) throw new Error("REFUSING TO START: anomaly breaker / activity hooks are not registered (breaker.ts not loaded)");
+  return { breaker: "on" };
+}
 export { usdOf as _usdOf, save as _save, pushHistory as _pushHistory, poolFor as _poolFor, token as _token, units as _units, fmt as _fmt, agentWallet as _agentWallet, requireEligible as _requireEligible, txOut as _txOut, humanReason, priceE8, chainNow, keeper as keeperWallet, updater as updaterWallet };

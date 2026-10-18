@@ -83,7 +83,9 @@ export async function executeDue() {
     const due = Number(nextAt) === 0 ? i.startTime : Number(nextAt);
     if (now < due) continue;
     const keyId = svc.keyIdOf(o.agent);
-    try { svc._trade()?.guard(keyId, `${o.intentId}:${o.execsDone}`); }
+    // R6-1: one period of an owner-confirmed strategy = one trade toward the 5-in-10 rule (like a basket); dollars still count
+    const tradeRef = (n: number) => (o.activationId ? `act:${o.activationId}:${n}` : `${o.intentId}:${n}`);
+    try { svc._trade()?.guard(keyId, tradeRef(o.execsDone)); }
     catch (e) { if (o.lastError !== (e as Error).message) { o.lastError = (e as Error).message; } results.push({ intentId: o.intentId, result: `held: ${(e as Error).message}` }); continue; }
     try {
       const outTok = (o.tokenOut === "mUSDG" ? d.usdg : d.stocks[o.tokenOut].token);
@@ -96,7 +98,7 @@ export async function executeDue() {
       if (o.execsDone >= o.maxExecs) o.status = "filled";
       const side = o.tokenIn === "mUSDG" ? "buy" : "sell", usdV = side === "buy" ? o.amount : o.amount * Number((await svc.priceE8(o.tokenIn)).p) / 1e8;
       svc._pushHistory({ txHash: hash, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: `${received.toFixed(6)} ${o.tokenOut}`, fee: `${(o.amount * 0.003).toFixed(4)} ${o.tokenIn}`, ts: new Date().toISOString(), status: "filled", side, keyId, usd: +usdV.toFixed(2) });
-      svc._trade()?.record(keyId, side, usdV, `${o.intentId}:${o.execsDone - 1}`);
+      svc._trade()?.record(keyId, side, usdV, tradeRef(o.execsDone - 1));
       results.push({ intentId: o.intentId, result: `executed ${o.execsDone}/${o.maxExecs}` });
       if (o.activationId) { const stock = o.tokenOut === "mUSDG" ? o.tokenIn : o.tokenOut; await strat.onFill(o, received, Number((await svc.priceE8(stock)).p) / 1e8, hash); }
     } catch (e) {

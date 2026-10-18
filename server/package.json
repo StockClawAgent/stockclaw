@@ -12,7 +12,8 @@
     "typecheck": "tsc",
     "strategies:lock": "tsx src/strategies.ts lock",
     "demo:env": "bash scripts/gen-demo-env.sh",
-    "testnet:dryrun": "bash scripts/testnet-dryrun.sh"
+    "testnet:dryrun": "bash scripts/testnet-dryrun.sh",
+    "passkey:status": "tsx scripts/passkey-status.ts"
   },
   "keywords": [],
   "author": "",

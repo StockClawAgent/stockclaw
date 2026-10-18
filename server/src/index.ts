@@ -8,6 +8,9 @@ import { log } from "./log.js";
 import { PORT, RPC_URL, MARKET_MODE, assertTokensConfigured, ownerToken } from "./config.js";
 await assertChain();
 assertTokensConfigured();
+import "./breaker.js";
+import { assertGuardrails } from "./service.js";
+assertGuardrails(); // fail closed (Gaius R6)
 // Restart recovery: settle in-flight txs by hash, requeue jobs a dead process left running (baskets resume leg by leg).
 await jobs.recover();
 buildApp().listen(PORT, () => log.info(`StockClaw API + UI http://localhost:${PORT}  MCP http://localhost:${PORT}/mcp  RPC ${RPC_URL}  market=${MARKET_MODE}${ownerToken() ? "" : "  WARNING: no OWNER_API_TOKEN/MCP_API_TOKEN (local demo: open)"}  owner wallet: SIMULATED`, { port: PORT }));

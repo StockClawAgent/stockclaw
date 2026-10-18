@@ -261,6 +261,7 @@ try {
   });
 
   let ssId = "";
+  process.env.BREAKER = "on"; // R6-1: strategy steps run with the breaker on
   await step("Steady Stacker: agent proposes via MCP (pending, nothing runs); MCP token can't confirm; owner confirms; DCA runs", async () => {
     const c = await mcpClient();
     const params = { basket: [{ symbol: "TSLA", weightBps: 3400 }, { symbol: "AMD", weightBps: 3300 }, { symbol: "PLTR", weightBps: 3300 }], usdPerPeriod: 100, period: "daily", maxPeriods: 2, demoIntervalSec: 60 };
@@ -299,7 +300,11 @@ try {
     let st = (await call("GET", `strategies/activations/${dhId}`)).body;
     const rungs = st.intents.filter((i: any) => i.role === "rung");
     assert.equal(rungs.filter((i: any) => i.status === "filled").length, 2, JSON.stringify(rungs));
-    const r3 = rungs.find((i: any) => i.rung === 3); assert.equal(r3.status, "open"); assert.match(r3.lastError, /24h cap/);
+    // breaker on: Stacker $200 + earlier $20 + rungs $196 = $416 from >= 2 executions within 1h => key paused (80% rule) before rung 3
+    let r3 = rungs.find((i: any) => i.rung === 3); assert.equal(r3.status, "open"); assert.match(r3.lastError, /anomaly breaker \(buys reached/);
+    assert.equal((await call("POST", `keys/${svc._agent()!.id}/resume`)).status, 200);
+    keeper._clearBackoff(); await keeper.executeDue(); // after resume the onchain $500 cap is what blocks rung 3
+    r3 = (await call("GET", `strategies/activations/${dhId}`)).body.intents.find((i: any) => i.rung === 3); assert.match(r3.lastError, /24h cap/);
     const tps = st.intents.filter((i: any) => i.role === "take-profit"); assert.equal(tps.length, 2);
     assert.ok(tps.every((t: any) => t.limitPrice >= 147 * 1.02 - 0.01 && t.amount * t.limitPrice <= 98), JSON.stringify(tps));
     await warp(600); await keeper.pushOracle({ AMD: 150.5 }); await keeper.executeDue();
@@ -317,6 +322,7 @@ try {
     assert.equal((await keeper.executeDue()).length, 0);
   });
 
+  process.env.BREAKER = "off";
   await step("vault-wide $500/24h cap holds across agent keys (new key can't reset it)", async () => {
     const spent = (await call("GET", "get_wallet")).body.sessionKey.spentToday; assert.ok(spent > 400, String(spent));
     const k = await call("POST", "create_session_key", { allowlist: ["TSLA", "AMD"] }); assert.equal(k.status, 200, JSON.stringify(k.body));
@@ -479,6 +485,12 @@ try {
     assert.equal(ap.ownerSignatureSimulated, true); assert.ok(Math.abs(Date.parse(ap.expiresAt) - Date.parse(ap.createdAt) - 3600_000) < 2000);
     // passkey (virtual authenticator, real WebAuthn verification)
     const va = virtualAuthenticator("localhost", `http://localhost:${PORT_API}`);
+    // R6-3: a bootstrap challenge can't complete once a passkey exists (verify re-checks, atomically with the insert)
+    const race = (await callH("POST", "passkey/register/options")).body;
+    getDb().prepare("INSERT INTO passkeys(id, owner, public_key, counter, created_at) VALUES('racer', '0x0', 'AA', 0, 'x')").run();
+    const rr = await callH("POST", "passkey/register/verify", { response: virtualAuthenticator("localhost", `http://localhost:${PORT_API}`).register(race) });
+    assert.equal(rr.status, 403, JSON.stringify(rr.body)); assert.match(rr.body.error, /step-up/);
+    getDb().prepare("DELETE FROM passkeys WHERE id='racer'").run();
     const ro = (await callH("POST", "passkey/register/options")).body; assert.equal(ro.rp.id, "localhost");
     const rv = await callH("POST", "passkey/register/verify", { response: va.register(ro) }); assert.equal(rv.status, 200, JSON.stringify(rv.body));
     assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge, { tamper: true }) })).status, 401);
@@ -601,6 +613,46 @@ try {
     } finally { process.env.BREAKER = "off"; }
   });
 
+
+  await step("R6-1: breaker ON: Steady Stacker 3 periods (9 fills) + Dip Hunter rungs run with no trip (a strategy period = one trade)", async () => {
+    await freshUser();
+    process.env.BREAKER = "on";
+    try {
+      const ssp = { basket: [{ symbol: "TSLA", weightBps: 3400 }, { symbol: "AMD", weightBps: 3300 }, { symbol: "PLTR", weightBps: 3300 }], usdPerPeriod: 30, period: "daily", maxPeriods: 3, demoIntervalSec: 60 };
+      const pv = (await call("POST", "strategies/preview", { id: "steady-stacker", params: ssp })).body; assert.equal(pv.valid, true, JSON.stringify(pv.errors));
+      const a = await call("POST", "strategies/activate", { id: "steady-stacker", params: ssp, confirmHash: pv.strategyHash }); assert.equal(a.status, 200, JSON.stringify(a.body));
+      await keeper.tick(); await warp(60); await keeper.tick(); await warp(60); await keeper.tick();
+      const st = (await call("GET", `strategies/activations/${a.body.activationId}`)).body;
+      assert.equal(st.status, "completed", JSON.stringify(st.intents)); assert.equal(st.fills.length, 9);
+      await warp(600); await keeper.pushOracle({ AMD: 150 });
+      const dp = { symbol: "AMD", usdPerRung: 20, dropsBps: [100, 150, 200], takeProfitBps: 200, sellFractionBps: 1000 };
+      const pv2 = (await call("POST", "strategies/preview", { id: "dip-hunter", params: dp })).body;
+      const d2 = await call("POST", "strategies/activate", { id: "dip-hunter", params: dp, confirmHash: pv2.strategyHash }); assert.equal(d2.status, 200, JSON.stringify(d2.body));
+      await keeper.executeDue(); await warp(600); await keeper.pushOracle({ AMD: 147 }); await keeper.executeDue();
+      const st2 = (await call("GET", `strategies/activations/${d2.body.activationId}`)).body;
+      assert.equal(st2.intents.filter((i: any) => i.role === "rung" && i.status === "filled").length, 3, JSON.stringify(st2.intents));
+      assert.equal((await callH("GET", "keys/breaker")).body.tripped.length, 0, "no trip");
+      assert.ok(!(await callH("GET", "activity")).body.some((e: any) => e.kind === "breaker"));
+      await call("POST", `strategies/activations/${d2.body.activationId}/stop`);
+      await warp(600); await keeper.pushOracle({ AMD: 150 });
+    } finally { process.env.BREAKER = "off"; }
+  });
+
+  await step("startup fails closed: refuses without the breaker registered, and BREAKER=off outside ALLOW_OPEN_LOCAL test mode", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-boot-"));
+    const { spawnSync } = await import("node:child_process");
+    const run = (code: string, env: Record<string, string | undefined>) => {
+      const f = path.join(tmp, `b${Math.random().toString(36).slice(2)}.mts`); fs.writeFileSync(f, code);
+      const r = spawnSync("npx", ["tsx", f], { env: { ...process.env, DATA_DIR: tmp, BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, ...env } as any, encoding: "utf8" });
+      return (/RESULT(.*)/.exec(r.stdout)?.[1]) ?? "";
+    };
+    const svcP = JSON.stringify(path.resolve("src/service.ts")), brkP = JSON.stringify(path.resolve("src/breaker.ts"));
+    const check = `try { console.log("RESULT" + JSON.stringify(s.assertGuardrails())); } catch (e) { console.log("RESULT" + JSON.stringify({ error: e.message })); }`;
+    assert.match(run(`const s = await import(${svcP}); ${check}`, {}), /not registered/);
+    assert.match(run(`const s = await import(${svcP}); await import(${brkP}); ${check}`, {}), /"breaker":"on"/);
+    assert.match(run(`const s = await import(${svcP}); ${check}`, { BREAKER: "off" }), /only allowed on a local chain with ALLOW_OPEN_LOCAL=1/);
+    assert.match(run(`const s = await import(${svcP}); ${check}`, { BREAKER: "off", ALLOW_OPEN_LOCAL: "1" }), /local test mode/);
+  });
   await step("MCP per-key trade limit: 10 trade-tool calls/min per agent key, then refused; read tools unaffected", async () => {
     const { _resetTradeLimiter } = await import("../src/mcp.js"); _resetTradeLimiter();
     const c = await mcpClient();

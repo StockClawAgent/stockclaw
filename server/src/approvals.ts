@@ -87,19 +87,26 @@ export async function passkey_register_options(stepUp?: any) {
   }
   const o = await generateRegistrationOptions({ rpName: "StockClaw", rpID: RP_ID(), userName: "stockclaw-owner", userID: new TextEncoder().encode(svc._owner().address), attestationType: "none",
     authenticatorSelection: { residentKey: "preferred", userVerification: "required" }, excludeCredentials: (getDb().prepare("SELECT id FROM passkeys").all() as { id: string }[]).map((r) => ({ id: r.id })) });
-  getDb().prepare("INSERT INTO webauthn_challenges(k, challenge, created_at) VALUES('register', ?, ?) ON CONFLICT(k) DO UPDATE SET challenge=excluded.challenge, created_at=excluded.created_at").run(o.challenge, Date.now());
+  const slot = existing ? "register-stepup" : "register-bootstrap"; // R6-3: verify re-checks which path issued the challenge
+  getDb().prepare("DELETE FROM webauthn_challenges WHERE k LIKE 'register%'").run();
+  getDb().prepare("INSERT INTO webauthn_challenges(k, challenge, created_at) VALUES(?, ?, ?)").run(slot, o.challenge, Date.now());
   return o;
 }
 export async function passkey_register_verify(response: any) {
-  const c = getDb().prepare("SELECT challenge, created_at FROM webauthn_challenges WHERE k='register'").get() as { challenge: string; created_at: number } | undefined;
+  const c = getDb().prepare("SELECT k, challenge, created_at FROM webauthn_challenges WHERE k LIKE 'register-%'").get() as { k: string; challenge: string; created_at: number } | undefined;
   if (!c || Date.now() - c.created_at > 300_000) throw new ApiError(400, "No registration in progress (call /api/passkey/register/options)");
   let v;
   try { v = await verifyRegistrationResponse({ response, expectedChallenge: c.challenge, expectedOrigin: ORIGINS(), expectedRPID: RP_ID(), requireUserVerification: true }); }
   catch (e) { throw new ApiError(400, `Passkey registration failed: ${(e as Error).message}`); }
   if (!v.verified || !v.registrationInfo) throw new ApiError(400, "Passkey registration not verified");
   const cr = v.registrationInfo.credential;
-  getDb().prepare("INSERT OR REPLACE INTO passkeys(id, owner, public_key, counter, created_at) VALUES(?,?,?,?,?)").run(cr.id, svc._owner().address, isoBase64URL.fromBuffer(cr.publicKey), cr.counter, nowIso());
-  getDb().prepare("DELETE FROM webauthn_challenges WHERE k='register'").run();
+  // R6-3: re-check the bootstrap rule at verify time, atomically with the insert: a bootstrap challenge can't add a passkey once one exists
+  tx(() => {
+    const n = (getDb().prepare("SELECT COUNT(*) n FROM passkeys").get() as { n: number }).n;
+    if (n > 0 && c.k !== "register-stepup") throw new ApiError(403, "A passkey is already registered: adding another needs a step-up assertion (request new options)");
+    getDb().prepare("INSERT OR REPLACE INTO passkeys(id, owner, public_key, counter, created_at) VALUES(?,?,?,?,?)").run(cr.id, svc._owner().address, isoBase64URL.fromBuffer(cr.publicKey), cr.counter, nowIso());
+    getDb().prepare("DELETE FROM webauthn_challenges WHERE k LIKE 'register%'").run();
+  });
   return { verified: true, credentialId: cr.id, rpId: RP_ID() };
 }
 async function verifyAssertion(a: Approval, assertion: any) {

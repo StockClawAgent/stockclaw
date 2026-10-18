@@ -5,3 +5,9 @@ broadcast/
 .env
 .env.*
 *.key
+# R6-2 hygiene: Python bytecode, generated screenshots / design renders (tracked deliverables stay tracked)
+__pycache__/
+/png/*
+!/png/.keep
+/avatars/*.png
+/logo/new-logo-reference.png
