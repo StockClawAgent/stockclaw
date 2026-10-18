@@ -229,22 +229,40 @@ contract AgentVaultTest is Base {
         vault.agentSwap(address(pool), address(usdg), address(tsla), 1e6, 0, block.timestamp + 60);
     }
 
-    function test_ownerAdjustsCaps() public {
+    function test_ownerCanOnlyLowerCaps() public {
         _allowBoth();
-        vm.prank(alice);
-        vault.setCaps(agent, 200e6, 300e6);
-        _buy(200e6);
-        vm.expectRevert(abi.encodeWithSelector(AgentVault.DailyCapExceeded.selector, 400e6, 300e6));
-        _buy(200e6);
-        vm.prank(alice);
+        vm.startPrank(alice);
+        vault.setCaps(agent, 50e6, 120e6);
+        vm.expectRevert(AgentVault.CapAboveProtocolMax.selector);
+        vault.setCaps(agent, 100e6 + 1, 500e6);
+        vm.expectRevert(AgentVault.CapAboveProtocolMax.selector);
+        vault.setCaps(agent, 100e6, 500e6 + 1);
         vm.expectRevert(AgentVault.InvalidParams.selector);
-        vault.setCaps(agent, 301e6, 300e6);
+        vault.setCaps(agent, 0, 100e6);
+        vm.expectRevert(AgentVault.InvalidParams.selector);
+        vault.setCaps(agent, 60e6, 50e6);
+        vm.stopPrank();
+        _buy(50e6);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.PerTradeCapExceeded.selector, 50e6 + 1, 50e6));
+        _buy(50e6 + 1);
+        _buy(50e6);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.DailyCapExceeded.selector, 120e6 + 1, 120e6));
+        _buy(20e6 + 1);
+        vm.prank(alice);
+        vault.setCaps(agent, 100e6, 500e6); // back up to (not above) the max
+    }
+
+    function testFuzz_raiseAboveMaxReverts(uint128 t, uint128 d) public {
+        vm.assume(t > 100e6 || d > 500e6);
+        vm.prank(alice);
+        vm.expectRevert(AgentVault.CapAboveProtocolMax.selector);
+        vault.setCaps(agent, t, d);
     }
 
     function test_onlyOwnerControls() public {
         vm.startPrank(agent);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, agent));
-        vault.setCaps(agent, 1e12, 1e12);
+        vault.setCaps(agent, 1e6, 1e6);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, agent));
         vault.setAllowedToken(address(usdg), true);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, agent));

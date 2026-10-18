@@ -36,12 +36,12 @@ contract Handler is Test {
 
 contract InvariantTest is Base {
     Handler h;
-    uint256 k0;
+    uint256 v0;
 
     function setUp() public override {
         super.setUp();
         h = new Handler(router, pool, usdg, tsla, alice);
-        k0 = uint256(pool.reserveStock()) * pool.reserveUsdg();
+        v0 = pool.valueUsd();
         targetContract(address(h));
     }
 
@@ -50,8 +50,9 @@ contract InvariantTest is Base {
         assertEq(tsla.balanceOf(address(router)), 0);
     }
 
-    function invariant_kNonDecreasing() public view {
-        assertGe(uint256(pool.reserveStock()) * pool.reserveUsdg(), k0);
+    /// Oracle price is constant in this handler: pool value at oracle never decreases (gains spread).
+    function invariant_poolValueAtOracleNonDecreasing() public view {
+        assertGe(pool.valueUsd() + 2, v0); // tolerance: usdValue rounding
     }
 
     function invariant_reservesMatchBalances() public view {

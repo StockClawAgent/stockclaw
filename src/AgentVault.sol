@@ -28,8 +28,11 @@ import {TokenTransfers} from "./libraries/TokenTransfers.sol";
 contract AgentVault is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    uint128 public constant DEFAULT_PER_TRADE_USD = 100e6;
-    uint128 public constant DEFAULT_PER_DAY_USD = 500e6;
+    /// Protocol-level HARD maximums (CTO decision, review-1 L-2). Owners can only lower them.
+    uint128 public constant MAX_PER_TRADE_USD = 100e6;
+    uint128 public constant MAX_PER_DAY_USD = 500e6;
+    uint128 public constant DEFAULT_PER_TRADE_USD = MAX_PER_TRADE_USD;
+    uint128 public constant DEFAULT_PER_DAY_USD = MAX_PER_DAY_USD;
 
     /// slot0: perTradeUsd(16) + expiry(5) + active(1); slot1: perDayUsd(16)
     struct AgentPolicy {
@@ -65,6 +68,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     error WrongAccount();
     error BadAgentSignature();
     error NotKeeper();
+    error CapAboveProtocolMax();
 
     constructor(address owner_, FeeRouter router_) Ownable(owner_) {
         router = router_;
@@ -90,7 +94,8 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     }
 
     function setCaps(address agent, uint128 perTradeUsd, uint128 perDayUsd) external onlyOwner {
-        if (perTradeUsd > perDayUsd || perDayUsd > type(uint96).max / BUCKETS) revert InvalidParams();
+        if (perTradeUsd > MAX_PER_TRADE_USD || perDayUsd > MAX_PER_DAY_USD) revert CapAboveProtocolMax();
+        if (perTradeUsd == 0 || perTradeUsd > perDayUsd) revert InvalidParams();
         policies[agent].perTradeUsd = perTradeUsd;
         policies[agent].perDayUsd = perDayUsd;
         emit CapsSet(agent, perTradeUsd, perDayUsd);

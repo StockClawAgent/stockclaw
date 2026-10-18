@@ -9,10 +9,12 @@ import {IDexAdapter} from "./interfaces/IDexAdapter.sol";
 import {PriceOracle} from "./oracle/PriceOracle.sol";
 
 /// @title StockClawPool
-/// @notice Demo constant-product (x*y=k) USDG/stock pool, owner-only liquidity, oracle-band guard:
-/// a swap reverts if the post-trade pool price deviates more than `bandBps` from the oracle.
+/// @notice Oracle-anchored USDG/stock pool (CTO decision). Every fill is at the oracle price minus a
+/// bounded owner-set spread (10-30 bps), capped by the output reserve. No curve, no price impact:
+/// `quote()` returns exactly what `swap()` delivers in the same block. Owner-only liquidity.
+/// Pool value at oracle price never decreases on a swap (it gains the spread).
 /// Acts directly as an IDexAdapter for the router (tokens are pushed in before `swap`).
-/// No LP fee: the protocol fee is charged once, in the router.
+/// Inherits the oracle's halts: stale feed (>1h) or market closed => quote/swap revert.
 contract StockClawPool is IDexAdapter, Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -20,34 +22,37 @@ contract StockClawPool is IDexAdapter, Ownable2Step, ReentrancyGuard {
     address public immutable usdg;
     PriceOracle public immutable oracle;
 
-    // slot: reserves packed (2 x 112) + bandBps (16)
+    uint16 public constant MIN_SPREAD_BPS = 10;
+    uint16 public constant MAX_SPREAD_BPS = 30;
+
+    // slot: reserves packed (2 x 112) + spreadBps (16)
     uint112 public reserveStock;
     uint112 public reserveUsdg;
-    uint16 public bandBps;
+    uint16 public spreadBps;
 
     address public router; // only caller allowed to swap
 
     event Swap(address indexed tokenIn, uint256 amountIn, uint256 amountOut, address indexed recipient);
     event LiquidityChanged(uint112 reserveStock, uint112 reserveUsdg);
-    event BandSet(uint16 bps);
+    event SpreadSet(uint16 bps);
     event RouterSet(address router);
 
     error OnlyRouter();
     error BadPair();
     error ZeroInput();
     error InsufficientOutput(uint256 out, uint256 minOut);
-    error OutsideOracleBand(uint256 poolPriceE8, uint256 oraclePriceE8);
-    error InvalidBand();
+    error InsufficientLiquidity(uint256 out, uint256 reserve);
+    error InvalidSpread(uint16 bps);
     error Overflow();
 
-    constructor(address owner_, address stock_, address usdg_, PriceOracle oracle_, uint16 bandBps_)
+    constructor(address owner_, address stock_, address usdg_, PriceOracle oracle_, uint16 spreadBps_)
         Ownable(owner_)
     {
-        if (bandBps_ == 0 || bandBps_ > 5_000) revert InvalidBand();
+        if (spreadBps_ < MIN_SPREAD_BPS || spreadBps_ > MAX_SPREAD_BPS) revert InvalidSpread(spreadBps_);
         stock = stock_;
         usdg = usdg_;
         oracle = oracle_;
-        bandBps = bandBps_;
+        spreadBps = spreadBps_;
     }
 
     // ---------------------------------------------------------------- admin
@@ -56,10 +61,10 @@ contract StockClawPool is IDexAdapter, Ownable2Step, ReentrancyGuard {
         emit RouterSet(r);
     }
 
-    function setBand(uint16 bps) external onlyOwner {
-        if (bps == 0 || bps > 5_000) revert InvalidBand();
-        bandBps = bps;
-        emit BandSet(bps);
+    function setSpread(uint16 bps) external onlyOwner {
+        if (bps < MIN_SPREAD_BPS || bps > MAX_SPREAD_BPS) revert InvalidSpread(bps);
+        spreadBps = bps;
+        emit SpreadSet(bps);
     }
 
     /// @notice Owner seeds liquidity (pulls tokens). Demo only; no LP shares.
@@ -85,20 +90,16 @@ contract StockClawPool is IDexAdapter, Ownable2Step, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------- views
-    function getAmountOut(uint256 amountIn, uint256 rIn, uint256 rOut) public pure returns (uint256) {
-        return amountIn * rOut / (rIn + amountIn); // rounds down -> k never decreases
+    /// @notice Exact output for `amountIn` at oracle price minus spread. Reverts if it exceeds reserves.
+    function quote(address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256 out) {
+        (, uint256 rOut) = _reserves(tokenIn, tokenOut);
+        out = oracle.convert(tokenIn, tokenOut, amountIn) * (10_000 - spreadBps) / 10_000;
+        if (out > rOut) revert InsufficientLiquidity(out, rOut);
     }
 
-    function quote(address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256) {
-        (uint256 rIn, uint256 rOut) = _reserves(tokenIn, tokenOut);
-        return getAmountOut(amountIn, rIn, rOut);
-    }
-
-    /// @notice Pool price, USD (USDG) per 1 whole stock, 8 dp.
-    function poolPriceE8(uint256 rStock, uint256 rUsdg) public view returns (uint256) {
-        (,,, uint8 sd) = oracle.feeds(stock);
-        // rUsdg(6dp)/rStock(sd dp) -> *1e8
-        return rUsdg * (10 ** sd) * 100 / rStock;
+    /// @notice Reserves valued in USD (6 dp) at the current oracle price.
+    function valueUsd() external view returns (uint256) {
+        return oracle.usdValue(stock, reserveStock) + reserveUsdg;
     }
 
     // ---------------------------------------------------------------- swap
@@ -111,13 +112,12 @@ contract StockClawPool is IDexAdapter, Ownable2Step, ReentrancyGuard {
         (uint256 rIn, uint256 rOut) = _reserves(tokenIn, tokenOut);
         uint256 amountIn = IERC20(tokenIn).balanceOf(address(this)) - rIn; // actually received
         if (amountIn == 0) revert ZeroInput();
-        out = getAmountOut(amountIn, rIn, rOut);
-        if (out < minOut) revert InsufficientOutput(out, minOut);
+        out = quote(tokenIn, tokenOut, amountIn);
+        if (out == 0 || out < minOut) revert InsufficientOutput(out, minOut);
 
         uint256 newIn = rIn + amountIn;
         uint256 newOut = rOut - out;
         (uint256 rS, uint256 rU) = tokenIn == stock ? (newIn, newOut) : (newOut, newIn);
-        _checkBand(rS, rU);
 
         if (rS > type(uint112).max || rU > type(uint112).max) revert Overflow();
         reserveStock = uint112(rS);
@@ -126,12 +126,6 @@ contract StockClawPool is IDexAdapter, Ownable2Step, ReentrancyGuard {
         emit Swap(tokenIn, amountIn, out, recipient);
     }
 
-    function _checkBand(uint256 rS, uint256 rU) internal view {
-        uint256 p = poolPriceE8(rS, rU);
-        uint256 o = oracle.priceE8(stock); // reverts if stale
-        uint256 diff = p > o ? p - o : o - p;
-        if (diff * 10_000 > o * bandBps) revert OutsideOracleBand(p, o);
-    }
 
     function _reserves(address tokenIn, address tokenOut) internal view returns (uint256, uint256) {
         if (tokenIn == stock && tokenOut == usdg) return (reserveStock, reserveUsdg);

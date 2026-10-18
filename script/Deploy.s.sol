@@ -79,13 +79,20 @@ contract Deploy is Script {
         for (uint256 i; i < 5; i++) {
             MockAggregatorV3 f = new MockAggregatorV3(deployer, updater, 8, string.concat(s[i], " / USD"));
             c.oracle.setFeed(t[i], f, 1 hours);
-            StockClawPool p = new StockClawPool(deployer, t[i], address(c.usdg), c.oracle, 200); // L-4: 2% band per threat model SR-23
+            StockClawPool p = new StockClawPool(deployer, t[i], address(c.usdg), c.oracle, 20); // oracle-anchored, 20 bps spread
             p.setRouter(address(c.router));
             c.router.setAdapter(address(p), true);
+            p.transferOwnership(safe);
+            f.transferOwnership(safe);
             console2.log(s[i], address(f), address(p));
         }
-        // Pool seeding happens in a separate script after feeds are pushed (band check needs a fresh price).
-        // Ownership of router -> TREASURY_SAFE should be transferred (2-step) after smoke tests.
+        // Pool seeding happens in a separate script after feeds are pushed (quotes need a fresh price).
+        // Ownership -> 2-of-3 Safe. Router, pools, oracle and feeds are Ownable2Step: this only sets
+        // `pendingOwner`; the Safe must execute `acceptOwnership()` on each (batch via Safe tx builder).
+        // Until accepted, the deployer remains owner (needed for seeding). Registry: Safe gets admin role.
+        c.router.transferOwnership(safe);
+        c.oracle.transferOwnership(safe);
+        c.registry.grantRole(c.registry.DEFAULT_ADMIN_ROLE(), safe);
         vm.stopBroadcast();
     }
 

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
 
 /// @notice Chainlink-compatible feed pushed by our keeper (updater-only). Testnet stand-in until
 /// real stock/USD feeds are confirmed on 46630. Staleness is enforced by consumers (OracleLib).
-contract MockAggregatorV3 is AggregatorV3Interface, Ownable {
+contract MockAggregatorV3 is AggregatorV3Interface, Ownable2Step {
     uint8 public immutable decimals;
     string public description;
     address public updater;

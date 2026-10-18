@@ -14,6 +14,16 @@ contract FeeRouterTest is Base {
         assertEq(router.feeTreasury(), safe);
     }
 
+    function test_quoteEqualsDelivered_oracleAnchored() public {
+        uint256 amt = 1_000e6;
+        (uint256 q, uint256 fee) = router.quote(address(pool), address(usdg), address(tsla), amt);
+        // (1000 - 0.3% fee) / $250 * (1 - 20 bps spread)
+        assertEq(fee, 3e6);
+        assertEq(q, uint256(997e6) * 1e18 / 250e6 * 9_980 / 10_000);
+        vm.prank(alice);
+        assertEq(router.swap(_params(address(usdg), address(tsla), amt, q, alice)), q);
+    }
+
     function test_buy_feeFromInputToTreasury() public {
         uint256 amt = 1_000e6;
         (uint256 q,) = router.quote(address(pool), address(usdg), address(tsla), amt);
@@ -89,7 +99,7 @@ contract FeeRouterTest is Base {
 
         p = _params(address(usdg), address(tsla), 100e6, 1e18, alice);
         vm.prank(alice);
-        vm.expectRevert(); // InsufficientOutput
+        vm.expectPartialRevert(FeeRouter.AdapterSwapFailed.selector); // pool InsufficientOutput
         router.swap(p);
 
         p.adapter = bob;
@@ -277,19 +287,18 @@ contract FeeRouterTest is Base {
     }
 
     function test_mandatoryOracleFloor() public {
-        // oracle says TSLA is 4% cheaper than pool -> buy gets ~4% less than oracle-implied -> revert (cap 3%)
-        _setPrice(240e8);
+        // adapter fills 5% below oracle -> router's mandatory 3% floor rejects even with minOut=1
         vm.prank(alice);
-        vm.expectPartialRevert(FeeRouter.AdapterSwapFailed.selector);
-        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
-        _setPrice(245e8); // 2% gap: within 3% default
+        vm.expectPartialRevert(FeeRouter.InsufficientOutput.selector);
+        router.swap(_badParams(address(usdg), address(tsla), 100e6, alice));
+        bad.setHaircut(200); // 2%: within default 3%
         vm.prank(alice);
-        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
+        router.swap(_badParams(address(usdg), address(tsla), 100e6, alice));
         vm.prank(owner);
         router.setMaxSlippageBps(100); // owner tightens to 1%
         vm.prank(alice);
-        vm.expectPartialRevert(FeeRouter.AdapterSwapFailed.selector);
-        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
+        vm.expectPartialRevert(FeeRouter.InsufficientOutput.selector);
+        router.swap(_badParams(address(usdg), address(tsla), 100e6, alice));
     }
 
     function test_maxSlippageBounds() public {

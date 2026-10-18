@@ -13,6 +13,29 @@ import {MockStockToken} from "../src/mocks/MockStockToken.sol";
 import {MockPermit2} from "../src/mocks/MockPermit2.sol";
 import {ISignatureTransfer} from "../src/interfaces/ISignatureTransfer.sol";
 
+/// Test-only adapter that fills at oracle price minus `haircutBps` (default 5%), ignoring minOut.
+contract BadAdapter {
+    PriceOracle oracle;
+    uint256 public haircutBps = 500;
+
+    constructor(PriceOracle o) {
+        oracle = o;
+    }
+
+    function setHaircut(uint256 b) external {
+        haircutBps = b;
+    }
+
+    function quote(address a, address b, uint256 amt) public view returns (uint256) {
+        return oracle.convert(a, b, amt) * (10_000 - haircutBps) / 10_000;
+    }
+
+    function swap(address a, address b, uint256 amt, uint256, address to) external returns (uint256 out) {
+        out = quote(a, b, amt);
+        MockUSDG(b).transfer(to, out);
+    }
+}
+
 abstract contract Base is Test {
     address owner = makeAddr("owner");
     address safe = makeAddr("safe2of3"); // fee treasury (2-of-3 Safe on testnet)
@@ -31,6 +54,7 @@ abstract contract Base is Test {
     MockPermit2 permit2;
     FeeRouter router;
     StockClawPool pool;
+    BadAdapter bad;
 
     uint256 constant PRICE = 250e8; // $250 / TSLA
 
@@ -48,10 +72,12 @@ abstract contract Base is Test {
         reg = new EligibilityRegistry(owner, attester);
         permit2 = new MockPermit2();
         router = new FeeRouter(owner, safe, ISignatureTransfer(address(permit2)), oracle, reg);
-        pool = new StockClawPool(owner, address(tsla), address(usdg), oracle, 500);
+        pool = new StockClawPool(owner, address(tsla), address(usdg), oracle, 20);
+        bad = new BadAdapter(oracle);
 
         vm.startPrank(owner);
         router.setAdapter(address(pool), true);
+        router.setAdapter(address(bad), true); // test-only: fills below oracle to exercise floors
         router.setKeeper(keeper);
         oracle.setMarketMode(PriceOracle.MarketMode.Open); // schedule tested separately
         pool.setRouter(address(router));
@@ -62,6 +88,8 @@ abstract contract Base is Test {
         tsla.approve(address(pool), type(uint256).max);
         usdg.approve(address(pool), type(uint256).max);
         pool.addLiquidity(1_000e18, 250_000e6);
+        tsla.transfer(address(bad), 1_000e18);
+        usdg.transfer(address(bad), 250_000e6);
         vm.stopPrank();
 
         _eligible(alice);
@@ -86,6 +114,14 @@ abstract contract Base is Test {
     {
         if (minOut == 0) minOut = 1; // H-1: minOut must be > 0 (router oracle floor still applies)
         return FeeRouter.SwapParams(address(pool), tin, tout, amt, minOut, to, block.timestamp + 60);
+    }
+
+    function _badParams(address tin, address tout, uint256 amt, address to)
+        internal
+        view
+        returns (FeeRouter.SwapParams memory)
+    {
+        return FeeRouter.SwapParams(address(bad), tin, tout, amt, 1, to, block.timestamp + 60);
     }
 
     function _setPrice(uint256 p) internal {

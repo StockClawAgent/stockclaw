@@ -29,13 +29,13 @@ contract IntentsTest is Base {
 
     function test_limitBuy_executesWhenPriceAtOrBelow() public {
         FeeRouter.Intent memory i = _intent(1_000e6, 245e8, 0, 1, 1);
-        i.maxOracleDevBps = 300; // pool lags oracle by ~2% in this scenario
+        i.maxOracleDevBps = 300;
         bytes memory sig = _sign(alicePk, router.hashIntent(i));
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(FeeRouter.LimitNotMet.selector, PRICE, uint64(245e8)));
         router.executeIntent(i, sig);
 
-        _setPrice(245e8); // pool still at ~250 -> within band
+        _setPrice(245e8); // pool follows oracle
         vm.prank(keeper);
         uint256 out = router.executeIntent(i, sig);
         assertGt(out, 0);
@@ -116,13 +116,14 @@ contract IntentsTest is Base {
     }
 
     function test_oracleDeviationGuard() public {
-        // Oracle says TSLA is cheaper (245) than pool (250): buying gives ~2% less than oracle-implied.
-        _setPrice(245e8);
+        // adapter fills 2% below oracle; intent tolerates only 1% -> revert
         FeeRouter.Intent memory i = _intent(100e6, 0, 0, 1, 8);
-        i.maxOracleDevBps = 100; // tolerate 1%
+        i.adapter = address(bad);
+        bad.setHaircut(200);
+        i.maxOracleDevBps = 100;
         bytes memory sig = _sign(alicePk, router.hashIntent(i));
         vm.prank(keeper);
-        vm.expectRevert(); // InsufficientOutput from pool/router
+        vm.expectPartialRevert(FeeRouter.InsufficientOutput.selector);
         router.executeIntent(i, sig);
     }
 

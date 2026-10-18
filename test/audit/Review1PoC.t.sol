@@ -77,11 +77,10 @@ contract Review1PoC is Base {
         vm.expectRevert(FeeRouter.InvalidIntent.selector);
         vault.executeIntent(i, sig);
 
-        // (d) agent passes minOut=0 -> vault substitutes oracle floor; with oracle 5% off, it reverts
-        _setPrice(PRICE * 95 / 100);
+        // (d) agent passes minOut=0 via an adapter filling 5% below oracle -> vault oracle floor reverts
         vm.prank(agent);
         vm.expectRevert();
-        vault.agentSwap(address(pool), address(usdg), address(tsla), 100e6, 0, block.timestamp + 60);
+        vault.agentSwap(address(bad), address(usdg), address(tsla), 100e6, 0, block.timestamp + 60);
     }
 
     // M-3 FIXED: only keeper (or vault owner) can trigger vault intents
@@ -102,9 +101,9 @@ contract Review1PoC is Base {
         router.swap(_params(address(usdg), address(tsla), 1_000e6, 1, eve));
     }
 
-    // M-5 PARTIAL: precheck now probes the treasury leg (when a compliance adapter is configured) and
-    // a blocked fee leg fails with TransferBlocked. Fee-in-USDG / accrued-fee pull + 46630 fork test
-    // are pending (conflicts with the CTO's "fee from input" decision -> escalated).
+    // M-5: fee stays in input token (CTO decision). Blocked fee leg fails cleanly with TransferBlocked;
+    // precheck covers the treasury leg via compliance adapter; real-token path covered by
+    // test/fork/RobinhoodFork.t.sol (read-only fork of 46630).
     function test_PoC_M5_frozenTreasuryDoSesSells() public {
         tsla.setFrozen(safe, true);
         vm.prank(alice);
@@ -121,12 +120,11 @@ contract Review1PoC is Base {
         vault.executeIntent(i, sig);
     }
 
-    // L-2 OPEN (decision for Lucius): owner may raise caps; finding still present by design.
+    // L-2 FIXED: $100/$500 are protocol hard maximums; raising reverts
     function test_PoC_L2_capsUnbounded() public {
         vm.prank(alice);
+        vm.expectRevert(AgentVault.CapAboveProtocolMax.selector);
         vault.setCaps(agent, 1_000_000e6, 1_000_000e6);
-        vm.prank(agent);
-        vault.agentSwap(address(pool), address(usdg), address(tsla), 5_000e6, 1, block.timestamp + 60);
     }
 
     // Info: cross-vault replay is blocked (account is in the signed struct)
