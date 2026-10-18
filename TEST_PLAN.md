@@ -1,7 +1,9 @@
 # StockClaw contracts: test plan (testnet 46630 only)
 
 Run: `forge build && forge test` (Foundry 1.8.5, solc 0.8.24, via-IR). Coverage: `forge coverage --ir-minimum`.
-Current status: **60/60 passing** (unit + fuzz at 512 runs + 4 invariants at 64x32).
+Current status: **100/100 passing** (unit, fuzz at 512 runs, 9 invariants at 64x32, plus the flipped review-1 PoCs in `test/audit/`). Line coverage: FeeRouter 93%, AgentVault 91%, PriceOracle 100%, total 85%.
+New suites: `Oracle.t.sol` (market hours, weekend, keeper/owner mode, 1h staleness, max per-update move), `VaultInvariant.t.sol` (rolling cap never exceeded in ANY 24h window, per-trade ≤ cap, no DCA catch-up, no dangling allowance, router holds nothing), rolling-window boundary tests (across midnight, release at the 25h bucket edge, partial release, ring reuse), eligibility inheritance, single keeper, DCA skip, and H-1 slippage tests.
+Slither (config `slither.config.json`): **0 high**. Remaining: medium strict-equality (pool `amountIn == 0`, oracle mode checks; intended), medium unused-return (tuple destructuring; intended), low missing zero-checks, low timestamp comparisons.
 
 ## 1. Unit tests (implemented)
 | Area | File | Cases |
@@ -24,7 +26,7 @@ Current status: **60/60 passing** (unit + fuzz at 512 runs + 4 invariants at 64x
 - Pool k never decreases.
 - Pool reserves equal its balances.
 - Fees received by the treasury equal the sum of `amountIn * feeBps / 1e4`.
-**TODO:** a vault handler (sum of agent spend per day <= cap, across agents and intents); intent handler (execCount <= maxExecs); fee-bps changes mid-sequence.
+Vault + intent invariants are now implemented (`VaultInvariant.t.sol`). **TODO:** multiple agents per vault, fee-bps changes mid-sequence.
 
 ## 4. Integration on testnet (46630). Run only after deploy approval.
 1. Fork tests: `forge test --fork-url $RH_TESTNET_RPC` against the real faucet stock tokens (confirm `paused`/`isFrozen`/`canTransfer` ABI; TokenChecks degrades gracefully if they're absent) and the **real Permit2** at `0x0000…8BA3` (replace MockPermit2 encoding with real EIP-712 PermitTransferFrom signing).
