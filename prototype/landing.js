@@ -13,7 +13,7 @@ const FAQ=[["What are stock tokens?","Tokens on Robinhood Chain that track the p
 const bot=(id,n)=>window.SCEyes?SCEyes.html(id,n,144):`<img src="avatars/final-${id}.png" width="144" height="144" alt="${n} mascot">`;
 // ---- Baskets: data only from data/baskets.json (see data/README.md) ----
 let BK=null,BKerr=null;
-fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d;buildColors(d.baskets)}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/")render()});
+fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d;buildColors(d.baskets)}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/"||p==="/dashboard/basket"||p==="/dashboard/overview")render()});
 // Fixed ticker→color map: same ticker, same color in every basket. Greedy coloring over all baskets (NVDA first = lime),
 // so no basket ever shows two identical colors (palette 12 > max basket size). Rebuilt whenever baskets.json loads.
 // Headline word = the basket display name from data/baskets.json, verbatim.
@@ -74,7 +74,7 @@ ${baskets()}
 <ol class="lp-steps"><li><b>Check eligibility</b> and sign with your wallet.</li><li><b>Set up your wallet.</b> You own it.</li><li><b>Confirm limits:</b> $100 a trade, $500 of buys per 24h.</li><li><b>Get test tokens</b> in one tap.</li><li><b>Connect your AI</b> and ask it to trade.</li></ol></section>
 <section class="lp-sec" id="lp-safety" aria-labelledby="lp-safe-h"><p class="lp-k">03</p><h2 id="lp-safe-h">Safety and limits</h2>
 <p class="lp-big">You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime.</p>
-<dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Buy headroom (24h)</dt><dd>Up to $500 of buys on testnet. Sells over $500 in 24h need your approval.</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
+<dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Buy headroom (24h)</dt><dd>Up to $500 of buys on testnet. Agent sells over $500 in 24h need your approval.</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
 <p class="lp-tickers">Tradeable on testnet: <span class="lp-mono">PLTR NFLX AMD AMZN TSLA</span> ${BADGE}</p></section>
 <section class="lp-sec" id="lp-faq" aria-labelledby="lp-faq-h"><p class="lp-k">04</p><h2 id="lp-faq-h">FAQ</h2>
 ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join("")}</section>
@@ -86,4 +86,6 @@ function LandingBind(){const f=document.getElementById("lp-form");if(!f)return;f
 function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.body.classList.toggle("is-landing",!(p in R)||p==="/")}
 R["/"]=[Landing,()=>{LandingBind();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
 addEventListener("hashchange",mark);mark();render();
+// Shared with dashboard/basketfill: basket data + fixed ticker colors.
+window.SCBaskets={get data(){return BK},col:s=>col(s)};
 })();
