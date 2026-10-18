@@ -14,7 +14,8 @@ import {TokenTransfers} from "./libraries/TokenTransfers.sol";
 /// @notice Non-custodial per-user wallet: owner = the user's EOA. The owner grants AI-agent keys
 /// scoped spending authority enforced onchain:
 ///   - per-trade cap   (default $100)   - USD, 6 dp
-///   - per-day cap     (default $500)   - ROLLING 24h window, 25 hourly buckets (see below)
+///   - per-day cap     (default $500)   - ROLLING 24h window, 25 hourly buckets (see below);
+///                                        per agent key AND per vault (all keys share $500)
 ///   - token allowlist (default EMPTY => nothing tradable); BOTH tokenIn and tokenOut must be listed
 ///   - expiry + one-tx revocation
 /// Any limit breach hard-reverts (no partial fills). USD value of `amountIn` comes from
@@ -69,6 +70,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     error BadAgentSignature();
     error NotKeeper();
     error CapAboveProtocolMax();
+    error VaultDailyCapExceeded(uint256 wouldSpend, uint256 cap);
 
     constructor(address owner_, FeeRouter router_) Ownable(owner_) {
         router = router_;
@@ -163,6 +165,14 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     }
 
     // ================================================================ views
+    /// Bucket-ring key for vault-wide spend (no agent can be address(0)).
+    address internal constant VAULT_KEY = address(0);
+
+    /// @notice Vault-wide rolling-24h spend across ALL agent keys (capped at MAX_PER_DAY_USD).
+    function vaultSpentLast24h() public view returns (uint256) {
+        return spentLast24h(VAULT_KEY);
+    }
+
     function spentLast24h(address agent) public view returns (uint256 total) {
         uint256 cur = block.timestamp / 1 hours;
         uint256[13] storage b = _buckets[agent];
@@ -181,6 +191,9 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         AgentPolicy memory p = policies[agent];
         uint256 spent = spentLast24h(agent);
         usdLeft = p.perDayUsd > spent ? p.perDayUsd - spent : 0;
+        uint256 vs = vaultSpentLast24h();
+        uint256 vaultLeft = MAX_PER_DAY_USD > vs ? MAX_PER_DAY_USD - vs : 0;
+        if (vaultLeft < usdLeft) usdLeft = vaultLeft;
         perTrade = p.perTradeUsd;
     }
 
@@ -197,21 +210,30 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
 
         uint256 newSpent = spentLast24h(agent) + usd;
         if (newSpent > p.perDayUsd) revert DailyCapExceeded(newSpent, p.perDayUsd);
+        // S-2 (CTO): the $500 rolling cap is per VAULT - all agent keys share it, so revoking and
+        // re-granting keys cannot reset the window.
+        uint256 vaultSpent = vaultSpentLast24h() + usd;
+        if (vaultSpent > MAX_PER_DAY_USD) revert VaultDailyCapExceeded(vaultSpent, MAX_PER_DAY_USD);
+        _record(agent, usd);
+        _record(VAULT_KEY, usd);
+        emit AgentSpent(agent, usd, newSpent);
+    }
 
+    function _record(address key, uint256 usd) internal {
         uint256 cur = block.timestamp / 1 hours;
         // Ring index, not randomness.
         // slither-disable-next-line weak-prng
         uint256 idx = cur % BUCKETS;
         uint256 w = idx >> 1;
         uint256 shift = 128 * (idx & 1);
-        uint256 word = _buckets[agent][w];
+        uint256 word = _buckets[key][w];
         uint256 bk = (word >> shift) & type(uint128).max;
         // Exact hour match is intended (same bucket epoch); not a balance check.
         // slither-disable-next-line incorrect-equality
         uint256 amt = uint32(bk >> 96) == cur ? uint96(bk) + usd : usd; // stale bucket => reset
         uint256 nb = (cur << 96) | amt;
-        _buckets[agent][w] = (word & ~(uint256(type(uint128).max) << shift)) | (nb << shift);
-        emit AgentSpent(agent, usd, newSpent);
+        _buckets[key][w] = (word & ~(uint256(type(uint128).max) << shift)) | (nb << shift);
+
     }
 
     function _routerSwap(FeeRouter.SwapParams memory p) internal returns (uint256 out) {

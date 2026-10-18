@@ -79,7 +79,7 @@ abstract contract Base is Test {
         router.setAdapter(address(pool), true);
         router.setAdapter(address(bad), true); // test-only: fills below oracle to exercise floors
         router.setKeeper(keeper);
-        oracle.setMarketMode(PriceOracle.MarketMode.Open); // schedule tested separately
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceOpen); // schedule tested separately
         pool.setRouter(address(router));
         usdg.mint(owner, 10_000_000e6);
         vm.stopPrank();
@@ -124,7 +124,10 @@ abstract contract Base is Test {
         return FeeRouter.SwapParams(address(bad), tin, tout, amt, 1, to, block.timestamp + 60);
     }
 
+    /// Price changes are rate-limited per hour (N-1): a different price advances time by 1h first.
     function _setPrice(uint256 p) internal {
+        (, int256 cur,,,) = feed.latestRoundData();
+        if (uint256(cur) != p) vm.warp(block.timestamp + 1 hours);
         vm.prank(updater);
         feed.updateAnswer(int256(p));
     }

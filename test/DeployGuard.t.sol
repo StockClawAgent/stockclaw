@@ -36,21 +36,22 @@ contract DeployGuardTest is Test {
         assertEq(address(c.router.permit2()), d.PERMIT2());
     }
 
-    function test_mockTokens_autoDetectWhenRealTokensAbsent() public {
-        vm.chainId(46630); // plain anvil --chain-id 46630: no code at real addresses
-        assertTrue(d.useMocks());
-    }
-
-    function test_mockTokens_envFlag_and_realPathWhenCodePresent() public {
-        vm.chainId(46630);
+    /// One sequential test: env vars are process-global and tests run in parallel.
+    function test_mockTokens_explicitFlagRequired() public {
+        vm.chainId(46630); // plain anvil: no code at real addresses
         (address[5] memory t,) = d.stockTokens();
-        for (uint256 i; i < 5; i++) vm.etch(t[i], hex"00"); // simulate real tokens present
-        vm.setEnv("MOCK_TOKENS", "0");
-        assertFalse(d.useMocks());
+        vm.setEnv("MOCK_TOKENS", "2");
+        vm.expectRevert(Deploy.MockTokensFlagRequired.selector);
+        d.useMocks();
+        vm.setEnv("MOCK_TOKENS", "0"); // explicit real path, but no code -> clear revert
+        vm.expectRevert(abi.encodeWithSelector(Deploy.RealTokenMissing.selector, t[0]));
+        d.useMocks();
         vm.setEnv("MOCK_TOKENS", "1");
         assertTrue(d.useMocks());
         (address[5] memory r,) = d.resolveTokens();
         assertTrue(r[0] != t[0] && r[0].code.length > 0);
+        for (uint256 i; i < 5; i++) vm.etch(t[i], hex"00"); // simulate real tokens present
         vm.setEnv("MOCK_TOKENS", "0");
+        assertFalse(d.useMocks());
     }
 }

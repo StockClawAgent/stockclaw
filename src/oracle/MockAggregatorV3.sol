@@ -10,8 +10,14 @@ contract MockAggregatorV3 is AggregatorV3Interface, Ownable2Step {
     uint8 public immutable decimals;
     string public description;
     address public updater;
-    /// L-3: max change per update vs. previous answer (bps), owner-set in (0, 5000]. Default 10%.
-    uint16 public maxDeltaBps = 1_000;
+    /// N-1: time-scaled move limit. An update may move the price by at most
+    ///   min(maxDeltaBpsPerHour * elapsed / 1h, maxDeltaCapBps)
+    /// vs. the last accepted answer, where elapsed = time since that answer. Multiple updates in one
+    /// block (elapsed 0) cannot move the price at all, so one-block compounding is impossible.
+    /// A rejected push leaves the feed untouched; the allowance grows until the next push, or the
+    /// feed goes stale (>1h in PriceOracle) and trading halts (fail closed).
+    uint16 public maxDeltaBpsPerHour = 1_000; // 10% / hour
+    uint16 public maxDeltaCapBps = 2_000; // never more than 20% in one update
 
     uint80 internal _round;
     int256 internal _answer;
@@ -19,6 +25,7 @@ contract MockAggregatorV3 is AggregatorV3Interface, Ownable2Step {
 
     event AnswerUpdated(int256 indexed current, uint256 indexed roundId, uint256 updatedAt);
     event UpdaterSet(address updater);
+    event MaxDeltaSet(uint16 perHourBps, uint16 capBps);
 
     error NotUpdater();
     error InvalidAnswer();
@@ -35,12 +42,22 @@ contract MockAggregatorV3 is AggregatorV3Interface, Ownable2Step {
         emit UpdaterSet(u);
     }
 
-    error DeltaOutOfBounds(uint16 bps);
+    error DeltaOutOfBounds(uint16 perHourBps, uint16 capBps);
 
-    /// @notice Owner-set bound on per-update move; must be in (0, 50%]. Updates beyond it revert.
-    function setMaxDeltaBps(uint16 bps) external onlyOwner {
-        if (bps == 0 || bps > 5_000) revert DeltaOutOfBounds(bps);
-        maxDeltaBps = bps;
+    /// @notice Owner-set: perHour in (0, 5000], cap in [perHour/60, 5000] bps (cap >= 1 min of drift).
+    function setMaxDelta(uint16 perHourBps, uint16 capBps) external onlyOwner {
+        if (perHourBps == 0 || perHourBps > 5_000 || capBps == 0 || capBps > 5_000) {
+            revert DeltaOutOfBounds(perHourBps, capBps);
+        }
+        maxDeltaBpsPerHour = perHourBps;
+        maxDeltaCapBps = capBps;
+        emit MaxDeltaSet(perHourBps, capBps);
+    }
+
+    /// @notice Max allowed move (bps) for an update at the current time.
+    function allowedDeltaBps() public view returns (uint256 bps) {
+        bps = uint256(maxDeltaBpsPerHour) * (block.timestamp - _updatedAt) / 1 hours;
+        if (bps > maxDeltaCapBps) bps = maxDeltaCapBps;
     }
 
     function updateAnswer(int256 answer) external {
@@ -49,7 +66,7 @@ contract MockAggregatorV3 is AggregatorV3Interface, Ownable2Step {
         int256 prev = _answer;
         if (prev > 0) {
             int256 diff = answer > prev ? answer - prev : prev - answer;
-            if (diff * 10_000 > prev * int256(uint256(maxDeltaBps))) revert DeltaTooLarge(prev, answer);
+            if (diff * 10_000 > prev * int256(allowedDeltaBps())) revert DeltaTooLarge(prev, answer);
         }
         _round++;
         _answer = answer;

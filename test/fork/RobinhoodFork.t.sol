@@ -41,7 +41,7 @@ contract RobinhoodForkTest is Test {
 
         MockUSDG usdg = new MockUSDG(address(this));
         PriceOracle oracle = new PriceOracle(address(this), address(usdg));
-        oracle.setMarketMode(PriceOracle.MarketMode.Open);
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceOpen);
         EligibilityRegistry reg = new EligibilityRegistry(address(this), address(this));
         reg.setEligible(user, uint64(block.timestamp + 1 days));
         FeeRouter router = new FeeRouter(

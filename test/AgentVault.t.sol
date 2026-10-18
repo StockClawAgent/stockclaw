@@ -198,7 +198,7 @@ contract AgentVaultTest is Base {
     function test_marketClosed_vaultHalts() public {
         _allowBoth();
         vm.prank(owner);
-        oracle.setMarketMode(PriceOracle.MarketMode.Closed);
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceClosed);
         vm.expectRevert(PriceOracle.MarketClosed.selector);
         _buy(1e6); // USDG valuation is fine, but stock leg halts at router
     }

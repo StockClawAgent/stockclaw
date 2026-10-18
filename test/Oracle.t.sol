@@ -4,8 +4,6 @@ pragma solidity ^0.8.24;
 import "./Base.t.sol";
 
 contract OracleTest is Base {
-    // 2026-10-19 is a Monday. 00:00 UTC = 1792368000
-    uint256 constant MON = 1792368000;
 
     function _at(uint256 t) internal {
         vm.warp(t);
@@ -13,59 +11,99 @@ contract OracleTest is Base {
         _eligible(alice);
     }
 
-    function test_schedule_weekdaySession() public {
-        vm.prank(owner);
-        oracle.setMarketMode(PriceOracle.MarketMode.Schedule);
-        _at(MON + 13 hours + 29 minutes);
+    // 2026-11-02 (Mon, after US DST ends): regular session 09:30-16:00 ET = 14:30-21:00 UTC
+    uint256 constant NOV2 = 1793577600; // 2026-11-02 00:00 UTC
+    uint256 constant NOV26 = 1795651200; // 2026-11-26 00:00 UTC (Thanksgiving)
+
+    function _session() internal {
+        vm.startPrank(owner);
+        oracle.setKeeper(keeper);
+        oracle.setMarketMode(PriceOracle.MarketMode.Session);
+        vm.stopPrank();
+    }
+
+    function test_session_postDST_nov2() public {
+        _session();
+        _at(NOV2 + 6 hours); // keeper pushes in the morning
+        vm.prank(keeper);
+        oracle.setSession(uint64(NOV2 + 14 hours + 30 minutes), uint64(NOV2 + 21 hours));
+        _at(NOV2 + 13 hours + 45 minutes); // old EDT hours -> must be CLOSED
         assertFalse(oracle.isMarketOpen());
-        _at(MON + 13 hours + 30 minutes);
+        vm.prank(alice);
+        vm.expectRevert(FeeRouter.MarketClosed.selector);
+        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
+        _at(NOV2 + 14 hours + 30 minutes);
         assertTrue(oracle.isMarketOpen());
-        _at(MON + 20 hours - 1);
+        vm.prank(alice);
+        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
+        _at(NOV2 + 21 hours - 1);
         assertTrue(oracle.isMarketOpen());
-        _at(MON + 20 hours);
+        _at(NOV2 + 21 hours);
         assertFalse(oracle.isMarketOpen());
         vm.expectRevert(PriceOracle.MarketClosed.selector);
         oracle.priceE8(address(tsla));
         assertEq(oracle.priceE8(address(usdg)), 1e8); // USDG unaffected
     }
 
-    function test_schedule_weekendClosed() public {
-        vm.prank(owner);
-        oracle.setMarketMode(PriceOracle.MarketMode.Schedule);
-        _at(MON - 2 days + 15 hours); // Saturday 15:00 UTC
-        assertFalse(oracle.isMarketOpen());
-        _at(MON - 1 days + 15 hours); // Sunday
-        assertFalse(oracle.isMarketOpen());
-        _at(MON + 4 days + 15 hours); // Friday
+    function test_session_thanksgiving_noSessionPushed_closedAllDay() public {
+        _session();
+        _at(NOV26 - 3 days + 15 hours); // Mon Nov 23 session pushed and expired
+        vm.prank(keeper);
+        oracle.setSession(uint64(NOV26 - 3 days + 14 hours + 30 minutes), uint64(NOV26 - 3 days + 21 hours));
+        for (uint256 h; h < 24; h++) {
+            _at(NOV26 + h * 1 hours);
+            assertFalse(oracle.isMarketOpen());
+        }
+    }
+
+    function test_session_staleYesterday_closed() public {
+        _session();
+        _at(NOV2 + 15 hours);
+        vm.prank(keeper);
+        oracle.setSession(uint64(NOV2 + 14 hours + 30 minutes), uint64(NOV2 + 21 hours));
         assertTrue(oracle.isMarketOpen());
-    }
-
-    function test_offHours_swapHalts() public {
-        vm.prank(owner);
-        oracle.setMarketMode(PriceOracle.MarketMode.Schedule);
-        _at(MON + 22 hours);
-        vm.prank(alice);
-        vm.expectRevert(FeeRouter.MarketClosed.selector);
-        router.swap(_params(address(usdg), address(tsla), 100e6, 0, alice));
-        _at(MON + 1 days + 14 hours);
-        vm.prank(alice);
-        router.swap(_params(address(usdg), address(tsla), 100e6, 0, alice));
-    }
-
-    function test_keeperCanSetMode_othersCannot() public {
-        vm.prank(owner);
-        oracle.setKeeper(keeper);
-        vm.prank(keeper);
-        oracle.setMarketMode(PriceOracle.MarketMode.Closed);
+        _at(NOV2 + 1 days + 15 hours); // next day, keeper failed to push
         assertFalse(oracle.isMarketOpen());
-        vm.prank(keeper);
-        oracle.setSchedule(14 * 60 + 30, 21 * 60); // EST shift
+    }
+
+    function test_session_noSessionEver_closed() public {
+        _session();
+        _at(NOV2 + 15 hours);
+        assertFalse(oracle.isMarketOpen());
+    }
+
+    function test_session_validation() public {
+        _session();
+        _at(NOV2 + 6 hours);
+        vm.startPrank(keeper);
+        vm.expectRevert(PriceOracle.BadSession.selector); // > 8h window
+        oracle.setSession(uint64(NOV2 + 12 hours), uint64(NOV2 + 20 hours + 1));
+        oracle.setSession(uint64(NOV2 + 12 hours), uint64(NOV2 + 20 hours)); // exactly 8h ok
+        vm.expectRevert(PriceOracle.BadSession.selector); // close <= open
+        oracle.setSession(uint64(NOV2 + 14 hours), uint64(NOV2 + 14 hours));
+        vm.expectRevert(PriceOracle.BadSession.selector); // in the past
+        oracle.setSession(uint64(NOV2 + 1 hours), uint64(NOV2 + 6 hours));
+        vm.stopPrank();
         vm.prank(bob);
         vm.expectRevert(PriceOracle.NotOwnerOrKeeper.selector);
-        oracle.setMarketMode(PriceOracle.MarketMode.Open);
+        oracle.setSession(uint64(NOV2 + 14 hours), uint64(NOV2 + 15 hours));
+    }
+
+    function test_emergencyModes_ownerOnly() public {
+        _session();
+        _at(NOV2 + 15 hours);
+        vm.prank(keeper);
+        oracle.setSession(uint64(NOV2 + 14 hours + 30 minutes), uint64(NOV2 + 21 hours));
+        vm.prank(keeper);
+        vm.expectRevert();
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceOpen);
         vm.prank(owner);
-        vm.expectRevert(PriceOracle.BadSchedule.selector);
-        oracle.setSchedule(600, 600);
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceClosed);
+        assertFalse(oracle.isMarketOpen()); // overrides a live session
+        vm.prank(owner);
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceOpen); // testnet/demo only
+        _at(NOV26 + 3 hours);
+        assertTrue(oracle.isMarketOpen());
     }
 
     function test_staleness1hHalt() public {
@@ -82,12 +120,34 @@ contract OracleTest is Base {
         feed.updateAnswer(1);
     }
 
-    function test_L3_maxDeltaPerUpdate() public {
+    function test_N1_timeScaledDelta() public {
+        // same block: no move allowed at all
         vm.prank(updater);
-        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaTooLarge.selector, int256(PRICE), int256(2.5e8)));
-        feed.updateAnswer(2.5e8); // 100x drop
+        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaTooLarge.selector, int256(PRICE), int256(PRICE + 1e8)));
+        feed.updateAnswer(int256(PRICE + 1e8));
+        // 30 min later: 5% allowed (10%/h)
+        vm.warp(block.timestamp + 30 minutes);
+        assertEq(feed.allowedDeltaBps(), 500);
         vm.prank(updater);
-        feed.updateAnswer(int256(PRICE * 110 / 100)); // +10% ok
+        vm.expectRevert();
+        feed.updateAnswer(int256(PRICE * 10_501 / 10_000));
+        vm.prank(updater);
+        feed.updateAnswer(int256(PRICE * 105 / 100));
+        // cap: after 5h allowance is capped at 20%
+        vm.warp(block.timestamp + 5 hours);
+        assertEq(feed.allowedDeltaBps(), 2_000);
+        // 60s keeper cadence: ~0.166% per push
+        vm.warp(block.timestamp - 5 hours + 60); // (time travel only for the view)
+        assertEq(feed.allowedDeltaBps(), 16);
+    }
+
+    function test_N1_compoundingInOneBlockImpossible() public {
+        vm.warp(block.timestamp + 1 hours);
+        vm.startPrank(updater);
+        feed.updateAnswer(int256(PRICE * 90 / 100)); // first -10% ok after 1h
+        vm.expectRevert();
+        feed.updateAnswer(int256(PRICE * 81 / 100)); // second in same block: elapsed 0
+        vm.stopPrank();
     }
 
     function test_nonPositiveAnswerRejected() public {
@@ -96,23 +156,27 @@ contract OracleTest is Base {
         feed.updateAnswer(0);
     }
 
-    function test_maxDelta_ownerSettable_boundaries() public {
+    function test_maxDelta_ownerSettable_boundaries_andEvent() public {
+        vm.expectEmit(address(feed));
+        emit MockAggregatorV3.MaxDeltaSet(500, 1_000);
         vm.prank(owner);
-        feed.setMaxDeltaBps(500); // 5%
+        feed.setMaxDelta(500, 1_000); // 5%/h, cap 10%
+        vm.warp(block.timestamp + 1 hours);
         vm.prank(updater);
-        feed.updateAnswer(int256(PRICE * 105 / 100)); // exactly +5%: ok
+        feed.updateAnswer(int256(PRICE * 105 / 100)); // exactly +5% after 1h: ok
         int256 cur = int256(PRICE * 105 / 100);
+        vm.warp(block.timestamp + 1 hours);
         vm.prank(updater);
         vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaTooLarge.selector, cur, cur * 10_501 / 10_000));
         feed.updateAnswer(cur * 10_501 / 10_000); // +5.01%: revert
         vm.prank(bob);
         vm.expectRevert();
-        feed.setMaxDeltaBps(10_000);
+        feed.setMaxDelta(1_000, 1_000);
         vm.startPrank(owner);
-        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaOutOfBounds.selector, uint16(0)));
-        feed.setMaxDeltaBps(0);
-        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaOutOfBounds.selector, uint16(5_001)));
-        feed.setMaxDeltaBps(5_001);
+        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaOutOfBounds.selector, uint16(0), uint16(100)));
+        feed.setMaxDelta(0, 100);
+        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaOutOfBounds.selector, uint16(100), uint16(5_001)));
+        feed.setMaxDelta(100, 5_001);
         vm.stopPrank();
     }
 

@@ -199,7 +199,7 @@ contract FeeRouterTest is Base {
 
     function test_marketClosed_halts() public {
         vm.prank(owner);
-        oracle.setMarketMode(PriceOracle.MarketMode.Closed);
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceClosed);
         assertFalse(router.precheck(alice, address(usdg), address(tsla), 100e6, alice));
         vm.prank(alice);
         vm.expectRevert(FeeRouter.MarketClosed.selector);

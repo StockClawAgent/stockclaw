@@ -8,23 +8,25 @@ import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
 /// @notice Token -> USD price registry over Chainlink-style feeds, with staleness checks.
 /// USDG is pinned at $1.00 (documented assumption; replace with a USDG/USD feed if one exists).
 /// All USD values are returned with 6 decimals (same as USDG) so "$100" == 100e6.
-/// Market-hours halt: stock prices (and therefore all stock trading) revert with MarketClosed
-/// outside the configured session. Mode is set by owner or keeper:
-///   Closed   - halted (holidays, incidents)
-///   Open     - forced open (testing / demo)
-///   Schedule - open Mon-Fri between openMinute and closeMinute (UTC minutes of day)
+/// Market-hours halt (FAIL-CLOSED): the keeper pushes the current/next trading session
+/// `setSession(openAt, closeAt)` from the exchange calendar (handles DST, holidays, half-days).
+/// Trading is allowed only when openAt <= now < closeAt. No session pushed or session expired => closed.
+/// Owner emergency modes: ForceClosed (incident halt); ForceOpen (TESTNET/DEMO ONLY - must never be
+/// used on mainnet; lets demos run outside US market hours).
 contract PriceOracle is Ownable2Step {
     enum MarketMode {
-        Schedule,
-        Open,
-        Closed
+        Session,
+        ForceClosed,
+        ForceOpen
     }
 
-    // slot: keeper(20) + mode(1) + openMinute(2) + closeMinute(2)
+    uint64 public constant MAX_SESSION = 8 hours;
+
+    // slot: keeper(20) + mode(1) ; slot: openAt(8) + closeAt(8)
     address public keeper;
     MarketMode public marketMode;
-    uint16 public openMinute = 13 * 60 + 30; // 09:30 ET (EDT) = 13:30 UTC
-    uint16 public closeMinute = 20 * 60; // 16:00 ET (EDT) = 20:00 UTC
+    uint64 public sessionOpenAt;
+    uint64 public sessionCloseAt;
 
     struct Feed {
         AggregatorV3Interface feed; // 20
@@ -38,7 +40,7 @@ contract PriceOracle is Ownable2Step {
 
     event FeedSet(address indexed token, address feed, uint32 maxStaleness);
     event MarketModeSet(MarketMode mode);
-    event ScheduleSet(uint16 openMinute, uint16 closeMinute);
+    event SessionSet(uint64 openAt, uint64 closeAt);
     event KeeperSet(address keeper);
 
     error NoFeed(address token);
@@ -46,7 +48,7 @@ contract PriceOracle is Ownable2Step {
     error BadPrice(address token);
     error MarketClosed();
     error NotOwnerOrKeeper();
-    error BadSchedule();
+    error BadSession();
 
     constructor(address owner_, address usdg_) Ownable(owner_) {
         usdg = usdg_;
@@ -62,30 +64,25 @@ contract PriceOracle is Ownable2Step {
         emit KeeperSet(k);
     }
 
-    function setMarketMode(MarketMode m) external onlyOwnerOrKeeper {
+    /// @notice Owner-only emergency override (ForceClosed / ForceOpen[testnet only]) or back to Session.
+    function setMarketMode(MarketMode m) external onlyOwner {
         marketMode = m;
         emit MarketModeSet(m);
     }
 
-    /// @dev DST shifts (13:30 vs 14:30 UTC) are pushed by the keeper; minutes are UTC.
-    function setSchedule(uint16 open_, uint16 close_) external onlyOwnerOrKeeper {
-        if (open_ >= close_ || close_ > 1440) revert BadSchedule();
-        openMinute = open_;
-        closeMinute = close_;
-        emit ScheduleSet(open_, close_);
+    /// @notice Keeper (or owner) pushes the current or next regular session.
+    function setSession(uint64 openAt, uint64 closeAt) external onlyOwnerOrKeeper {
+        if (closeAt <= openAt || closeAt - openAt > MAX_SESSION || closeAt <= block.timestamp) revert BadSession();
+        sessionOpenAt = openAt;
+        sessionCloseAt = closeAt;
+        emit SessionSet(openAt, closeAt);
     }
 
     function isMarketOpen() public view returns (bool) {
         MarketMode m = marketMode;
-        if (m == MarketMode.Open) return true;
-        if (m == MarketMode.Closed) return false;
-        // Calendar math, not randomness.
-        // slither-disable-next-line weak-prng
-        uint256 dow = (block.timestamp / 1 days + 4) % 7; // 0 = Sunday (1970-01-01 was Thursday)
-        if (dow == 0 || dow == 6) return false;
-        // slither-disable-next-line weak-prng
-        uint256 minute = (block.timestamp % 1 days) / 60;
-        return minute >= openMinute && minute < closeMinute;
+        if (m == MarketMode.ForceOpen) return true;
+        if (m == MarketMode.ForceClosed) return false;
+        return sessionOpenAt <= block.timestamp && block.timestamp < sessionCloseAt;
     }
 
     function setFeed(address token, AggregatorV3Interface feed, uint32 maxStaleness) external onlyOwner {

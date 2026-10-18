@@ -12,8 +12,10 @@ import {ISignatureTransfer} from "../src/interfaces/ISignatureTransfer.sol";
 import {MockStockToken} from "../src/mocks/MockStockToken.sol";
 
 /// @notice Robinhood Chain TESTNET (46630) deployment. Hard-reverts on any other chain.
-/// Mock-token path is keyed off MOCK_TOKENS=1 (NOT chain id: local anvil also runs as 46630), and is
-/// auto-selected if the real stock-token addresses have no code (e.g. plain anvil --chain-id 46630).
+/// Mock-token path is keyed off an EXPLICIT MOCK_TOKENS=0|1 (NOT chain id: local anvil also runs as
+/// 46630). Unset => revert. MOCK_TOKENS=0 with missing real-token code => revert.
+/// Oracle starts in Session mode with no session => market CLOSED until the keeper pushes
+/// setSession(...) (or the Safe sets ForceOpen for a testnet demo).
 /// NOT RUN YET. Usage (when approved):
 ///   TREASURY_SAFE=0x.. FEED_UPDATER=0x.. ATTESTER=0x.. \
 ///   forge script script/Deploy.s.sol --rpc-url robinhood_testnet --broadcast --verify
@@ -47,12 +49,23 @@ contract Deploy is Script {
         s = ["TSLA", "AMZN", "PLTR", "NFLX", "AMD"];
     }
 
+    error MockTokensFlagRequired();
+    error RealTokenMissing(address token);
+
+    /// @notice N-5: MOCK_TOKENS must be set explicitly to 0 or 1 (no silent fallback). With 0, every
+    /// real stock-token address must have code, otherwise revert (wrong RPC / wrong chain fork).
     function useMocks() public view returns (bool) {
-        if (vm.envOr("MOCK_TOKENS", uint256(0)) == 1) return true;
+        uint256 flag = vm.envOr("MOCK_TOKENS", uint256(type(uint256).max));
+        if (flag > 1) revert MockTokensFlagRequired();
+        if (flag == 1) {
+            console2.log("MOCK_TOKENS=1 -> deploying MOCK stock tokens");
+            return true;
+        }
         (address[5] memory t,) = stockTokens();
         for (uint256 i; i < 5; i++) {
-            if (t[i].code.length == 0) return true; // auto-detect: real tokens absent
+            if (t[i].code.length == 0) revert RealTokenMissing(t[i]);
         }
+        console2.log("MOCK_TOKENS=0 -> using REAL testnet stock tokens");
         return false;
     }
 
@@ -72,7 +85,8 @@ contract Deploy is Script {
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
         Core memory c = deployCore(deployer, safe, attester);
-        address keeper = vm.envAddress("KEEPER"); // KMS-held key, execute-only
+        address keeper = vm.envAddress("KEEPER"); // KMS-held: executes intents + pushes market sessions
+        require(keeper != updater, "S-4: KEEPER and FEED_UPDATER must be different keys");
         c.router.setKeeper(keeper);
         c.oracle.setKeeper(keeper);
         (address[5] memory t, string[5] memory s) = resolveTokens();

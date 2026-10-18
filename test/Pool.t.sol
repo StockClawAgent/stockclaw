@@ -44,7 +44,7 @@ contract PoolTest is Base {
 
     function test_marketClosedHaltsQuote() public {
         vm.prank(owner);
-        oracle.setMarketMode(PriceOracle.MarketMode.Closed);
+        oracle.setMarketMode(PriceOracle.MarketMode.ForceClosed);
         vm.expectRevert(PriceOracle.MarketClosed.selector);
         pool.quote(address(usdg), address(tsla), 1e6);
     }
