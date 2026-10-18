@@ -1,5 +1,5 @@
 # Server migration: contract interface changes since 7656854
-For `server/` (I haven't edited it). It covers every change from 7656854 through 43f82c8. Rebuild ABIs from `out/` after `forge build`.
+For `server/` (I haven't edited it). It covers every change from 7656854 through 5491737 (see §10 for the latest batch). Rebuild ABIs from `out/` after `forge build`.
 
 ## 1. Contracts removed / renamed
 | Before (7656854) | Now |
@@ -74,3 +74,12 @@ For `server/` (I haven't edited it). It covers every change from 7656854 through
 - **Chain:** 46630 only (local anvil must use `--chain-id 46630`).
 - **Pools:** spread 20 bps, the same as the tests (`test_R2_band20bps_liveness` uses the exact deploy params). Feeds use 1h staleness.
 - **Ownership** of the router, oracle, pools and feeds is transferred to the Safe **two-step**. The Safe must execute `acceptOwnership()` on each one; until then the deployer stays owner (needed for seeding). The Safe also gets registry admin. After acceptance, the deployer should renounce registry admin.
+
+## 10. Batch after 43f82c8 (8c0bc7b, 5491737, c14819c)
+- **N-4: the router checks the route.** Every swap and intent reverts with `PairNotSupported(adapter, tokenIn, tokenOut)` unless the adapter is registered **and** `adapter.supportsPair(tokenIn, tokenOut)`. Use `router.isRouteSupported(adapter, tokenIn, tokenOut)` (a view that never reverts) to pick the pool for a ticker before quoting. `IDexAdapter` gains `supportsPair`, and `StockClawPool` implements it.
+- **Exit exemption (CTO decision):**
+  - **What's exempt:** a sell of an allowlisted stock **into USDG** (`tokenOut == oracle.usdg()`, `tokenIn != USDG`) through a registered pool for exactly that pair. It does **not** count toward the rolling 24h caps, neither the agent's nor the vault's $500. Use `vault.isExemptExit(adapter, tokenIn, tokenOut)`. Output always lands in the vault.
+  - **What still applies:** $100 per trade (keep slicing sells at ≤ $98), allowlist (**both** the stock and USDG must be allowlisted), oracle floor and market hours.
+  - **What still counts:** USDG→stock buys, stock→stock and any sell into a non-USDG token. Cycling buy/sell can't buy more than $500 per 24h.
+  - **UI:** "Exits don't use your daily limit". `remainingToday` and `vaultSpentLast24h()` only reflect buys and token→token trades now.
+- **S-4 test:** `oracle.setMarketMode` from the keeper reverts with `OwnableUnauthorizedAccount(keeper)`.

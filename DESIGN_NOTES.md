@@ -47,6 +47,13 @@ So **no Safe or Permit2 mocks are needed on testnet**. Create the 2-of-3 treasur
 - **Fee:** 0–50 bps, default 30, taken from the input token.
 - **Own pool only.** No Uniswap adapter.
 
+## Exit exemption and N-4 (5491737, 8c0bc7b)
+- **Exits are exempt.** Sells of an allowlisted stock into USDG through a router-registered pool that serves exactly that pair, delivered to the vault, don't consume the rolling 24h caps. Users can always de-risk the same day. The per-trade $100, allowlist, oracle floor and market hours still apply.
+- **The exemption can't be spoofed.** `tokenOut` must equal `oracle.usdg()` (immutable config) and `tokenIn` must not be USDG. `router.isRouteSupported` requires both owner registration and the adapter's own `supportsPair`. Agent paths can't choose a recipient (`agentSwap` hardcodes the vault, and intents deliver to `account = vault`).
+- **Residual risk:** a test-only adapter that claims every pair (owner-registered) also counts as "registered". In production only the Safe can register adapters, so the trust root is the Safe. A malicious registered adapter could fill exits badly, but the oracle floor bounds that.
+- **N-4:** the router rejects unregistered adapters and unsupported pairs (`PairNotSupported`).
+- **Mainnet design for R3-2/3/4:** see `docs/MAINNET_HARDENING.md`.
+
 ## Fork test (M-5c)
 `test/fork/RobinhoodFork.t.sol` is read-only: it forks 46630, deploys into the local fork EVM only, and broadcasts nothing. It's skipped unless `RH_TESTNET_RPC` is set. **It ran and passed on Oct 18** against the public RPC. All 5 real tokens (TSLA 0xC9f9…Bd4E, AMZN 0x5884…9E02, PLTR 0x1FBE…98d0, NFLX 0x3b82…8C93, AMD 0x7117…778d, all 18 dp) bought and sold through router→pool, with the fee in the input token reaching the Safe address. Caveat: balances were seeded with `deal()` (a storage write) and the Safe address was a placeholder. The real registry may treat the actual Safe or our deployed addresses differently, so re-run it once the Safe exists.
 
