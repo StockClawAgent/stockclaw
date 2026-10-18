@@ -114,7 +114,7 @@ async function plan(d: Def, params: any): Promise<{ errors: Err; params: any; pl
       const lp = +(ref * (1 - drop / 10000)).toFixed(4);
       planned.push({ type: "Limit", role: "rung", tokenIn: "mUSDG", tokenOut: p.symbol, amountUsd: p.usdPerRung, trigger: `${p.symbol} <= $${lp} (-${drop / 100}%)`, startTime: now, maxExecs: 1, limitPrice: lp, expiry, devBps: p.oracleDevBps, rung: k + 1 });
     });
-    worst = p.dropsBps.length * p.usdPerRung * (1 + (p.sellFractionBps / 10000) * (1 + p.takeProfitBps / 10000));
+    worst = p.dropsBps.length * p.usdPerRung; // take-profit sells (stock -> USDG) are exempt from the 24h cap (5491737)
   }
   return { errors: e, params: p, planned, worst: +worst.toFixed(2) };
 }

@@ -159,6 +159,16 @@ try {
     }
     assert.ok(blocked);
     const w = (await call("GET", "get_wallet")).body; assert.ok(w.sessionKey.spentToday <= 500 && w.sessionKey.spentToday > 400, String(w.sessionKey.spentToday));
+    // exit exemption (5491737): a stock -> mUSDG sell still works with the buy budget exhausted, and doesn't count
+    const sell = await call("POST", "execute_swap", { tokenIn: "TSLA", tokenOut: "mUSDG", amountIn: 0.2 });
+    assert.equal(sell.status, 200, JSON.stringify(sell.body));
+    assert.equal((await call("GET", "get_wallet")).body.sessionKey.spentToday, w.sessionKey.spentToday, "exit not counted");
+    // N-4: unsupported pair rejected cleanly before quoting / sending
+    for (const ep of [["GET", "quote_swap"], ["POST", "execute_swap"]] as const) {
+      const r = await call(ep[0], ep[1], { tokenIn: "TSLA", tokenOut: "AMZN", amountIn: 1 });
+      assert.equal(r.status, 400); assert.match(r.body.error, /Pair not supported: TSLA -> AMZN/);
+    }
+    assert.equal(await read(d.router, C.router.abi, "isRouteSupported", [d.stocks.TSLA.pool, d.stocks.TSLA.token, d.stocks.AMZN.token]), false);
   });
 
   await step("revoke (pause): 1 tx; agent swaps + its signed DCA blocked onchain (NotAgent)", async () => {

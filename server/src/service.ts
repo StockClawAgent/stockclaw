@@ -73,9 +73,12 @@ function token(sym: string): { address: Address; decimals: number; symbol: strin
   return { address: t.token, decimals: t.decimals, symbol: s };
 }
 const isUsdg = (sym: string) => token(sym).symbol === "mUSDG";
-function poolFor(a: string, b: string) {
-  if (isUsdg(a) === isUsdg(b)) throw new ApiError(400, "Pairs must be mUSDG <-> stock (stock/stock routing not in the demo)");
-  return dep().stocks[token(isUsdg(a) ? b : a).symbol].pool;
+/** N-4: pick the registered pool whose route the router accepts (router.isRouteSupported never reverts). */
+async function poolFor(a: string, b: string): Promise<Address> {
+  const ti = token(a), to = token(b);
+  for (const s of Object.values(dep().stocks))
+    if (await read<boolean>(dep().router, C.router.abi, "isRouteSupported", [s.pool, ti.address, to.address])) return s.pool;
+  throw new ApiError(400, `Pair not supported: ${ti.symbol} -> ${to.symbol} (routes are mUSDG <-> stock)`);
 }
 const units = (amt: number, dec: number) => {
   if (!(amt > 0) || !Number.isFinite(amt)) throw new ApiError(400, "amount must be > 0");
@@ -91,6 +94,7 @@ function humanReason(e: unknown): string {
     case "VaultDailyCapExceeded": return `Blocked by limit: vault's ${usd(args[1])} rolling-24h cap shared by all agent keys (would be ${usd(args[0])})`;
     case "TransferBlocked": return "Token issuer blocked the transfer (frozen / paused / registry)";
     case "ComplianceBlocked": return "Compliance check blocked the transfer";
+    case "PairNotSupported": return "Pair not supported by any registered pool";
     case "ZeroMinOut": return "minOut must be > 0";
     case "InsufficientLiquidity": return "Pool liquidity too low for this size";
     case "DailyCapExceeded": return `Over ${usd(args[1])} rolling-24h cap (would be ${usd(args[0])})`;
@@ -191,7 +195,7 @@ export async function get_wallet() {
   return {
     address: S.vault ?? null, chainId: cfg.TESTNET_CHAIN_ID, owner: owner().address,
     ownerSimulated: true, ownerNote: "DEMO: the owner wallet is SIMULATED by the server (no wallet-connect yet). Owner actions require the owner token.",
-    sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h, per vault (shared by all keys)", allowlist: S.agent.allowlist } : null,
+    sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h, per vault (shared by all keys); buys only: exits to mUSDG don't use the daily limit", allowlist: S.agent.allowlist } : null,
   };
 }
 export type Caps = { perTradeCap?: number; dailyCap?: number; days?: number; allowlist?: string[] };
@@ -253,7 +257,7 @@ export async function get_balances(tokens?: string[]) {
 const quotes = new Map<string, { tokenIn: string; tokenOut: string; amountIn: number; minOutRaw: bigint; expiresAt: number }>();
 export async function quote_swap(tokenIn: string, tokenOut: string, amountIn: number, slippageBps = cfg.DEFAULT_SLIPPAGE_BPS) {
   if (slippageBps < 0 || slippageBps > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, `slippageBps must be 0-${cfg.MAX_SLIPPAGE_BPS}`);
-  const ti = token(tokenIn), to = token(tokenOut), pool = poolFor(tokenIn, tokenOut);
+  const ti = token(tokenIn), to = token(tokenOut), pool = await poolFor(tokenIn, tokenOut);
   const raw = units(amountIn, ti.decimals);
   // TODO(Quintus): switch to oracle-anchored StockClawPool.quote() once docs/SERVER_MIGRATION.md lands (quote engine + keeper limit fills).
   // Oracle-anchored StockClawPool.quote() (== swap() in the same block) on the post-fee amount.
@@ -294,7 +298,7 @@ export async function execute_swap(arg: string | { tokenIn: string; tokenOut: st
   const before = await read<bigint>(to.address, C.usdg.abi, "balanceOf", [S.vault]);
   try {
     // The vault enforces caps/allowlist/expiry onchain; any breach reverts => hard block.
-    const { hash } = await a.write(S.vault, C.vault.abi, "agentSwap", [poolFor(p.tokenIn, p.tokenOut), ti.address, to.address, raw, p.minOutRaw, deadline]);
+    const { hash } = await a.write(S.vault, C.vault.abi, "agentSwap", [await poolFor(p.tokenIn, p.tokenOut), ti.address, to.address, raw, p.minOutRaw, deadline]);
     const out = fmt((await read<bigint>(to.address, C.usdg.abi, "balanceOf", [S.vault])) - before, to.decimals);
     const fee = p.amountIn * Number(await read(dep().router, C.router.abi, "feeBps")) / 10_000;
     pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: inStr, out: `${out.toFixed(6)} ${to.symbol}`, fee: `${fee.toFixed(4)} ${ti.symbol}`, ts, status: "filled" });
@@ -344,7 +348,7 @@ export async function create_dca(p: { tokenIn: string; tokenOut: string; amountP
   const slip = p.slippageBps ?? cfg.DEFAULT_SLIPPAGE_BPS; if (!(slip > 0) || slip > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, "slippageBps must be in (0, 300]");
   precheckAgentCaps(p.tokenIn, p.tokenOut, await usdOf(p.tokenIn, p.amountPerExec));
   const now = await chainNow();
-  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountPerExec, ti.decimals), minOutPerExec: 1n /* router requires >0; real floor = maxOracleDevBps vs oracle at exec time */, limitPriceE8: 0n, interval, maxExecs: p.maxExecs, maxOracleDevBps: slip, startTime: now, expiry: now + interval * p.maxExecs + 3600, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
+  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: await poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountPerExec, ti.decimals), minOutPerExec: 1n /* router requires >0; real floor = maxOracleDevBps vs oracle at exec time */, limitPriceE8: 0n, interval, maxExecs: p.maxExecs, maxOracleDevBps: slip, startTime: now, expiry: now + interval * p.maxExecs + 3600, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
   const { sig, hash } = await signIntent(i);
   const intentId = "int_" + hash.slice(2, 14);
   S.orders[intentId] = { intentId, type: "DCA", tokenIn: ti.symbol, tokenOut: to.symbol, amount: p.amountPerExec, interval: typeof p.interval === "string" ? p.interval : `${interval}s`, intervalSec: interval, maxExecs: p.maxExecs, execsDone: 0, nextRunAt: new Date(now * 1000).toISOString(), status: "open", agent: S.agent!.address, intent: toWire(i), sig, hash, txHashes: [] };
@@ -362,7 +366,7 @@ export async function create_limit_order(p: { tokenIn: string; tokenOut: string;
   if (!(expiry > now)) throw new ApiError(400, "expiry must be in the future");
   // minOut implied by the limit price, after fee and slippage.
   const slipL = p.slippageBps ?? cfg.DEFAULT_SLIPPAGE_BPS; if (!(slipL > 0) || slipL > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, "slippageBps must be in (0, 300]");
-  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountIn, ti.decimals), minOutPerExec: 1n /* trigger = limitPrice; protection = mandatory oracle floor (maxOracleDevBps) */, limitPriceE8: BigInt(Math.round(p.limitPrice * 1e8)), interval: 0, maxExecs: 1, maxOracleDevBps: slipL, startTime: now, expiry, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
+  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: await poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountIn, ti.decimals), minOutPerExec: 1n /* trigger = limitPrice; protection = mandatory oracle floor (maxOracleDevBps) */, limitPriceE8: BigInt(Math.round(p.limitPrice * 1e8)), interval: 0, maxExecs: 1, maxOracleDevBps: slipL, startTime: now, expiry, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
   const { sig, hash } = await signIntent(i);
   const intentId = "int_" + hash.slice(2, 14);
   S.orders[intentId] = { intentId, type: "Limit", tokenIn: ti.symbol, tokenOut: to.symbol, amount: p.amountIn, maxExecs: 1, execsDone: 0, limitPrice: p.limitPrice, expiry: new Date(expiry * 1000).toISOString(), status: "open", agent: S.agent!.address, intent: toWire(i), sig, hash, txHashes: [] };
@@ -376,7 +380,7 @@ export async function _createIntent(o: { type: "DCA" | "Limit"; tokenIn: string;
   if (!(o.devBps > 0 && o.devBps <= cfg.MAX_SLIPPAGE_BPS)) throw new ApiError(400, "oracleDevBps must be in (0, 300]");
   const ti = token(o.tokenIn), to = token(o.tokenOut);
   precheckAgentCaps(o.tokenIn, o.tokenOut, await usdOf(o.tokenIn, o.amount));
-  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(o.tokenIn, o.tokenOut), amountPerExec: units(o.amount, ti.decimals), minOutPerExec: 1n,
+  const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: await poolFor(o.tokenIn, o.tokenOut), amountPerExec: units(o.amount, ti.decimals), minOutPerExec: 1n,
     limitPriceE8: o.limitPrice ? BigInt(Math.round(o.limitPrice * 1e8)) : 0n, interval: o.interval ?? 0, maxExecs: o.maxExecs, maxOracleDevBps: o.devBps, startTime: o.startTime, expiry: o.expiry, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
   const { sig, hash } = await signIntent(i);
   const intentId = "int_" + hash.slice(2, 14);
