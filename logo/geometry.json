@@ -1,0 +1,84 @@
+{
+ "a": {
+  "variant": "slant",
+  "angle_from_vertical_deg": 21.8,
+  "slope": "0.4",
+  "pitch_px": 16,
+  "perp_gap_px": 6.86,
+  "stroke": 8,
+  "middle_len": 43.08,
+  "outer_len": 32.31,
+  "outer_center_dy": 5,
+  "bbox": [
+   6.0,
+   8.0,
+   58.0,
+   56.0
+  ],
+  "bbox_center": [
+   32.0,
+   32.0
+  ],
+  "strokes": [
+   [
+    10.0,
+    52,
+    22.0,
+    22
+   ],
+   [
+    24.0,
+    52,
+    40.0,
+    12
+   ],
+   [
+    42.0,
+    52,
+    54.0,
+    22
+   ]
+  ]
+ },
+ "b": {
+  "variant": "upright",
+  "angle_from_vertical_deg": 11.31,
+  "slope": "0.2",
+  "pitch_px": 15,
+  "perp_gap_px": 6.71,
+  "stroke": 8,
+  "middle_len": 40.79,
+  "outer_len": 30.59,
+  "outer_center_dy": 5,
+  "bbox": [
+   10.0,
+   8.0,
+   54.0,
+   56.0
+  ],
+  "bbox_center": [
+   32.0,
+   32.0
+  ],
+  "strokes": [
+   [
+    14.0,
+    52,
+    20.0,
+    22
+   ],
+   [
+    28.0,
+    52,
+    36.0,
+    12
+   ],
+   [
+    44.0,
+    52,
+    50.0,
+    22
+   ]
+  ]
+ }
+}
