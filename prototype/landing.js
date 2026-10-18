@@ -14,14 +14,21 @@ const bot=(id,n)=>window.SCEyes?SCEyes.html(id,n,144):`<img src="avatars/final-$
 // ---- Baskets: data only from data/baskets.json (see data/README.md) ----
 let BK=null,BKerr=null;
 fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/")render()});
-const SH=["#C6FF3D","#A3D930","#82B324","#638E1A","#476B12","#2F4A0C","#1C2E08"];
-function baskets(){const ph=BK&&BK.status!=="final";const tag='<span class="lp-ph">Placeholder weights, not real data</span>';
- const body=!BK?`<p class="lp-muted">${BKerr?"Basket data couldn't load.":"Loading baskets…"}</p>`:`<ol class="lp-bk">${BK.baskets.map(b=>{const t=b.tickers.slice().sort((x,y)=>y.weight-x.weight);const sum=t.reduce((a,x)=>a+(+x.weight||0),0);const ok=Math.abs(sum-100)<=0.5;
-  return `<li><div class="lp-bk-h"><h3>${b.name}</h3>${ph?tag:""}${ok?"":'<span class="lp-ph">Weights don\'t add up</span>'}</div><div class="lp-bar" aria-hidden="true">${t.map((x,i)=>`<i style="flex:${x.weight};background:${SH[Math.min(i,SH.length-1)]}"></i>`).join("")}</div><ul class="lp-bk-l" aria-label="${b.name} basket weights">${t.map((x,i)=>`<li><span class="lp-sw" style="background:${SH[Math.min(i,SH.length-1)]}" aria-hidden="true"></span>${x.symbol} <span>${(+x.weight).toFixed(2).replace(/\.00$/,"")}%</span></li>`).join("")}</ul></li>`}).join("")}</ol>`;
+const SH=["#C6FF3D","#B2EB33","#9DD62B","#89C224","#76AD1E","#649918","#538513"];
+const BAV={"power-nuclear":"power","power":"power"};
+const pct=(v)=>(+v).toFixed(2).replace(/\.00$/,"")+"%";
+function baskets(){const ph=!BK||BK.status==="placeholder";const tag='<span class="lp-ph">Placeholder weights, not real data</span>';
+ const list=(BK&&BK.baskets)||[];const R_=(BK&&BK.rules)||{};
+ const body=!BK?`<p class="lp-muted">${BKerr?"Basket data couldn't load.":"Loading baskets…"}</p>`:`<ol class="lp-bk">${list.map(b=>{const name=b.theme||b.name||b.id;const t=(b.tickers||[]).map(x=>({sym:x.ticker||x.symbol,nm:x.name||"",w:+(x.weightPct??x.weight)||0})).sort((x,y)=>y.w-x.w);const sum=t.reduce((a,x)=>a+x.w,0);const ok=Math.abs(sum-100)<=0.5;
+  return `<li class="lp-bk-row">${window.SCEyes?SCEyes.html("basket-"+(BAV[b.id]||b.id),"",72):""}<div class="lp-bk-m"><div class="lp-bk-h"><h3>${esc(name)}</h3>${ph?tag:""}${ok?"":'<span class="lp-ph">Weights don\'t add up</span>'}</div><div class="lp-bar" aria-hidden="true">${t.map((x,i)=>`<i style="flex:${x.w};background:${SH[Math.min(i,SH.length-1)]}"></i>`).join("")}</div><ul class="lp-bk-l" aria-label="${esc(name)} basket weights">${t.map((x,i)=>`<li title="${esc(x.nm)}"><span class="lp-sw" style="background:${SH[Math.min(i,SH.length-1)]}" aria-hidden="true"></span>${esc(x.sym)} <span>${pct(x.w)}</span></li>`).join("")}</ul></div></li>`}).join("")}</ol>`;
+ const rules=R_.singleNameCapPct?`Market-cap weighted, ${R_.singleNameCapPct}% single-name cap${R_.minWeightPct?`, ${R_.minWeightPct}% minimum weight`:""}, rebalanced periodically.`:"Market-cap weighted, single-name cap, rebalanced periodically.";
+ const meta=BK?`Source: ${BK.sourceUrl?`<a href="${esc(BK.sourceUrl)}" rel="noopener" target="_blank">${esc(BK.source||"source")}</a>`:esc(BK.source||"—")}. Market caps as of ${esc(BK.asOf||"—")}. Version ${esc(BK.version||"—")}.${BK.verified===true?"":' <span class="lp-ph lp-nc">Not cross-checked yet</span>'}`:"";
  return `<section class="lp-sec" id="lp-baskets" aria-labelledby="lp-bk-h"><p class="lp-k">01</p><h2 id="lp-bk-h">Baskets ${ph?tag:""}</h2>
 <p class="lp-big lp-bk-intro">A basket is a themed group of tokenized stocks your agent buys in one go. Just say "get me some AI."</p>${body}
-<p class="lp-muted">Market-cap weighted, single-name cap, rebalanced periodically.${BK&&BK.updated?` Weights as of ${BK.updated}.`:""} Basket tickers are Robinhood Chain mainnet listings; the testnet demo trades only PLTR, NFLX, AMD, AMZN and TSLA.</p>
-<p class="lp-muted">Baskets, not ETFs or funds. Tools, not investment advice.</p></section>`}
+<p class="lp-muted">${rules} ${meta}</p>
+<p class="lp-muted">Basket tickers are Robinhood Chain mainnet listings; the testnet demo trades only PLTR, NFLX, AMD, AMZN and TSLA.</p>
+<p class="lp-bk-disc">Baskets, not ETFs or funds. Tools, not investment advice.</p>${BK&&BK.disclaimer?`<p class="lp-bk-disc lp-bk-disc2">${esc(BK.disclaimer)}</p>`:""}</section>`}
+const esc=(v)=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function Landing(){return `<div class="lp">
 <header class="lp-nav"><a class="lp-logo" href="#/"><img src="logo-lockup.svg" width="110" height="28" alt="StockClaw home"></a>
 <nav aria-label="Main"><a href="#lp-how">How it works</a><a href="#lp-safety">Safety</a><a href="#lp-faq">FAQ</a><a class="lp-pill" href="#/onboarding/eligibility">Try the demo</a></nav></header>

@@ -1,209 +1,440 @@
 {
- "status": "final",
- "source": "BASKETS.md \u00a78 Results v1.0.0 (Lucius): market-cap weighted, 25% single-name cap, 5% floor; market caps as of the 2026-10-16 close (companiesmarketcap.com export)",
- "updated": "2026-10-18",
- "baskets": [
-  {
-   "id": "ai",
-   "name": "AI",
-   "tickers": [
-    {
-     "symbol": "NVDA",
-     "weight": 25.0
-    },
-    {
-     "symbol": "GOOGL",
-     "weight": 21.23
-    },
-    {
-     "symbol": "MSFT",
-     "weight": 20.24
-    },
-    {
-     "symbol": "TSM",
-     "weight": 11.02
-    },
-    {
-     "symbol": "META",
-     "weight": 9.31
-    },
-    {
-     "symbol": "AVGO",
-     "weight": 8.08
-    },
-    {
-     "symbol": "MU",
-     "weight": 5.12
-    }
-   ]
+  "version": "1.0.0",
+  "asOf": "2026-10-16 close (fetched 2026-10-18 19:02 ET)",
+  "source": "companiesmarketcap.com CSV export",
+  "sourceUrl": "https://companiesmarketcap.com/?download=csv",
+  "rules": {
+    "singleNameCapPct": 25,
+    "minWeightPct": 5,
+    "minLegUsd": 5,
+    "maxLegUsd": 98,
+    "defaultMaxBasketUsd": 250
   },
-  {
-   "id": "chips",
-   "name": "Chips",
-   "tickers": [
+  "disclaimer": "Tools, not investment advice. Themes and weights are fixed, published groupings chosen by StockClaw for convenience; you confirm every buy. Testnet tokens have no value. Not an ETF or fund.",
+  "hashNote": "hash = sha256 of the canonical basket JSON (sorted keys, no whitespace, without the hash field).",
+  "baskets": [
     {
-     "symbol": "NVDA",
-     "weight": 25.0
+      "id": "ai",
+      "theme": "AI",
+      "version": "1.0.0",
+      "tickers": [
+        {
+          "ticker": "NVDA",
+          "name": "NVIDIA",
+          "weightPct": 25.0,
+          "marketCapUsd": 5170596937728
+        },
+        {
+          "ticker": "GOOGL",
+          "name": "Alphabet (Google)",
+          "weightPct": 21.23,
+          "marketCapUsd": 4120387518464
+        },
+        {
+          "ticker": "MSFT",
+          "name": "Microsoft",
+          "weightPct": 20.24,
+          "marketCapUsd": 3928485003264
+        },
+        {
+          "ticker": "TSM",
+          "name": "TSMC",
+          "weightPct": 11.02,
+          "marketCapUsd": 2139990917120
+        },
+        {
+          "ticker": "META",
+          "name": "Meta Platforms (Facebook)",
+          "weightPct": 9.31,
+          "marketCapUsd": 1807009841152
+        },
+        {
+          "ticker": "AVGO",
+          "name": "Broadcom",
+          "weightPct": 8.08,
+          "marketCapUsd": 1569330823168
+        },
+        {
+          "ticker": "MU",
+          "name": "Micron Technology",
+          "weightPct": 5.12,
+          "marketCapUsd": 994340044800
+        }
+      ],
+      "hash": "sha256:a4ba8a537f2102926559bbd7aaba40a2de3444a3611f4498c327ee6ff7bfa8e2"
     },
     {
-     "symbol": "TSM",
-     "weight": 24.05
+      "id": "chips",
+      "theme": "Chips",
+      "version": "1.0.0",
+      "tickers": [
+        {
+          "ticker": "NVDA",
+          "name": "NVIDIA",
+          "weightPct": 25.0,
+          "marketCapUsd": 5170596937728
+        },
+        {
+          "ticker": "TSM",
+          "name": "TSMC",
+          "weightPct": 24.05,
+          "marketCapUsd": 2139990917120
+        },
+        {
+          "ticker": "AVGO",
+          "name": "Broadcom",
+          "weightPct": 17.63,
+          "marketCapUsd": 1569330823168
+        },
+        {
+          "ticker": "MU",
+          "name": "Micron Technology",
+          "weightPct": 11.17,
+          "marketCapUsd": 994340044800
+        },
+        {
+          "ticker": "AMD",
+          "name": "AMD",
+          "weightPct": 9.7,
+          "marketCapUsd": 863171182592
+        },
+        {
+          "ticker": "ASML",
+          "name": "ASML",
+          "weightPct": 7.11,
+          "marketCapUsd": 632670912512
+        },
+        {
+          "ticker": "INTC",
+          "name": "Intel",
+          "weightPct": 5.34,
+          "marketCapUsd": 474956529664
+        }
+      ],
+      "hash": "sha256:0c3ea1474360c4f336db3411419053c2281e8a4ffe417c36e139415995e6faa5"
     },
     {
-     "symbol": "AVGO",
-     "weight": 17.63
+      "id": "power-nuclear",
+      "theme": "Power/Nuclear",
+      "version": "1.0.0",
+      "tickers": [
+        {
+          "ticker": "GEV",
+          "name": "GE Vernova",
+          "weightPct": 25.0,
+          "marketCapUsd": 245346500608
+        },
+        {
+          "ticker": "CEG",
+          "name": "Constellation Energy",
+          "weightPct": 23.46,
+          "marketCapUsd": 96148398080
+        },
+        {
+          "ticker": "PWR",
+          "name": "Quanta Services",
+          "weightPct": 23.18,
+          "marketCapUsd": 94995972096
+        },
+        {
+          "ticker": "BE",
+          "name": "Bloom Energy",
+          "weightPct": 15.91,
+          "marketCapUsd": 65181847552
+        },
+        {
+          "ticker": "VST",
+          "name": "Vistra",
+          "weightPct": 12.45,
+          "marketCapUsd": 51023265792
+        }
+      ],
+      "hash": "sha256:991d60c05d71e3f1276a2dbd7dfb0cc10caf171f509dd9850f470325b152ee9f"
     },
     {
-     "symbol": "MU",
-     "weight": 11.17
+      "id": "defense",
+      "theme": "Defense",
+      "version": "1.0.0",
+      "tickers": [
+        {
+          "ticker": "LHX",
+          "name": "L3Harris Technologies",
+          "weightPct": 25.0,
+          "marketCapUsd": 46276194304
+        },
+        {
+          "ticker": "BA",
+          "name": "Boeing",
+          "weightPct": 25.0,
+          "marketCapUsd": 150226436096
+        },
+        {
+          "ticker": "LMT",
+          "name": "Lockheed Martin",
+          "weightPct": 25.0,
+          "marketCapUsd": 127417270272
+        },
+        {
+          "ticker": "HWM",
+          "name": "Howmet Aerospace",
+          "weightPct": 25.0,
+          "marketCapUsd": 88119164928
+        }
+      ],
+      "hash": "sha256:45abbe89ddd9f6630fe9dcbd0d822686423ff0a1547b1dffe73a6034c9f068c5"
     },
     {
-     "symbol": "AMD",
-     "weight": 9.7
+      "id": "space",
+      "theme": "Space",
+      "version": "1.0.0",
+      "tickers": [
+        {
+          "ticker": "SPCX",
+          "name": "SpaceX",
+          "weightPct": 25.0,
+          "marketCapUsd": 1923826450432
+        },
+        {
+          "ticker": "RKLB",
+          "name": "Rocket Lab",
+          "weightPct": 25.0,
+          "marketCapUsd": 32507656192
+        },
+        {
+          "ticker": "ASTS",
+          "name": "AST SpaceMobile",
+          "weightPct": 25.0,
+          "marketCapUsd": 15823550464
+        },
+        {
+          "ticker": "PL",
+          "name": "Planet Labs",
+          "weightPct": 12.54,
+          "marketCapUsd": 4933778944
+        },
+        {
+          "ticker": "FLY",
+          "name": "Firefly Aerospace",
+          "weightPct": 7.13,
+          "marketCapUsd": 2804027648
+        },
+        {
+          "ticker": "RDW",
+          "name": "Redwire",
+          "weightPct": 5.33,
+          "marketCapUsd": 2097438080
+        }
+      ],
+      "hash": "sha256:4b02d6df6322c5811530edc27ddfe18204a24823e8387e3cf11ca4402e1a6a1c"
     },
     {
-     "symbol": "ASML",
-     "weight": 7.11
+      "id": "quantum",
+      "theme": "Quantum",
+      "version": "1.0.0",
+      "tickers": [
+        {
+          "ticker": "IONQ",
+          "name": "IonQ",
+          "weightPct": 24.99,
+          "marketCapUsd": 12672643072
+        },
+        {
+          "ticker": "QBTS",
+          "name": "D-Wave Quantum",
+          "weightPct": 25.0,
+          "marketCapUsd": 4472001536
+        },
+        {
+          "ticker": "RGTI",
+          "name": "Rigetti Computing",
+          "weightPct": 23.93,
+          "marketCapUsd": 3938471168
+        },
+        {
+          "ticker": "INFQ",
+          "name": "Infleqtion",
+          "weightPct": 11.71,
+          "marketCapUsd": 1926802816
+        },
+        {
+          "ticker": "QUBT",
+          "name": "Quantum Computing",
+          "weightPct": 8.75,
+          "marketCapUsd": 1439566080
+        },
+        {
+          "ticker": "XNDU",
+          "name": "Xanadu Quantum Technologies Limited",
+          "weightPct": 5.62,
+          "marketCapUsd": 925355648
+        }
+      ],
+      "hash": "sha256:47828aeca82142783dbdee1d8e8561d677a243ced9c3ff22149d7782710dda34"
     },
     {
-     "symbol": "INTC",
-     "weight": 5.34
+      "id": "cyber",
+      "theme": "Cyber",
+      "version": "1.0.0",
+      "tickers": [
+        {
+          "ticker": "PANW",
+          "name": "Palo Alto Networks",
+          "weightPct": 25.0,
+          "marketCapUsd": 279756013568
+        },
+        {
+          "ticker": "CRWD",
+          "name": "CrowdStrike",
+          "weightPct": 25.0,
+          "marketCapUsd": 232832548864
+        },
+        {
+          "ticker": "FTNT",
+          "name": "Fortinet",
+          "weightPct": 23.55,
+          "marketCapUsd": 124092997632
+        },
+        {
+          "ticker": "NET",
+          "name": "Cloudflare",
+          "weightPct": 20.03,
+          "marketCapUsd": 105506414592
+        },
+        {
+          "ticker": "ZS",
+          "name": "Zscaler",
+          "weightPct": 6.42,
+          "marketCapUsd": 33814284288
+        }
+      ],
+      "hash": "sha256:0802a4ea016617340670cc9a27c5fa0f8535f51de9a86d3f2d8855454584abfc"
     }
-   ]
-  },
-  {
-   "id": "power-nuclear",
-   "name": "Power/Nuclear",
-   "tickers": [
+  ],
+  "excluded": [
     {
-     "symbol": "GEV",
-     "weight": 25.0
+      "ticker": "SATS",
+      "basket": "Space",
+      "reason": "UNAVAILABLE: ticker not in source (EchoStar listed as 'ECHO'; mapping unverified)"
     },
     {
-     "symbol": "CEG",
-     "weight": 23.46
+      "ticker": "AMD",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
     },
     {
-     "symbol": "PWR",
-     "weight": 23.18
+      "ticker": "PLTR",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
     },
     {
-     "symbol": "BE",
-     "weight": 15.91
+      "ticker": "ANET",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
     },
     {
-     "symbol": "VST",
-     "weight": 12.45
+      "ticker": "CRWV",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "NBIS",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "SMCI",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "VRT",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "ALAB",
+      "basket": "AI",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "QCOM",
+      "basket": "Chips",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "MRVL",
+      "basket": "Chips",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "AMAT",
+      "basket": "Chips",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "LRCX",
+      "basket": "Chips",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "KLAC",
+      "basket": "Chips",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "ON",
+      "basket": "Chips",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "TER",
+      "basket": "Chips",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "OKLO",
+      "basket": "Power/Nuclear",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "SMR",
+      "basket": "Power/Nuclear",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "NNE",
+      "basket": "Power/Nuclear",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "FLNC",
+      "basket": "Power/Nuclear",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "HII",
+      "basket": "Defense",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "KTOS",
+      "basket": "Defense",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "AVAV",
+      "basket": "Defense",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "RCAT",
+      "basket": "Defense",
+      "reason": "below 5% min weight after 25% cap"
+    },
+    {
+      "ticker": "LUNR",
+      "basket": "Space",
+      "reason": "below 5% min weight after 25% cap"
     }
-   ]
-  },
-  {
-   "id": "defense",
-   "name": "Defense",
-   "tickers": [
-    {
-     "symbol": "LHX",
-     "weight": 25.0
-    },
-    {
-     "symbol": "BA",
-     "weight": 25.0
-    },
-    {
-     "symbol": "LMT",
-     "weight": 25.0
-    },
-    {
-     "symbol": "HWM",
-     "weight": 25.0
-    }
-   ]
-  },
-  {
-   "id": "space",
-   "name": "Space",
-   "tickers": [
-    {
-     "symbol": "SPCX",
-     "weight": 25.0
-    },
-    {
-     "symbol": "RKLB",
-     "weight": 25.0
-    },
-    {
-     "symbol": "ASTS",
-     "weight": 25.0
-    },
-    {
-     "symbol": "PL",
-     "weight": 12.54
-    },
-    {
-     "symbol": "FLY",
-     "weight": 7.13
-    },
-    {
-     "symbol": "RDW",
-     "weight": 5.33
-    }
-   ]
-  },
-  {
-   "id": "quantum",
-   "name": "Quantum",
-   "tickers": [
-    {
-     "symbol": "IONQ",
-     "weight": 24.99
-    },
-    {
-     "symbol": "QBTS",
-     "weight": 25.0
-    },
-    {
-     "symbol": "RGTI",
-     "weight": 23.93
-    },
-    {
-     "symbol": "INFQ",
-     "weight": 11.71
-    },
-    {
-     "symbol": "QUBT",
-     "weight": 8.75
-    },
-    {
-     "symbol": "XNDU",
-     "weight": 5.62
-    }
-   ]
-  },
-  {
-   "id": "cyber",
-   "name": "Cyber",
-   "tickers": [
-    {
-     "symbol": "PANW",
-     "weight": 25.0
-    },
-    {
-     "symbol": "CRWD",
-     "weight": 25.0
-    },
-    {
-     "symbol": "FTNT",
-     "weight": 23.55
-    },
-    {
-     "symbol": "NET",
-     "weight": 20.03
-    },
-    {
-     "symbol": "ZS",
-     "weight": 6.42
-    }
-   ]
-  }
- ]
+  ]
 }
