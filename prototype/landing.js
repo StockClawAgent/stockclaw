@@ -18,7 +18,7 @@ function Landing(){return `<div class="lp">
 ${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104],["steady-stacker","Steady Stacker",128],["trend-flip","Trend Flip",104],["weekend-edge",WE_NAME,84]];return `<div class="lp-fam" role="img" aria-label="The five StockClaw agents: ${F.map(f=>f[1]).join(", ")}">${F.map(([id,n,z],i)=>`<div class="lp-fm lp-fm${i}" aria-hidden="true">${window.SCEyes?SCEyes.html(id,"",z):`<img src="avatars/final-${id}-transparent.png" width="${z}" height="${z}" alt="">`}</div>`).join("")}</div>`})()}
 <h1 id="lp-h1">Your agent trades<br>tokenized stocks.<br><em>You set the limits.</em></h1>
 <p class="lp-sub">Pick an AI agent, connect your own AI, and let it trade tokenized stocks on Robinhood Chain within limits you set.</p>
-<p class="lp-chips" aria-label="Tradeable on testnet">${["TSLA","AMZN","PLTR","NFLX","AMD"].map(t=>`<span class="lp-chip">${t}</span>`).join("")}${BADGE}</p>
+<p class="lp-chips" aria-label="Tradeable on testnet">${["PLTR","NFLX","AMD","AMZN","TSLA"].map(t=>`<span class="lp-chip">${t}</span>`).join("")}${BADGE}</p>
 <p class="lp-clients">Works in Claude <span aria-hidden="true">/</span> ChatGPT <span aria-hidden="true">/</span> Grok <span aria-hidden="true">/</span> Cursor, as an MCP connector for Robinhood Chain stock tokens and USDG.</p>
 <div class="lp-cta"><a class="lp-btn" href="#/onboarding/eligibility">Try the testnet demo <span aria-hidden="true">→</span></a><a class="lp-ghost" href="#lp-wait">Join the waitlist</a></div>
 </section>
@@ -31,7 +31,7 @@ ${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104
 <p class="lp-big">You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime.</p>
 <dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Per day</dt><dd>Up to $500 on testnet</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
 <p class="lp-muted">Quotes are shown net of the fee. Trades over a limit are blocked; you can raise limits from the dashboard.</p>
-<p class="lp-tickers">Tradeable on testnet: <span class="lp-mono">TSLA AMZN PLTR NFLX AMD</span> ${BADGE}</p></section>
+<p class="lp-tickers">Tradeable on testnet: <span class="lp-mono">PLTR NFLX AMD AMZN TSLA</span> ${BADGE}</p></section>
 <section class="lp-sec" id="lp-faq" aria-labelledby="lp-faq-h"><p class="lp-k">03</p><h2 id="lp-faq-h">FAQ</h2>
 ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join("")}</section>
 <section class="lp-sec lp-wait" id="lp-wait" aria-labelledby="lp-wait-h"><h2 id="lp-wait-h">Get notified when it leaves testnet.</h2>
