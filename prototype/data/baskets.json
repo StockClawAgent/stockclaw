@@ -8,9 +8,9 @@
     "minWeightPct": 5,
     "minLegUsd": 5,
     "maxLegUsd": 98,
-    "defaultMaxBasketUsd": 250
+    "defaultMaxBasketUsd": 500
   },
-  "disclaimer": "Tools, not investment advice. Themes and weights are fixed, published groupings chosen by StockClaw for convenience; you confirm every buy. Testnet tokens have no value. Not an ETF or fund.",
+  "disclaimer": "Themes and weights are fixed, published groupings chosen by StockClaw for convenience; you confirm every buy. Testnet tokens have no value. Not an ETF or fund.",
   "hashNote": "hash = sha256 of the canonical basket JSON (sorted keys, no whitespace, without the hash field).",
   "baskets": [
     {

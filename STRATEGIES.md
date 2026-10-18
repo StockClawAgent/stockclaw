@@ -75,7 +75,7 @@ Avatar slot unchanged: teal goggles blob, `avatars/glossy-momentum-rider.png`.
   "emaPeriod":{"const":9}, "candle":{"const":"1m"},
   "confirmCandles":{"type":"integer","minimum":2,"maximum":5,"default":2},
   "cooldownMin":{"type":"integer","minimum":5,"maximum":240,"default":30},
-  "maxEntriesPerDay":{"type":"integer","minimum":1,"maximum":2,"default":2},
+  "maxEntriesPerDay":{"type":"integer","minimum":1,"maximum":5,"default":2},
   "flatBeforeClose":{"type":"boolean","default":true},
   "flatBeforeCloseMin":{"type":"integer","minimum":5,"maximum":60,"default":15},
   "oracleDevBps":{"type":"integer","minimum":10,"maximum":300,"default":100}}}
@@ -94,8 +94,8 @@ Avatar slot unchanged: teal goggles blob, `avatars/glossy-momentum-rider.png`.
 *Pool has no price impact by design; the real "slippage" is the gap between the signal price and the next oracle push the fill uses. To be measured in the backtest/testnet.
 Implication: the EMA/VWAP move between entry and exit must average > ~0.8–1.2% just to break even. On 1-min bars that's a high bar; the backtest decides whether this ships, and copy must not imply profitability.
 
-**Caps:** `_consume` charges `oracle.usdValue(tokenIn, amountIn)` for **every** agent trade, buys and sells (checked in `src/AgentVault.sol`). So today a $98 round trip consumes ~$196 of the $500 rolling-24h cap → max **2 round trips per 24h** ($392); a 3rd buy ($490) would leave no room to sell → **position stuck until the window rolls**. Hence `maxEntriesPerDay ≤ 2` and the keeper rule: **enter only if `remainingToday` ≥ 2 × sliceUsd + 5% buffer** (price can rise before exit). Same risk exists for Dip Hunter take-profits.
-**[DECISION — Quintus] Should sells to USDG count toward the $500?** Options: (a) keep as-is + keeper exit reservation (no contract change, Friday-safe); (b) exempt sells where `tokenOut == USDG` from the daily cap (still per-trade cap, allowlist, floor) — de-risks the vault, small contract change + Gaius review; (c) count only net buys. Recommendation: (a) now, (b) post-demo.
+**Caps (updated 2026-10-18, Julius; Quintus 5491737, Gaius reviewing):** the $500 rolling-24h cap counts **buys only**. Stock→USDG exits through a registered pool are exempt (the $100 per-trade cap, allowlist, oracle floor and market hours still apply). Fee remains 0.30% per swap. Entries are therefore limited by the buy budget: floor($500 / $98) = **max 5 round trips per 24h** ($490 of buys), and an exit can never get stuck behind the cap. `maxEntriesPerDay` now allows 1–5, default stays 2 (5 round trips ≈ 4–6% fee+spread drag per day at 0.8–1.2% each). The exit-reserve keeper rule is dropped for USDG exits; the keeper still checks `remainingToday` ≥ sliceUsd before entering. Same applies to Dip Hunter take-profits (no longer counted).
+**Decided:** sells to USDG are exempt from the $500/24h cap (option b), implemented in 5491737 and under Gaius's review.
 
 **Data source [DECISION]:** VWAP needs volume. The testnet mock oracle has **no volume**, and its 60 s pushes are a random walk, so any VWAP computed from it is synthetic.
 - Option 1 (testnet demo/dev): keeper builds 1-min candles from oracle pushes (at 60 s pushes each candle has ~1 tick; push every 5–10 s to get OHLC) with **proxy volume = constant 1** (VWAP degenerates to a session TWAP of typical price) or our own pool's swap volume (mostly zero on testnet). Label in UI: "Simulated data — VWAP is a time-weighted proxy, testnet only."
@@ -199,4 +199,4 @@ Position strategies as **tools the user configures and controls**, not recommend
 4. Basket composition is limited to the 5 testnet tokens; "mag-7/SPY-style" naming should not appear in the UI until those assets exist.
 
 ## 14. Update: exit exemption (2026-10-18)
-Julius approved exempting stock→USDG sells from the $500/24h cap; Quintus is implementing it (in the working tree of `src/AgentVault.sol`, not yet committed or reviewed). **Once it lands and passes Gaius's review**, the Trend Flip (S3) 2-round-trip limit can be revisited: buys alone would count ($98 each), so up to 5 entries per 24h fit the cap. Recommendation: raise `maxEntriesPerDay` max to 4 (default stays 2) to leave headroom for other strategies, and drop the exit-reserve rule for USDG exits. The same applies to Dip Hunter take-profits. **No defaults change until then.**
+Superseded by Julius's decision (2026-10-18): $500/24h applies to buys only, stock→USDG exits exempt (5491737, Gaius reviewing), fee 0.30% per swap, $100 per-trade unchanged. Trend Flip: max 5 round trips/24h by buy budget, default 2 (see S3 Caps).

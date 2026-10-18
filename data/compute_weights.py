@@ -46,7 +46,7 @@ def split(w, usd, mcaps):
     return {k: {"usd": v, "swaps": math.ceil(v / MAX_LEG)} for k, v in legs.items()}
 
 def main():
-    args = sys.argv[1:]; sizes = [100, 250]; out = None
+    args = sys.argv[1:]; sizes = [100, 250, 500]; out = None
     if "--usd" in args:
         i = args.index("--usd"); sizes = []
         for a in args[i + 1:]:
@@ -100,8 +100,8 @@ def write_site_json(rows, baskets, result):
     r0 = rows[0]
     site = {"version": "1.0.0", "asOf": "2026-10-16 close (fetched 2026-10-18 19:02 ET)",
             "source": "companiesmarketcap.com CSV export", "sourceUrl": "https://companiesmarketcap.com/?download=csv",
-            "rules": {"singleNameCapPct": 25, "minWeightPct": 5, "minLegUsd": 5, "maxLegUsd": 98, "defaultMaxBasketUsd": 250},
-            "disclaimer": "Tools, not investment advice. Themes and weights are fixed, published groupings chosen by StockClaw for convenience; you confirm every buy. Testnet tokens have no value. Not an ETF or fund.",
+            "rules": {"singleNameCapPct": 25, "minWeightPct": 5, "minLegUsd": 5, "maxLegUsd": 98, "defaultMaxBasketUsd": 500},
+            "disclaimer": "Themes and weights are fixed, published groupings chosen by StockClaw for convenience; you confirm every buy. Testnet tokens have no value. Not an ETF or fund.",
             "hashNote": "hash = sha256 of the canonical basket JSON (sorted keys, no whitespace, without the hash field).",
             "baskets": out_b, "excluded": excluded}
     json.dump(site, open(os.path.join(HERE, "..", "baskets.json"), "w"), indent=2, ensure_ascii=False)
