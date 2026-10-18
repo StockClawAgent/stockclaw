@@ -10,7 +10,7 @@ contract MockAggregatorV3 is AggregatorV3Interface, Ownable {
     uint8 public immutable decimals;
     string public description;
     address public updater;
-    /// L-3: max change per update vs. previous answer (bps). 0 = unlimited. Default 10%.
+    /// L-3: max change per update vs. previous answer (bps), owner-set in (0, 5000]. Default 10%.
     uint16 public maxDeltaBps = 1_000;
 
     uint80 internal _round;
@@ -35,7 +35,11 @@ contract MockAggregatorV3 is AggregatorV3Interface, Ownable {
         emit UpdaterSet(u);
     }
 
+    error DeltaOutOfBounds(uint16 bps);
+
+    /// @notice Owner-set bound on per-update move; must be in (0, 50%]. Updates beyond it revert.
     function setMaxDeltaBps(uint16 bps) external onlyOwner {
+        if (bps == 0 || bps > 5_000) revert DeltaOutOfBounds(bps);
         maxDeltaBps = bps;
     }
 
@@ -43,7 +47,7 @@ contract MockAggregatorV3 is AggregatorV3Interface, Ownable {
         if (msg.sender != updater) revert NotUpdater();
         if (answer <= 0) revert InvalidAnswer();
         int256 prev = _answer;
-        if (prev > 0 && maxDeltaBps != 0) {
+        if (prev > 0) {
             int256 diff = answer > prev ? answer - prev : prev - answer;
             if (diff * 10_000 > prev * int256(uint256(maxDeltaBps))) revert DeltaTooLarge(prev, answer);
         }

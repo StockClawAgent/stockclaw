@@ -194,11 +194,15 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         if (newSpent > p.perDayUsd) revert DailyCapExceeded(newSpent, p.perDayUsd);
 
         uint256 cur = block.timestamp / 1 hours;
+        // Ring index, not randomness.
+        // slither-disable-next-line weak-prng
         uint256 idx = cur % BUCKETS;
         uint256 w = idx >> 1;
         uint256 shift = 128 * (idx & 1);
         uint256 word = _buckets[agent][w];
         uint256 bk = (word >> shift) & type(uint128).max;
+        // Exact hour match is intended (same bucket epoch); not a balance check.
+        // slither-disable-next-line incorrect-equality
         uint256 amt = uint32(bk >> 96) == cur ? uint96(bk) + usd : usd; // stale bucket => reset
         uint256 nb = (cur << 96) | amt;
         _buckets[agent][w] = (word & ~(uint256(type(uint128).max) << shift)) | (nb << shift);

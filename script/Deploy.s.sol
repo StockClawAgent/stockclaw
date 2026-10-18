@@ -9,8 +9,11 @@ import {PriceOracle} from "../src/oracle/PriceOracle.sol";
 import {MockAggregatorV3} from "../src/oracle/MockAggregatorV3.sol";
 import {MockUSDG} from "../src/mocks/MockUSDG.sol";
 import {ISignatureTransfer} from "../src/interfaces/ISignatureTransfer.sol";
+import {MockStockToken} from "../src/mocks/MockStockToken.sol";
 
 /// @notice Robinhood Chain TESTNET (46630) deployment. Hard-reverts on any other chain.
+/// Mock-token path is keyed off MOCK_TOKENS=1 (NOT chain id: local anvil also runs as 46630), and is
+/// auto-selected if the real stock-token addresses have no code (e.g. plain anvil --chain-id 46630).
 /// NOT RUN YET. Usage (when approved):
 ///   TREASURY_SAFE=0x.. FEED_UPDATER=0x.. ATTESTER=0x.. \
 ///   forge script script/Deploy.s.sol --rpc-url robinhood_testnet --broadcast --verify
@@ -44,6 +47,24 @@ contract Deploy is Script {
         s = ["TSLA", "AMZN", "PLTR", "NFLX", "AMD"];
     }
 
+    function useMocks() public view returns (bool) {
+        if (vm.envOr("MOCK_TOKENS", uint256(0)) == 1) return true;
+        (address[5] memory t,) = stockTokens();
+        for (uint256 i; i < 5; i++) {
+            if (t[i].code.length == 0) return true; // auto-detect: real tokens absent
+        }
+        return false;
+    }
+
+    /// @dev Must be called inside a broadcast when mocks are used (deploys MockStockTokens).
+    function resolveTokens() public returns (address[5] memory t, string[5] memory s) {
+        (t, s) = stockTokens();
+        if (!useMocks()) return (t, s);
+        for (uint256 i; i < 5; i++) {
+            t[i] = address(new MockStockToken(string.concat(s[i], " (mock)"), s[i]));
+        }
+    }
+
     function run() external onlyTestnet {
         address safe = vm.envAddress("TREASURY_SAFE");
         address updater = vm.envAddress("FEED_UPDATER");
@@ -54,7 +75,7 @@ contract Deploy is Script {
         address keeper = vm.envAddress("KEEPER"); // KMS-held key, execute-only
         c.router.setKeeper(keeper);
         c.oracle.setKeeper(keeper);
-        (address[5] memory t, string[5] memory s) = stockTokens();
+        (address[5] memory t, string[5] memory s) = resolveTokens();
         for (uint256 i; i < 5; i++) {
             MockAggregatorV3 f = new MockAggregatorV3(deployer, updater, 8, string.concat(s[i], " / USD"));
             c.oracle.setFeed(t[i], f, 1 hours);

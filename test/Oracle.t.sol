@@ -95,4 +95,35 @@ contract OracleTest is Base {
         vm.expectRevert(MockAggregatorV3.InvalidAnswer.selector);
         feed.updateAnswer(0);
     }
+
+    function test_maxDelta_ownerSettable_boundaries() public {
+        vm.prank(owner);
+        feed.setMaxDeltaBps(500); // 5%
+        vm.prank(updater);
+        feed.updateAnswer(int256(PRICE * 105 / 100)); // exactly +5%: ok
+        int256 cur = int256(PRICE * 105 / 100);
+        vm.prank(updater);
+        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaTooLarge.selector, cur, cur * 10_501 / 10_000));
+        feed.updateAnswer(cur * 10_501 / 10_000); // +5.01%: revert
+        vm.prank(bob);
+        vm.expectRevert();
+        feed.setMaxDeltaBps(10_000);
+        vm.startPrank(owner);
+        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaOutOfBounds.selector, uint16(0)));
+        feed.setMaxDeltaBps(0);
+        vm.expectRevert(abi.encodeWithSelector(MockAggregatorV3.DeltaOutOfBounds.selector, uint16(5_001)));
+        feed.setMaxDeltaBps(5_001);
+        vm.stopPrank();
+    }
+
+    function test_rejectedUpdate_leavesFeedStale_thenHalts() public {
+        // a rejected jump doesn't refresh updatedAt -> after 1h trading halts (fail closed)
+        vm.warp(block.timestamp + 50 minutes);
+        vm.prank(updater);
+        vm.expectRevert();
+        feed.updateAnswer(int256(PRICE * 2));
+        vm.warp(block.timestamp + 11 minutes);
+        vm.expectRevert(abi.encodeWithSelector(PriceOracle.StalePrice.selector, address(tsla), block.timestamp - 61 minutes));
+        oracle.priceE8(address(tsla));
+    }
 }

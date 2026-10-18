@@ -79,8 +79,11 @@ contract PriceOracle is Ownable2Step {
         MarketMode m = marketMode;
         if (m == MarketMode.Open) return true;
         if (m == MarketMode.Closed) return false;
+        // Calendar math, not randomness.
+        // slither-disable-next-line weak-prng
         uint256 dow = (block.timestamp / 1 days + 4) % 7; // 0 = Sunday (1970-01-01 was Thursday)
         if (dow == 0 || dow == 6) return false;
+        // slither-disable-next-line weak-prng
         uint256 minute = (block.timestamp % 1 days) / 60;
         return minute >= openMinute && minute < closeMinute;
     }

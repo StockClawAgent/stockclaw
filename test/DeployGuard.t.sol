@@ -35,4 +35,22 @@ contract DeployGuardTest is Test {
         assertEq(c.router.feeTreasury(), address(0x5AFE));
         assertEq(address(c.router.permit2()), d.PERMIT2());
     }
+
+    function test_mockTokens_autoDetectWhenRealTokensAbsent() public {
+        vm.chainId(46630); // plain anvil --chain-id 46630: no code at real addresses
+        assertTrue(d.useMocks());
+    }
+
+    function test_mockTokens_envFlag_and_realPathWhenCodePresent() public {
+        vm.chainId(46630);
+        (address[5] memory t,) = d.stockTokens();
+        for (uint256 i; i < 5; i++) vm.etch(t[i], hex"00"); // simulate real tokens present
+        vm.setEnv("MOCK_TOKENS", "0");
+        assertFalse(d.useMocks());
+        vm.setEnv("MOCK_TOKENS", "1");
+        assertTrue(d.useMocks());
+        (address[5] memory r,) = d.resolveTokens();
+        assertTrue(r[0] != t[0] && r[0].code.length > 0);
+        vm.setEnv("MOCK_TOKENS", "0");
+    }
 }
