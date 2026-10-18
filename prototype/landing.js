@@ -13,8 +13,13 @@ const FAQ=[["What are stock tokens?","Tokens on Robinhood Chain that track the p
 const bot=(id,n)=>window.SCEyes?SCEyes.html(id,n,144):`<img src="avatars/final-${id}.png" width="144" height="144" alt="${n} mascot">`;
 // ---- Baskets: data only from data/baskets.json (see data/README.md) ----
 let BK=null,BKerr=null;
-fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/")render()});
-const SH=["#C6FF3D","#B2EB33","#9DD62B","#89C224","#76AD1E","#649918","#538513"];
+fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d;buildColors(d.baskets)}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/")render()});
+// Fixed ticker→color map: same ticker, same color in every basket. Greedy coloring over all baskets (NVDA first = lime),
+// so no basket ever shows two identical colors (palette 12 > max basket size). Rebuilt whenever baskets.json loads.
+const PAL=["#C6FF3D","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
+let TCOL={};function buildColors(bs){const nb={},ord=[];(bs||[]).forEach(b=>{const s=(b.tickers||[]).map(t=>t.symbol||t.ticker);s.forEach(x=>{if(!nb[x]){nb[x]=new Set();ord.push(x)}s.forEach(y=>y!=x&&nb[x].add(y))})});
+ ord.sort((a,b)=>(b=="NVDA")-(a=="NVDA")||nb[b].size-nb[a].size);TCOL={};for(const x of ord){const used=new Set([...nb[x]].map(y=>TCOL[y]));TCOL[x]=PAL.find(c=>!used.has(c))||PAL[ord.indexOf(x)%PAL.length]}}
+const col=s=>TCOL[s]||"#D4D4D4";
 const BLINE={ai:"The companies building and running AI.",chips:"Chipmakers and the tools that make chips.","power-nuclear":"Power for the data-center build-out.",defense:"Defense and aerospace contractors.",space:"Rockets, satellites and space networks.",quantum:"Early quantum computing companies.",cyber:"Security software companies."};
 const BAV={"power-nuclear":"power","power":"power"};
 // File disclaimer minus sentences our own line already says (Lucius's JSON is not edited).
@@ -24,10 +29,10 @@ let BKsel=0;
 const rows=(b)=>(b.tickers||[]).map(x=>({sym:x.ticker||x.symbol,nm:x.name||"",w:+(x.weightPct??x.weight)||0})).sort((x,y)=>y.w-x.w);
 function panel(b,ph,tag){if(!b)return"";const name=b.theme||b.name||b.id;const t=rows(b);const sum=t.reduce((a,x)=>a+x.w,0);const ok=Math.abs(sum-100)<=0.5;
  const R=70,C=2*Math.PI*R,G=2.2;let acc=0;
- const segs=t.map((x,i)=>{const len=Math.max(0.5,x.w/sum*C-G);const rot=acc/C*360-90;acc+=x.w/sum*C;return `<circle class="lp-seg" data-i="${i}" r="${R}" cx="90" cy="90" fill="none" stroke="${SH[Math.min(i,SH.length-1)]}" stroke-width="26" stroke-dasharray="${len.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${len.toFixed(2)}" data-len="${len.toFixed(2)}" transform="rotate(${rot.toFixed(2)} 90 90)" style="transition-delay:${i*110}ms"></circle>`}).join("");
+ const segs=t.map((x,i)=>{const len=Math.max(0.5,x.w/sum*C-G);const rot=acc/C*360-90;acc+=x.w/sum*C;return `<circle class="lp-seg" data-i="${i}" r="${R}" cx="90" cy="90" fill="none" stroke="${col(x.sym)}" stroke-width="26" stroke-dasharray="${len.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${len.toFixed(2)}" data-len="${len.toFixed(2)}" transform="rotate(${rot.toFixed(2)} 90 90)" style="transition-delay:${i*110}ms"></circle>`}).join("");
  return `<div class="lp-bkp-h">${window.SCEyes?SCEyes.html("basket-"+(BAV[b.id]||b.id),"",64):""}<div><h3>${esc(name)}</h3>${BLINE[b.id]?`<p class="lp-bk-one">${BLINE[b.id]}</p>`:""}</div>${ph?tag:""}${ok?"":'<span class="lp-ph">Weights don\'t add up</span>'}</div>
 <div class="lp-dn-wrap"><div class="lp-dn"><svg viewBox="0 0 180 180" width="220" height="220" aria-hidden="true" focusable="false">${segs}</svg><div class="lp-dn-c" aria-live="polite"><b>${t.length}</b><span>names</span></div></div>
-<ul class="lp-lg" aria-label="${esc(name)} basket weights">${t.map((x,i)=>`<li tabindex="0" data-i="${i}" title="${esc(x.nm)}"><span class="lp-sw" style="background:${SH[Math.min(i,SH.length-1)]}" aria-hidden="true"></span><span class="lp-lg-t">${esc(x.sym)}</span><span class="lp-lg-w">${pct(x.w)}</span></li>`).join("")}</ul></div>`}
+<ul class="lp-lg" aria-label="${esc(name)} basket weights">${t.map((x,i)=>`<li tabindex="0" data-i="${i}" title="${esc(x.nm)}"><span class="lp-sw" style="background:${col(x.sym)}" aria-hidden="true"></span><span class="lp-lg-t" style="color:${col(x.sym)}">${esc(x.sym)}</span><span class="lp-lg-w">${pct(x.w)}</span></li>`).join("")}</ul></div>`}
 function bindBaskets(){const tabs=[...document.querySelectorAll('.lp-tabs [role=tab]')];if(!tabs.length)return;
  const show=(i,focus)=>{BKsel=i;tabs.forEach((t,j)=>{t.setAttribute("aria-selected",j==i);t.tabIndex=j==i?0:-1});const p=document.getElementById("bkp");p.setAttribute("aria-labelledby","bkt-"+i);p.innerHTML=panel(BK.baskets[i],BK.status==="placeholder",'<span class="lp-ph">Placeholder weights, not real data</span>');wire(p);focus&&tabs[i].focus();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))};
  tabs.forEach((t,i)=>{t.onclick=()=>show(i);t.onkeydown=e=>{const k={ArrowRight:1,ArrowLeft:-1}[e.key];if(k){e.preventDefault();show((i+k+tabs.length)%tabs.length,true)}else if(e.key=="Home"){e.preventDefault();show(0,true)}else if(e.key=="End"){e.preventDefault();show(tabs.length-1,true)}}});
@@ -60,10 +65,10 @@ ${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104
 <ol class="lp-intro">${BOTS.map(([id,n,live,intro,how,story],i)=>`<li class="${live?"":"soon"} ${i%2?"rev":""}">${bot(id,n)}<div class="lp-it"><h3>${n} <span class="lp-tag ${live?"live":""}">${live?"Live on testnet":"Coming soon"}</span></h3><p class="lp-intro-l">${intro}</p><p><span class="lp-lbl">Strategy</span>${how}</p><figure class="lp-story"><span class="lp-ill">Illustrative example, not a real result</span><blockquote>${story}</blockquote></figure></div></li>`).join("")}</ol></section>
 ${baskets()}
 <section class="lp-sec" id="lp-how" aria-labelledby="lp-how-h"><p class="lp-k">02</p><h2 id="lp-how-h">How it works</h2>
-<ol class="lp-steps"><li><b>Check eligibility</b> and sign with your wallet.</li><li><b>Set up your wallet.</b> You own it.</li><li><b>Confirm limits:</b> $100 a trade, $500 a day.</li><li><b>Get test tokens</b> in one tap.</li><li><b>Connect your AI</b> and ask it to trade.</li></ol></section>
+<ol class="lp-steps"><li><b>Check eligibility</b> and sign with your wallet.</li><li><b>Set up your wallet.</b> You own it.</li><li><b>Confirm limits:</b> $100 a trade, $500 of buys per 24h.</li><li><b>Get test tokens</b> in one tap.</li><li><b>Connect your AI</b> and ask it to trade.</li></ol></section>
 <section class="lp-sec" id="lp-safety" aria-labelledby="lp-safe-h"><p class="lp-k">03</p><h2 id="lp-safe-h">Safety and limits</h2>
 <p class="lp-big">You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime.</p>
-<dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Per day</dt><dd>Up to $500 on testnet</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
+<dl class="lp-facts"><div><dt>Per trade</dt><dd>Up to $100 on testnet</dd></div><div><dt>Buy headroom (24h)</dt><dd>Up to $500 of buys on testnet. Sells are exempt.</dd></div><div><dt>Key lifetime</dt><dd>7 days, revoke in one click</dd></div><div><dt>Fee</dt><dd>0.30%, from the input token</dd></div></dl>
 <p class="lp-tickers">Tradeable on testnet: <span class="lp-mono">PLTR NFLX AMD AMZN TSLA</span> ${BADGE}</p></section>
 <section class="lp-sec" id="lp-faq" aria-labelledby="lp-faq-h"><p class="lp-k">04</p><h2 id="lp-faq-h">FAQ</h2>
 ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join("")}</section>

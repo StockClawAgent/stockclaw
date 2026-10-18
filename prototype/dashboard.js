@@ -18,14 +18,14 @@ function pnlToday(){const h=(S.history||[]).filter(x=>x.status=="filled"&&tdy(x.
  for(const x of h){const i=num(x.in),o=num(x.out);if(!i||!o)return {na:"a trade's amounts couldn't be read"};const pi=price(i.sym),po=price(o.sym);if(pi==null||po==null)return {na:"prices aren't available yet"};p+=o.n*po-i.n*pi}
  return {v:p,n:h.length}}
 function sentence(x){const i=num(x.in),o=num(x.out),t=rel(x.ts);
- if(x.status!="filled"){const why=isVaultCap(x.reason)?capMsg().replace(/^Blocked: /,""):String(x.reason||"it was over a limit");return {blocked:true,txt:`Blocked: tried to spend ${i&&isStable(i.sym)?money(i.n):x.in||"a trade"}. ${why.replace(/\.?$/,".")}`,t}}
+ if(x.status!="filled"){const sell=x.side=="sell"||(o&&isStable(o.sym));const why=isVaultCap(x.reason)&&!sell?capMsg().replace(/^Blocked: /,""):String(x.reason||"it was over a limit");return {blocked:true,txt:`Blocked: tried to spend ${i&&isStable(i.sym)?money(i.n):x.in||"a trade"}. ${why.replace(/\.?$/,".")}`,t}}
  const fee=num(x.fee);const feeTxt=fee?` · fee ${isStable(fee.sym)?money(fee.n):x.fee}`:"";
  if(i&&o&&isStable(i.sym))return {txt:`Bought ${+o.n.toFixed(6)} ${o.sym} for ${money(i.n)}${feeTxt}`,t};
  if(i&&o&&isStable(o.sym))return {txt:`Sold ${+i.n.toFixed(6)} ${i.sym} for ${money(o.n)}${feeTxt}`,t};
  if(i&&isStable(i.sym)){const sym=String(x.out||"").split(/\s+/).pop();return {txt:`Bought ${sym&&sym!="—"?sym:"tokens"} for ${money(i.n)}${feeTxt}`,t}}
  return {txt:`Swapped ${x.in} for ${x.out}${feeTxt}`,t}}
 function feed(){const h=(S.history||[]).slice().sort((a,b)=>String(b.ts).localeCompare(String(a.ts))).slice(0,8);
- const fills=((ST.status&&ST.status.fills)||[]).filter(f=>f.status=="blocked").slice(0,3).map(f=>({blocked:true,txt:`Blocked: ${NAMES[ST.status.id]||"your strategy"} tried to ${f.side||"buy"} ${f.symbol||""} for ${money(f.amountUsd)}. ${blockedText(f.lastError||"Over a limit").replace(/^Blocked: /,"")}`,t:rel(f.ts)}));
+ const fills=((ST.status&&ST.status.fills)||[]).filter(f=>f.status=="blocked").slice(0,3).map(f=>({blocked:true,txt:`Blocked: ${NAMES[ST.status.id]||"your strategy"} tried to ${f.side||"buy"} ${f.symbol||""} for ${money(f.amountUsd)}. ${blockedText(f.lastError||"Over a limit",f.side).replace(/^Blocked: /,"")}`,t:rel(f.ts)}));
  const items=[...fills,...h.map(sentence)];
  if(!items.length)return `<p class="dx-quiet">${C.loading?"Loading activity…":"No trades yet. Ask your agent for a quote, or pick a strategy."}</p>`;
  return `<ul class="dx-feed">${items.map(s=>`<li class="${s.blocked?"blk":""}"><span class="dx-dot" aria-hidden="true"></span><span>${esc(s.txt)}</span><span class="dx-when"> · ${s.t}</span></li>`).join("")}</ul>`}
@@ -52,7 +52,7 @@ function Home(){initData();if(ST.status===undefined)loadStrats().then(()=>{if(la
 <div class="dx-agent">${SCEyes.html(id,name,200,s?"":"dx-ghost")}<div><p class="dx-k">${s?(on?"Running":"Paused"):"Default agent · no strategy yet"}</p><h1 id="dx-name">${esc(name)}</h1><p class="dx-mut">${s?esc(ROLE[id]||""):"Pick a strategy for this agent, or ask your AI to trade on request."}</p>${ownerSimulated?'<p class="dx-mut dx-small">Simulated owner wallet</p>':""}<div class="dx-act">${primary}</div></div></div>
 <div class="dx-nums"><div><p class="dx-k">Portfolio value</p>${pf?`<span class="dx-big">${money(pf.v)}</span><span class="dx-sub">${pf.partial?"Some tokens have no price yet":"Mock prices"} · <span class="badge">Testnet, not real stocks</span></span>`:`<span class="dx-big dx-mut">…</span><span class="dx-sub">Loading</span>`}</div>
 <div><p class="dx-k">Today's P&amp;L</p>${plTxt}</div></div></section>
-<section class="dx-sec" aria-labelledby="dx-lim"><h2 id="dx-lim">Limits</h2>${meter("today",used,500,"(vault, all agents)")}
+<section class="dx-sec" aria-labelledby="dx-lim"><h2 id="dx-lim">Limits</h2>${meter("buy headroom (24h)",used,500,"(buys only, all agents; sells exempt)")}
 <p class="dx-mut">Each trade is capped at ${money(k?Math.min(+k.perTradeCap||100,100):100).replace(".00","")}. Trades over a limit are blocked. <a href="#/dashboard/key">Change limits</a></p></section>
 <section class="dx-sec" aria-labelledby="dx-act"><h2 id="dx-act">Activity</h2>${feed()}</section>
 <details class="dx-details" id="dxDet" ${S.dxOpen?"open":""}><summary>Details</summary><p class="dx-mut"><span id="ago" role="status">Updated ${ago()}s ago</span> · <button class="dx-link" id="rf">Refresh</button></p>
@@ -97,8 +97,8 @@ let kbusy=null,editLimits=false;
 function K(){if(editLimits)return reskin(2,O3)();const d=defaults();const k=S.key;
  return obx(2,`<h1>${k?"Your agent is ready":"Confirm your agent's limits"}</h1><p class="dx-lede">Your AI trades with a limited key. It can only trade these tickers, within these limits, and it expires in 7 days.</p>
 ${!S.sa?`<div class="st err" role="alert">Set up your wallet first. <a href="#/onboarding/wallet">Back to step 2</a></div>`:""}
-<dl class="dx-facts"><div><dt>Per trade</dt><dd>${money(k?k.perTradeCap:d.perTradeCap).replace(".00","")}</dd></div><div><dt>Per day</dt><dd>${money(k?k.dailyCap:d.dailyCap).replace(".00","")}</dd></div><div><dt>Tickers</dt><dd>${(k?k.allowlist:d.allowlist).join(" ")}</dd></div><div><dt>Expires</dt><dd>${k?fmtD(k.expiresAt):"in 7 days"}</dd></div></dl>
-<p class="dx-mut dx-small">Up to $100 per trade and $500 per day on testnet. <span class="badge">Testnet, not real stocks</span></p>
+<dl class="dx-facts"><div><dt>Per trade</dt><dd>${money(k?k.perTradeCap:d.perTradeCap).replace(".00","")}</dd></div><div><dt>Buy headroom (24h)</dt><dd>${money(k?k.dailyCap:d.dailyCap).replace(".00","")}</dd></div><div><dt>Tickers</dt><dd>${(k?k.allowlist:d.allowlist).join(" ")}</dd></div><div><dt>Expires</dt><dd>${k?fmtD(k.expiresAt):"in 7 days"}</dd></div></dl>
+<p class="dx-mut dx-small">Up to $100 per trade and $500 of buys per rolling 24h on testnet. Sells are exempt. <span class="badge">Testnet, not real stocks</span></p>
 ${k?prog([[true,"Agent key created"],[S.funded,S.funded?"Test tokens added (mUSDG and stock tokens, no value)":"Adding test tokens",kbusy=="f"]]):kbusy?prog([[false,"Creating agent key (1 signature)",kbusy=="k"],[false,"Adding test tokens"]]):""}
 ${S.err=="rate"?`<div class="st err" role="alert">The faucet's daily limit was reached. <a href="#/onboarding/faucet">Try the faucet again</a> or continue if you already have test tokens.</div>`:""}
 ${k?`<a class="dx-primary" href="#/onboarding/client">Continue</a>${!S.funded&&!kbusy?` <button class="dx-link" id="fgo">Add test tokens</button>`:""}`:`<button class="dx-primary" id="kgo" ${S.sa&&!kbusy?"":"disabled"}>Confirm and create key</button> <button class="dx-link" id="kedit">Change limits</button>`}<p id="kerr" class="st err" role="alert" hidden></p>`)}
