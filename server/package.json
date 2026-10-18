@@ -1,0 +1,31 @@
+{
+  "name": "stockclaw-server",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "build": "cd .. && forge build --skip test --out server/artifacts/out --cache-path server/artifacts/cache",
+    "chain": "anvil --chain-id 46630 --port 8545",
+    "deploy": "tsx src/deploy.ts",
+    "start": "tsx src/index.ts",
+    "mcp": "tsx src/mcpStdio.ts",
+    "e2e": "tsx scripts/e2e.ts",
+    "typecheck": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "express": "^5.3.0",
+    "viem": "^2.57.7",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
