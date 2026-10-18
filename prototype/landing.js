@@ -10,13 +10,12 @@ const BOTS=[
  ["weekend-edge","Weekend Edge","Queues limit orders over the weekend for the Monday open.",0]];
 const FAQ=[["What are stock tokens?","Tokens on Robinhood Chain that track the price of a stock, traded here against USDG. They are not shares. In this demo they are testnet tokens from the Robinhood Chain faucet, with mock prices and no value."],["Who is eligible?","Not US persons, and not residents of the US, Canada, the UK, Switzerland, the UAE, Russia or sanctioned countries. We check your country, you sign an attestation with your wallet, and your smart wallet must be on our onchain eligibility list before it can trade. An identity-check provider is still being chosen."],["Do you hold my keys?","You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime."],["What fees apply?","0.30% per trade, taken from the input token. Quotes are shown net of the fee."],["How do I stop my agent?","Revoke the agent key from the dashboard in one click. Keys also expire after 7 days."],["Are strategies advice?","No. They are templates: you choose the parameters and StockClaw executes them within your limits. Tools, not investment advice. Final copy pending."],["Is this real money?","No. This is a testnet demo; tokens and prices are mocks."]];
 const bot=(id,n)=>window.SCEyes?SCEyes.html(id,n,144):`<img src="avatars/final-${id}.png" width="144" height="144" alt="${n} mascot">`;
-const coin=`<div class="lp-coin" aria-hidden="true"><div class="lp-coin-in"><div class="lp-face"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1.5"/><path d="M30 64 L44 48 L54 56 L70 36" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="70" cy="36" r="4" fill="currentColor"/></svg></div><div class="lp-edge"></div></div><div class="lp-shadow"></div></div>`;
 function Landing(){return `<div class="lp">
 <header class="lp-nav"><a class="lp-logo" href="#/"><img src="logo-lockup.svg" width="110" height="28" alt="StockClaw home"></a>
 <nav aria-label="Main"><a href="#lp-how">How it works</a><a href="#lp-safety">Safety</a><a href="#lp-faq">FAQ</a><a class="lp-pill" href="#/onboarding/eligibility">Try the demo</a></nav></header>
 <section class="lp-hero" aria-labelledby="lp-h1">
-${coin}
-<h1 id="lp-h1">Your agent trades tokenized stocks.<br><em>You set the limits.</em></h1>
+${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104],["steady-stacker","Steady Stacker",128],["trend-flip","Trend Flip",104],["weekend-edge","Weekend Edge",84]];return `<div class="lp-fam" role="img" aria-label="The five StockClaw agents: ${F.map(f=>f[1]).join(", ")}">${F.map(([id,n,z],i)=>`<div class="lp-fm lp-fm${i}" aria-hidden="true">${window.SCEyes?SCEyes.html(id,"",z):`<img src="avatars/final-${id}-transparent.png" width="${z}" height="${z}" alt="">`}</div>`).join("")}</div>`})()}
+<h1 id="lp-h1">Your agent trades<br>tokenized stocks.<br><em>You set the limits.</em></h1>
 <p class="lp-sub">Pick an AI agent, connect your own AI, and let it trade tokenized stocks on Robinhood Chain within limits you set.</p>
 <p class="lp-chips" aria-label="Tradeable on testnet">${["TSLA","AMZN","PLTR","NFLX","AMD"].map(t=>`<span class="lp-chip">${t}</span>`).join("")}${BADGE}</p>
 <p class="lp-clients">Works in Claude <span aria-hidden="true">/</span> ChatGPT <span aria-hidden="true">/</span> Grok <span aria-hidden="true">/</span> Cursor, as an MCP connector for Robinhood Chain stock tokens and USDG.</p>
@@ -40,6 +39,6 @@ ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join
 </div>`}
 function LandingBind(){const f=document.getElementById("lp-form");if(!f)return;f.onsubmit=e=>{e.preventDefault();const i=f.querySelector("input"),m=document.getElementById("lp-msg");if(!i.checkValidity()){i.setAttribute("aria-invalid","true");m.textContent="Enter a valid email address.";i.focus();return}i.removeAttribute("aria-invalid");m.textContent="You're on the waitlist (mock, nothing is sent).";f.querySelector("button").disabled=true}}
 function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.body.classList.toggle("is-landing",!(p in R)||p==="/")}
-R["/"]=[Landing,()=>{LandingBind();window.SCEyes&&SCEyes.init(document.querySelector(".lp-line"))}];
+R["/"]=[Landing,()=>{LandingBind();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
 addEventListener("hashchange",mark);mark();render();
 })();
