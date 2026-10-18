@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "build": "cd .. && forge build --skip test --out server/artifacts/out --cache-path server/artifacts/cache",
+    "build": "bash scripts/build.sh",
     "chain": "anvil --chain-id 46630 --port 8545",
     "deploy": "tsx src/deploy.ts",
     "start": "tsx src/index.ts",

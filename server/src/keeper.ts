@@ -32,7 +32,7 @@ export async function executeDue() {
   const S = svc._state(), d = svc.dep(), k = svc.keeperWallet(), now = await svc.chainNow();
   const results: { intentId: string; result: string }[] = [];
   for (const o of Object.values(S.orders)) {
-    if (!["active", "open"].includes(o.status)) continue;
+    if (o.status !== "open") continue;
     const i = svc.fromWire(o.intent);
     if (now > i.expiry) { o.status = "expired"; results.push({ intentId: o.intentId, result: "expired" }); continue; }
     const [execs, nextAt] = await read<[number, number]>(d.router, C.router.abi, "intentState", [o.hash]);
@@ -50,7 +50,7 @@ export async function executeDue() {
     } catch (e) {
       const name = revertReason(e).name, reason = svc.humanReason(e);
       o.lastError = reason;
-      if (name === "NotAgent" || name === "AgentExpired") o.status = "paused (key revoked)";
+      if (name === "NotAgent" || name === "AgentExpired") o.status = "paused";
       if (name === "NonceIsCancelled") o.status = "cancelled";
       if (!BENIGN.has(name)) S.history.unshift({ txHash: null, type: o.type === "DCA" ? "dca" : "limit", in: `${o.amount.toFixed(2)} ${o.tokenIn}`, out: "—", fee: "—", ts: new Date().toISOString(), status: "blocked", reason });
       results.push({ intentId: o.intentId, result: `skipped: ${reason}` });

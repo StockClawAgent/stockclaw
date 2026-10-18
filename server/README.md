@@ -8,7 +8,7 @@ Node 20+ and Foundry (`forge`, `anvil`).
 ## Run locally
 ```bash
 cd server && npm install
-npm run build                       # forge build into server/artifacts (separate from ../out)
+npm run build                       # forge build of the COMMITTED contracts (git HEAD) into server/artifacts
 npm run chain                       # terminal 1: anvil --chain-id 46630 on :8545
 npm run deploy                      # terminal 2: deploy + seed -> data/local-46630.json
 npm start                           # API + prototype UI + MCP (HTTP) + keeper on :8787
@@ -39,3 +39,9 @@ npm start                           # API + prototype UI + MCP (HTTP) + keeper o
 
 ## Demo shortcuts (disclose on stage)
 Single demo user. The server holds the owner's key (`DEMO_OWNER_KEY`) as a stand-in for wallet-connect and signs the EIP-712 attestation itself. Agent keys sit in server memory and env (a stand-in for KMS). Prices are a bounded random walk (±3% around base, kept inside the 5% pool band), not a market-data feed. State is a JSON file, not Postgres. There's no OAuth on MCP yet.
+
+## API notes
+- `create_session_key` returns the new key's fields at the top level (for app.js) plus `{revoked: {key, agent, txHash} | null, created: {...}}`.
+- `list_orders` status is one of `open | paused | filled | cancelled | expired`, plus `lastError`.
+- `POST /api/dev/reset` (local chain only, otherwise 403) wipes server state and switches to a fresh demo owner and a fresh 20-key agent pool, funded with anvil_setBalance. Contracts stay deployed, so demo runs repeat without restarting anvil.
+- The quote engine still uses `FeeRouter.quote()` (pool x·y=k). TODO: switch to the oracle-anchored `StockClawPool.quote()` when Quintus ships docs/SERVER_MIGRATION.md.

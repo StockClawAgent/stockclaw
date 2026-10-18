@@ -164,7 +164,7 @@ try {
     await keeper.pushOracle();
     const o = S.orders[dcaId];
     await assert.rejects(wallet(cfg.keys.keeper()).write(vault as any, C.vault.abi, "executeIntent", [svc.fromWire(o.intent), o.sig]), (e) => revertReason(e).name === "NotAgent");
-    assert.equal((await call("GET", "list_orders")).body.find((x: any) => x.intentId === dcaId).status, "paused (key revoked)");
+    assert.equal((await call("GET", "list_orders")).body.find((x: any) => x.intentId === dcaId).status, "paused");
   });
 
   await step("prototype/api.js (real calls, same shapes) works against the server", async () => {
@@ -175,8 +175,23 @@ try {
     const w = await api.get_wallet(); assert.equal(w.chainId, 46630); assert.equal(w.address, vault);
     const q = await api.quote_swap("mUSDG", "TSLA", 10); assert.equal(q.feeAmount, 0.03); for (const k of ["amountIn", "feeAmount", "netIn", "amountOut", "minOut", "route", "priceImpact", "quoteId", "expiresAt"]) assert.ok(k in q, k);
     assert.ok((await api.list_assets()).length === 6); assert.ok(Array.isArray(await api.get_history())); assert.ok(Array.isArray(await api.list_orders()));
-    const k = await api.create_session_key({ perTradeCap: 50, dailyCap: 200, days: 3, allowlist: ["TSLA"] }); assert.equal(k.status, "active"); assert.equal(k.spentToday, 0);
+    const k = await api.create_session_key({ perTradeCap: 50, dailyCap: 200, days: 3, allowlist: ["TSLA"] }); assert.equal(k.status, "active"); assert.equal(k.spentToday, 0); assert.equal(k.created.id, k.id); assert.equal(k.revoked, null, "old key was already revoked");
+    const k2 = await api.create_session_key({ perTradeCap: 60, dailyCap: 200, days: 3, allowlist: ["TSLA"] }); assert.equal(k2.revoked.key, k.id); assert.match(k2.revoked.txHash, /^0x/); assert.equal(k2.perTradeCap, 60);
     const x = await api.execute_swap({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 40 }); assert.match(x.txHash, /^0x/);
+  });
+
+  await step("order status enum + POST /api/dev/reset gives a fresh user and agent pool (repeatable demo)", async () => {
+    const st = new Set((await call("GET", "list_orders")).body.map((o: any) => o.status));
+    for (const x of st) assert.ok(["open", "paused", "filled", "cancelled", "expired"].includes(x as string), String(x));
+    const r = await call("POST", "dev/reset"); assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal((await call("GET", "get_wallet")).body.address, null);
+    assert.equal((await call("GET", "list_orders")).body.length, 0);
+    await call("GET", "check_eligibility", { country: "FR" });
+    assert.equal((await call("POST", "submit_attestation")).status, 200);
+    assert.equal((await call("POST", "create_smart_account")).status, 200);
+    assert.equal((await call("POST", "create_session_key")).status, 200);
+    assert.equal((await call("POST", "faucet_testnet")).status, 200, "faucet works again for the new user");
+    assert.equal((await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "PLTR", amountIn: 20 })).status, 200);
   });
 
   server.close();

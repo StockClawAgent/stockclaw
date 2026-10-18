@@ -45,12 +45,16 @@ function key(envName: string, anvilIdx: number): Hex {
   if (!IS_LOCAL) throw new Error(`${envName} must be set (KMS-backed) when RPC_URL is not local; anvil keys are local-only`);
   return ANVIL_KEYS[anvilIdx] as Hex;
 }
+// Dev reset bumps the epoch: demo owner + agent pool move to a fresh HD range (local only).
+let userEpoch = 0;
+export function setUserEpoch(e: number) { userEpoch = e; }
+const hd = (i: number) => bytesToHex(mnemonicToAccount(ANVIL_MNEMONIC, { addressIndex: i }).getHdKey().privateKey!) as Hex;
 export const keys = {
   deployer: () => key("DEPLOYER_KEY", 0),   // admin + attester + mock-token issuer
   keeper: () => key("KEEPER_KEY", 1),       // router keeper + oracle feed updater
   treasury: () => key("TREASURY_KEY", 2),   // fee treasury (testnet: 2/3 Safe address instead)
-  demoOwner: () => key("DEMO_OWNER_KEY", 3),// stands in for the user's wallet (no wallet connect yet)
-  agentPool: (): Hex[] => (process.env.AGENT_KEYS ? (process.env.AGENT_KEYS.split(",") as Hex[]) : IS_LOCAL ? [...ANVIL_KEYS.slice(4)] : []),
+  demoOwner: () => (IS_LOCAL && userEpoch && !process.env.DEMO_OWNER_KEY ? hd(100 * userEpoch) : key("DEMO_OWNER_KEY", 3)),// stands in for the user's wallet (no wallet connect yet)
+  agentPool: (): Hex[] => (process.env.AGENT_KEYS ? (process.env.AGENT_KEYS.split(",") as Hex[]) : IS_LOCAL ? (userEpoch ? Array.from({ length: 20 }, (_, i) => hd(100 * userEpoch + 1 + i)) : ([...ANVIL_KEYS.slice(4)] as Hex[])) : []),
 };
 /** Country name -> code for the prototype's country picker (it sends names). */
 export const COUNTRY_NAMES: Record<string, string> = Object.fromEntries(Object.entries(BLOCKED_REGIONS).map(([k, v]) => [v.toUpperCase(), k]));

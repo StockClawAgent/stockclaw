@@ -40,6 +40,7 @@ export function buildApp() {
   r.get("/get_history", h((q) => svc.get_history(q.query.limit ? Number(q.query.limit) : undefined)));
   r.post("/faucet_testnet", auth, h(() => svc.faucet_testnet()));
   r.get("/get_usage", h(() => svc.get_usage()));
+  r.post("/dev/reset", auth, h(() => svc.dev_reset())); // local chain only (refuses otherwise)
   r.get("/health", h(async () => ({ ok: true, chainId: 46630, router: svc.dep().router })));
   app.use("/api", r);
 

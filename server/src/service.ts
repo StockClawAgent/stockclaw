@@ -25,12 +25,25 @@ type State = {
   country?: string; attestation?: { sig: string; ts: string; expiresAt: string; signer: Address; txHash: string };
   vault?: Address; nextAgentIdx: number;
   agent?: { idx: number; address: Address; id: string; perTradeCap: number; dailyCap: number; days: number; allowlist: string[]; expiresAt: string; status: "active" | "revoked" | "expired" };
-  orders: Record<string, Order>; history: HistoryRow[]; usage: { day: string; calls: number };
+  orders: Record<string, Order>; history: HistoryRow[]; usage: { day: string; calls: number }; epoch?: number;
 };
 
 const STATE_FILE = path.join(cfg.DATA_DIR, "state.json");
 let S: State = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, "utf8")) : { nextAgentIdx: 0, orders: {}, history: [], usage: { day: "", calls: 0 } };
+if (S.epoch) cfg.setUserEpoch(S.epoch);
 const save = () => { fs.mkdirSync(cfg.DATA_DIR, { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(S, null, 2)); };
+/** Dev reset (local chain only): fresh user = new owner key + fresh agent-key pool, all derived deterministically
+ * from the anvil mnemonic at a new HD offset and funded with ETH via anvil_setBalance. Contracts stay deployed. */
+export async function dev_reset() {
+  if (!cfg.IS_LOCAL) throw new ApiError(403, "dev reset is only available on a local chain");
+  const epoch = (S.epoch ?? 0) + 1;
+  cfg.setUserEpoch(epoch);
+  const addrs = [owner().address, ...cfg.keys.agentPool().map((k) => privateKeyToAccount(k).address)];
+  for (const a of addrs) await pub.request({ method: "anvil_setBalance" as any, params: [a, "0x56BC75E2D63100000"] as any }); // 100 ETH
+  S = { nextAgentIdx: 0, orders: {}, history: [], usage: { day: "", calls: 0 }, epoch };
+  save();
+  return { ok: true, epoch, owner: owner().address, agentKeys: addrs.length - 1 };
+}
 export function resetState() { S = { nextAgentIdx: 0, orders: {}, history: [], usage: { day: "", calls: 0 } }; save(); }
 
 let D: Deployment | undefined;
@@ -182,7 +195,8 @@ export async function create_session_key(caps: Caps = {}) {
   const pool = cfg.keys.agentPool();
   if (S.nextAgentIdx >= pool.length) throw new ApiError(503, "Agent key pool exhausted (restart local chain)");
   const o = owner(), v = S.vault;
-  if (S.agent?.status === "active") await revoke_session_key(); // editing limits = revoke + re-issue
+  let revoked: { key: string; agent: Address; txHash: string } | null = null;
+  if (S.agent?.status === "active") { const old = S.agent; const r = await revoke_session_key(); revoked = { key: old.id, agent: old.address, txHash: r.txHash }; } // editing limits = revoke + re-issue
   // allowlist: mUSDG + chosen tickers on, everything else off
   const wanted = new Set([dep().usdg.toLowerCase(), ...allowlist.map((s) => token(s).address.toLowerCase())]);
   for (const sym of SYMS()) {
@@ -196,14 +210,15 @@ export async function create_session_key(caps: Caps = {}) {
   const { hash } = await o.write(v, C.vault.abi, "grantAgent", [agent, expiry]);
   S.agent = { idx, address: agent, id: "sk_" + agent.slice(2, 8).toLowerCase(), perTradeCap, dailyCap, days, allowlist, expiresAt: new Date(expiry * 1000).toISOString(), status: "active" };
   save();
-  return { ...txOut(hash), status: "active", id: S.agent.id, agent, expiresAt: S.agent.expiresAt, perTradeCap, dailyCap, days, spentToday: 0, allowlist };
+  const created = { ...txOut(hash), status: "active", id: S.agent.id, agent, expiresAt: S.agent.expiresAt, perTradeCap, dailyCap, days, spentToday: 0, allowlist };
+  return { ...created, revoked, created }; // top-level fields kept for app.js
 }
 /** The user-facing pause: one tx, revokes the agent key; the agent's swaps and all its signed intents stop. */
 export async function revoke_session_key() {
   if (!S.vault || !S.agent) throw new ApiError(409, "No agent key to revoke");
   const { hash } = await owner().write(S.vault, C.vault.abi, "revokeAgent", [S.agent.address]);
   S.agent.status = "revoked";
-  for (const o of Object.values(S.orders)) if (o.agent === S.agent.address && ["active", "open"].includes(o.status)) o.status = "paused (key revoked)";
+  for (const o of Object.values(S.orders)) if (o.agent === S.agent.address && o.status === "open") o.status = "paused";
   save();
   return txOut(hash);
 }
@@ -227,6 +242,7 @@ export async function quote_swap(tokenIn: string, tokenOut: string, amountIn: nu
   if (slippageBps < 0 || slippageBps > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, `slippageBps must be 0-${cfg.MAX_SLIPPAGE_BPS}`);
   const ti = token(tokenIn), to = token(tokenOut), pool = poolFor(tokenIn, tokenOut);
   const raw = units(amountIn, ti.decimals);
+  // TODO(Quintus): switch to oracle-anchored StockClawPool.quote() once docs/SERVER_MIGRATION.md lands (quote engine + keeper limit fills).
   const [netOut, fee] = await read<[bigint, bigint]>(dep().router, C.router.abi, "quote", [pool, ti.address, to.address, raw]);
   const minOutRaw = netOut * BigInt(10_000 - slippageBps) / 10_000n;
   const pi = (await priceE8(tokenIn)).p, po = (await priceE8(tokenOut)).p;
@@ -308,13 +324,13 @@ export async function create_dca(p: { tokenIn: string; tokenOut: string; amountP
   const interval = typeof p.interval === "number" ? p.interval : INTERVALS[p.interval] ?? Number(p.interval);
   if (!(interval >= 60)) throw new ApiError(400, "interval must be hourly|daily|weekly or >= 60 seconds");
   if (!(p.maxExecs >= 1 && p.maxExecs <= 365)) throw new ApiError(400, "maxExecs must be 1-365");
-  const slip = p.slippageBps ?? cfg.DEFAULT_SLIPPAGE_BPS; if (slip > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, "slippage too high");
+  const slip = p.slippageBps ?? cfg.DEFAULT_SLIPPAGE_BPS; if (!(slip > 0) || slip > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, "slippageBps must be in (0, 300]");
   precheckAgentCaps(p.tokenIn, p.tokenOut, await usdOf(p.tokenIn, p.amountPerExec));
   const now = await chainNow();
   const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountPerExec, ti.decimals), minOutPerExec: 1n /* router requires >0; real floor = maxOracleDevBps vs oracle at exec time */, limitPriceE8: 0n, interval, maxExecs: p.maxExecs, maxOracleDevBps: slip, startTime: now, expiry: now + interval * p.maxExecs + 3600, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
   const { sig, hash } = await signIntent(i);
   const intentId = "int_" + hash.slice(2, 14);
-  S.orders[intentId] = { intentId, type: "DCA", tokenIn: ti.symbol, tokenOut: to.symbol, amount: p.amountPerExec, interval: typeof p.interval === "string" ? p.interval : `${interval}s`, intervalSec: interval, maxExecs: p.maxExecs, execsDone: 0, nextRunAt: new Date(now * 1000).toISOString(), status: "active", agent: S.agent!.address, intent: toWire(i), sig, hash, txHashes: [] };
+  S.orders[intentId] = { intentId, type: "DCA", tokenIn: ti.symbol, tokenOut: to.symbol, amount: p.amountPerExec, interval: typeof p.interval === "string" ? p.interval : `${interval}s`, intervalSec: interval, maxExecs: p.maxExecs, execsDone: 0, nextRunAt: new Date(now * 1000).toISOString(), status: "open", agent: S.agent!.address, intent: toWire(i), sig, hash, txHashes: [] };
   save();
   return { intentId, nextRunAt: S.orders[intentId].nextRunAt };
 }
@@ -328,7 +344,7 @@ export async function create_limit_order(p: { tokenIn: string; tokenOut: string;
   const expiry = p.expiry == null ? now + 7 * 86400 : typeof p.expiry === "number" ? p.expiry : Math.floor(Date.parse(p.expiry) / 1000);
   if (!(expiry > now)) throw new ApiError(400, "expiry must be in the future");
   // minOut implied by the limit price, after fee and slippage.
-  const slipL = p.slippageBps ?? cfg.DEFAULT_SLIPPAGE_BPS; if (slipL > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, "slippage too high");
+  const slipL = p.slippageBps ?? cfg.DEFAULT_SLIPPAGE_BPS; if (!(slipL > 0) || slipL > cfg.MAX_SLIPPAGE_BPS) throw new ApiError(400, "slippageBps must be in (0, 300]");
   const net = p.amountIn * (1 - cfg.DEFAULT_FEE_BPS / 10_000) * (1 - slipL / 10_000);
   const minOut = isUsdg(p.tokenIn) ? net / p.limitPrice : net * p.limitPrice;
   const i: Intent = { account: S.vault, tokenIn: ti.address, tokenOut: to.address, adapter: poolFor(p.tokenIn, p.tokenOut), amountPerExec: units(p.amountIn, ti.decimals), minOutPerExec: units(minOut, to.decimals), limitPriceE8: BigInt(Math.round(p.limitPrice * 1e8)), interval: 0, maxExecs: 1, maxOracleDevBps: slipL, startTime: now, expiry, nonce: BigInt("0x" + randomBytes(16).toString("hex")) };
@@ -340,6 +356,7 @@ export async function create_limit_order(p: { tokenIn: string; tokenOut: string;
 }
 const publicOrder = (o: Order) => ({ intentId: o.intentId, type: o.type, tokenIn: o.tokenIn, tokenOut: o.tokenOut, amount: o.amount, ...(o.type === "DCA" ? { interval: o.interval, execs: `${o.execsDone}/${o.maxExecs}`, nextRunAt: o.nextRunAt } : { limitPrice: o.limitPrice, expiry: o.expiry }), status: o.status, lastError: o.lastError ?? null, txHashes: o.txHashes });
 export async function list_orders(status?: string) {
+  // status enum: open | paused | filled | cancelled | expired
   return Object.values(S.orders).filter((o) => !status || o.status === status).map(publicOrder);
 }
 export async function cancel_order(intentId: string) {
