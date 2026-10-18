@@ -68,13 +68,25 @@ export function list_approvals(status?: string) {
 }
 export function approval_options(id: string) {
   const a = get(id); if (!a) throw new ApiError(404, "Unknown approval");
-  return { challenge: a.challenge, rpId: RP_ID(), allowCredentials: (getDb().prepare("SELECT id FROM passkeys").all() as { id: string }[]).map((r) => ({ id: r.id, type: "public-key" })), userVerification: "preferred", timeout: 60000 };
+  return { challenge: a.challenge, rpId: RP_ID(), allowCredentials: (getDb().prepare("SELECT id FROM passkeys").all() as { id: string }[]).map((r) => ({ id: r.id, type: "public-key" })), userVerification: "required", timeout: 60000 };
 }
 
 // ---------------------------------------------------------------- passkeys (WebAuthn)
-export async function passkey_register_options() {
+/** Gaius R5: once a passkey exists, adding another needs a UV assertion from an existing passkey (owner token alone is not enough). */
+export async function passkey_register_options(stepUp?: any) {
+  const existing = (getDb().prepare("SELECT COUNT(*) n FROM passkeys").get() as { n: number }).n;
+  if (existing) {
+    const su = getDb().prepare("SELECT challenge, created_at FROM webauthn_challenges WHERE k='stepup'").get() as { challenge: string; created_at: number } | undefined;
+    if (!stepUp || !su || Date.now() - su.created_at > 300_000) {
+      const challenge = isoBase64URL.fromBuffer(new Uint8Array(randomBytes(32)));
+      getDb().prepare("INSERT INTO webauthn_challenges(k, challenge, created_at) VALUES('stepup', ?, ?) ON CONFLICT(k) DO UPDATE SET challenge=excluded.challenge, created_at=excluded.created_at").run(challenge, Date.now());
+      throw Object.assign(new ApiError(403, "A passkey is already registered: sign stepUpChallenge with an existing passkey and resend as webauthnAssertion"), { extra: { stepUpChallenge: challenge, rpId: RP_ID() } });
+    }
+    await verifyAssertion({ challenge: su.challenge } as Approval, stepUp);
+    getDb().prepare("DELETE FROM webauthn_challenges WHERE k='stepup'").run();
+  }
   const o = await generateRegistrationOptions({ rpName: "StockClaw", rpID: RP_ID(), userName: "stockclaw-owner", userID: new TextEncoder().encode(svc._owner().address), attestationType: "none",
-    authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" }, excludeCredentials: (getDb().prepare("SELECT id FROM passkeys").all() as { id: string }[]).map((r) => ({ id: r.id })) });
+    authenticatorSelection: { residentKey: "preferred", userVerification: "required" }, excludeCredentials: (getDb().prepare("SELECT id FROM passkeys").all() as { id: string }[]).map((r) => ({ id: r.id })) });
   getDb().prepare("INSERT INTO webauthn_challenges(k, challenge, created_at) VALUES('register', ?, ?) ON CONFLICT(k) DO UPDATE SET challenge=excluded.challenge, created_at=excluded.created_at").run(o.challenge, Date.now());
   return o;
 }
@@ -82,7 +94,7 @@ export async function passkey_register_verify(response: any) {
   const c = getDb().prepare("SELECT challenge, created_at FROM webauthn_challenges WHERE k='register'").get() as { challenge: string; created_at: number } | undefined;
   if (!c || Date.now() - c.created_at > 300_000) throw new ApiError(400, "No registration in progress (call /api/passkey/register/options)");
   let v;
-  try { v = await verifyRegistrationResponse({ response, expectedChallenge: c.challenge, expectedOrigin: ORIGINS(), expectedRPID: RP_ID(), requireUserVerification: false }); }
+  try { v = await verifyRegistrationResponse({ response, expectedChallenge: c.challenge, expectedOrigin: ORIGINS(), expectedRPID: RP_ID(), requireUserVerification: true }); }
   catch (e) { throw new ApiError(400, `Passkey registration failed: ${(e as Error).message}`); }
   if (!v.verified || !v.registrationInfo) throw new ApiError(400, "Passkey registration not verified");
   const cr = v.registrationInfo.credential;
@@ -95,7 +107,7 @@ async function verifyAssertion(a: Approval, assertion: any) {
   const pk = getDb().prepare("SELECT id, public_key, counter FROM passkeys WHERE id=?").get(assertion.id) as { id: string; public_key: string; counter: number } | undefined;
   if (!pk) throw new ApiError(401, "Unknown passkey (register one at /api/passkey/register/options)");
   let v;
-  try { v = await verifyAuthenticationResponse({ response: assertion, expectedChallenge: a.challenge, expectedOrigin: ORIGINS(), expectedRPID: RP_ID(), credential: { id: pk.id, publicKey: isoBase64URL.toBuffer(pk.public_key), counter: pk.counter }, requireUserVerification: false }); }
+  try { v = await verifyAuthenticationResponse({ response: assertion, expectedChallenge: a.challenge, expectedOrigin: ORIGINS(), expectedRPID: RP_ID(), credential: { id: pk.id, publicKey: isoBase64URL.toBuffer(pk.public_key), counter: pk.counter }, requireUserVerification: true }); }
   catch (e) { throw new ApiError(401, `Passkey verification failed: ${(e as Error).message}`); }
   if (!v.verified) throw new ApiError(401, "Passkey verification failed");
   getDb().prepare("UPDATE passkeys SET counter=? WHERE id=?").run(v.authenticationInfo.newCounter, pk.id);

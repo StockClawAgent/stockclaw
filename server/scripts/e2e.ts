@@ -483,6 +483,12 @@ try {
     const ro = (await callH("POST", "passkey/register/options")).body; assert.equal(ro.rp.id, "localhost");
     const rv = await callH("POST", "passkey/register/verify", { response: va.register(ro) }); assert.equal(rv.status, 200, JSON.stringify(rv.body));
     assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge, { tamper: true }) })).status, 401);
+    assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge, { noUV: true }) })).status, 401, "userVerification required");
+    // a second passkey can't be added with the owner token alone (Gaius R5); a step-up assertion from the first one is needed
+    const su = await callH("POST", "passkey/register/options"); assert.equal(su.status, 403); assert.ok(su.body.stepUpChallenge);
+    assert.equal((await callH("POST", "passkey/register/options", { webauthnAssertion: va.assert(su.body.stepUpChallenge, { tamper: true }) })).status, 401);
+    const ro2 = await callH("POST", "passkey/register/options", { webauthnAssertion: va.assert(su.body.stepUpChallenge) }); assert.equal(ro2.status, 200, JSON.stringify(ro2.body));
+    assert.equal(ro2.body.authenticatorSelection.userVerification, "required");
     assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert("d3Jvbmc") })).status, 401, "wrong challenge");
     assert.equal((await callH("POST", `approvals/${ap.id}/approve`, {})).status, 401, "assertion required");
     const ok = await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge) });

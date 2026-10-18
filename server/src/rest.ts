@@ -80,7 +80,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   const h = (fn: (req: express.Request) => unknown) => async (req: express.Request, res: express.Response) => {
     svc.countCall();
     try { res.json(await fn(req)); }
-    catch (e) { res.status((e as svc.ApiError).status ?? 500).json({ error: (e as Error).message }); }
+    catch (e) { res.status((e as svc.ApiError).status ?? 500).json({ error: (e as Error).message, ...((e as any).extra ?? {}) }); }
   };
   app.use(["/api", "/mcp"], (req, res, next) => { const g = geo(req); if (g && !svc.regionCheck(g).eligible) return res.status(451).json({ error: svc.regionCheck(g).reason }); next(); });
   // who is calling (for proposals): owner token wins
@@ -143,7 +143,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.get("/approvals/:id/options", ownerOnly, h((q) => apr.approval_options(String(q.params.id))));
   r.post("/approvals/:id/approve", ownerOnly, h((q) => apr.approve(String(q.params.id), q.body?.webauthnAssertion)));
   r.post("/approvals/:id/reject", ownerOnly, h((q) => apr.reject(String(q.params.id))));
-  r.post("/passkey/register/options", ownerOnly, h(() => apr.passkey_register_options()));
+  r.post("/passkey/register/options", ownerOnly, h((q) => apr.passkey_register_options(q.body?.webauthnAssertion)));
   r.post("/passkey/register/verify", ownerOnly, h((q) => apr.passkey_register_verify(q.body?.response ?? q.body)));
   app.use("/api", r);
   // liveness/readiness for ops: 503 when any critical alert (e.g. anvil down)

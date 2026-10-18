@@ -24,8 +24,8 @@ export function virtualAuthenticator(rpId: string, origin: string) {
       const cd = Buffer.from(JSON.stringify({ type: "webauthn.create", challenge: opts.challenge, origin, crossOrigin: false }));
       return { id: b64u(credId), rawId: b64u(credId), type: "public-key", clientExtensionResults: {}, response: { clientDataJSON: b64u(cd), attestationObject: b64u(attObj), transports: ["internal"] } };
     },
-    assert(challenge: string, o: { tamper?: boolean } = {}) {
-      const ad = authData(0x05); // UP|UV
+    assert(challenge: string, o: { tamper?: boolean; noUV?: boolean } = {}) {
+      const ad = authData(o.noUV ? 0x01 : 0x05); // UP|UV
       const cd = Buffer.from(JSON.stringify({ type: "webauthn.get", challenge, origin, crossOrigin: false }));
       const sig = edSign("sha256", Buffer.concat([ad, sha(cd)]), privateKey);
       if (o.tamper) sig[sig.length - 1] ^= 1;
