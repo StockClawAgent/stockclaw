@@ -51,11 +51,14 @@ contract Deploy is Script {
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
         Core memory c = deployCore(deployer, safe, attester);
+        address keeper = vm.envAddress("KEEPER"); // KMS-held key, execute-only
+        c.router.setKeeper(keeper);
+        c.oracle.setKeeper(keeper);
         (address[5] memory t, string[5] memory s) = stockTokens();
         for (uint256 i; i < 5; i++) {
             MockAggregatorV3 f = new MockAggregatorV3(deployer, updater, 8, string.concat(s[i], " / USD"));
             c.oracle.setFeed(t[i], f, 1 hours);
-            StockClawPool p = new StockClawPool(deployer, t[i], address(c.usdg), c.oracle, 500);
+            StockClawPool p = new StockClawPool(deployer, t[i], address(c.usdg), c.oracle, 200); // L-4: 2% band per threat model SR-23
             p.setRouter(address(c.router));
             c.router.setAdapter(address(p), true);
             console2.log(s[i], address(f), address(p));

@@ -52,7 +52,8 @@ abstract contract Base is Test {
 
         vm.startPrank(owner);
         router.setAdapter(address(pool), true);
-        router.setKeeper(keeper, true);
+        router.setKeeper(keeper);
+        oracle.setMarketMode(PriceOracle.MarketMode.Open); // schedule tested separately
         pool.setRouter(address(router));
         usdg.mint(owner, 10_000_000e6);
         vm.stopPrank();
@@ -83,6 +84,7 @@ abstract contract Base is Test {
         view
         returns (FeeRouter.SwapParams memory)
     {
+        if (minOut == 0) minOut = 1; // H-1: minOut must be > 0 (router oracle floor still applies)
         return FeeRouter.SwapParams(address(pool), tin, tout, amt, minOut, to, block.timestamp + 60);
     }
 

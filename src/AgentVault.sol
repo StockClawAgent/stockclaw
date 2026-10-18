@@ -8,39 +8,46 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {FeeRouter} from "./FeeRouter.sol";
 import {PriceOracle} from "./oracle/PriceOracle.sol";
+import {TokenTransfers} from "./libraries/TokenTransfers.sol";
 
-/// @title StockClaw AgentVault (Friday fallback for the ERC-4337 session-key module)
+/// @title StockClaw AgentVault (the per-user agent wallet; CTO decision: AgentVault only, no 4337 module)
 /// @notice Non-custodial per-user wallet: owner = the user's EOA. The owner grants AI-agent keys
 /// scoped spending authority enforced onchain:
 ///   - per-trade cap   (default $100)   - USD, 6 dp
-///   - per-day cap     (default $500)   - fixed UTC calendar-day window (see DESIGN_NOTES.md)
+///   - per-day cap     (default $500)   - ROLLING 24h window, 25 hourly buckets (see below)
 ///   - token allowlist (default EMPTY => nothing tradable); BOTH tokenIn and tokenOut must be listed
 ///   - expiry + one-tx revocation
 /// Any limit breach hard-reverts (no partial fills). USD value of `amountIn` comes from
 /// PriceOracle (USDG pinned 1:1; stocks via Chainlink-style feed, staleness-checked).
 /// Agents can only trade through StockClawRouter; outputs always return to this vault.
+///
+/// Rolling window: spend is recorded in hourly buckets (ring of 25, two buckets per storage word,
+/// 13 words). A check sums buckets for hours [now-24h, now]. A spend therefore stops counting
+/// between 24h and 25h after it happened - conservative: the cap can never be exceeded within ANY
+/// 24h period (incl. across midnight); worst case the user waits up to 1h longer than strict 24h.
 contract AgentVault is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint128 public constant DEFAULT_PER_TRADE_USD = 100e6;
     uint128 public constant DEFAULT_PER_DAY_USD = 500e6;
 
-    /// slot0: perTradeUsd(16) + expiry(5) + active(1)
-    /// slot1: perDayUsd(16) + spentTodayUsd(12)... packed as below
+    /// slot0: perTradeUsd(16) + expiry(5) + active(1); slot1: perDayUsd(16)
     struct AgentPolicy {
         uint128 perTradeUsd;
         uint40 expiry;
         bool active;
         uint128 perDayUsd;
-        uint96 spentUsd; // within `day`
-        uint32 day; // block.timestamp / 1 days
     }
+
+    uint256 internal constant BUCKETS = 25;
 
     FeeRouter public immutable router;
     PriceOracle public immutable oracle;
 
     mapping(address agent => AgentPolicy) public policies;
     mapping(address token => bool) public allowedToken;
+    /// word w holds buckets 2w (low 128 bits) and 2w+1 (high); bucket = hour(32) | usd(96)
+    mapping(address agent => uint256[13]) internal _buckets;
 
     event AgentGranted(address indexed agent, uint40 expiry, uint128 perTradeUsd, uint128 perDayUsd);
     event AgentRevoked(address indexed agent);
@@ -57,6 +64,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     error InvalidParams();
     error WrongAccount();
     error BadAgentSignature();
+    error NotKeeper();
 
     constructor(address owner_, FeeRouter router_) Ownable(owner_) {
         router = router_;
@@ -82,7 +90,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     }
 
     function setCaps(address agent, uint128 perTradeUsd, uint128 perDayUsd) external onlyOwner {
-        if (perTradeUsd > perDayUsd || perDayUsd > type(uint96).max) revert InvalidParams();
+        if (perTradeUsd > perDayUsd || perDayUsd > type(uint96).max / BUCKETS) revert InvalidParams();
         policies[agent].perTradeUsd = perTradeUsd;
         policies[agent].perDayUsd = perDayUsd;
         emit CapsSet(agent, perTradeUsd, perDayUsd);
@@ -94,7 +102,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     }
 
     function withdraw(address token, address to, uint256 amount) external onlyOwner nonReentrant {
-        IERC20(token).safeTransfer(to, amount);
+        TokenTransfers.transfer(token, to, amount);
         emit Withdrawn(token, to, amount);
     }
 
@@ -110,6 +118,10 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         returns (uint256)
     {
         _consume(msg.sender, tokenIn, tokenOut, amountIn);
+        // H-1(d): never weaker than the oracle-implied amount minus the router's max slippage.
+        uint256 net = amountIn - amountIn * router.feeBps() / 10_000;
+        uint256 floor = oracle.convert(tokenIn, tokenOut, net) * (10_000 - router.maxSlippageBps()) / 10_000;
+        if (floor > minOut) minOut = floor;
         return _routerSwap(FeeRouter.SwapParams(adapter, tokenIn, tokenOut, amountIn, minOut, address(this), deadline));
     }
 
@@ -120,6 +132,7 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         nonReentrant
         returns (uint256 out)
     {
+        if (msg.sender != router.keeper() && msg.sender != owner()) revert NotKeeper();
         if (i.account != address(this)) revert WrongAccount();
         address agent = ECDSA.recover(router.hashIntent(i), agentSig);
         if (policies[agent].expiry == 0) revert BadAgentSignature();
@@ -145,9 +158,23 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
     }
 
     // ================================================================ views
+    function spentLast24h(address agent) public view returns (uint256 total) {
+        uint256 cur = block.timestamp / 1 hours;
+        uint256[13] storage b = _buckets[agent];
+        for (uint256 w; w < 13; ++w) {
+            uint256 word = b[w];
+            if (word == 0) continue;
+            for (uint256 half; half < 2; ++half) {
+                uint256 bk = word >> (128 * half);
+                uint256 hr = uint32(bk >> 96);
+                if (hr + 24 >= cur && hr <= cur) total += uint96(bk);
+            }
+        }
+    }
+
     function remainingToday(address agent) external view returns (uint256 usdLeft, uint256 perTrade) {
         AgentPolicy memory p = policies[agent];
-        uint256 spent = p.day == uint32(block.timestamp / 1 days) ? p.spentUsd : 0;
+        uint256 spent = spentLast24h(agent);
         usdLeft = p.perDayUsd > spent ? p.perDayUsd - spent : 0;
         perTrade = p.perTradeUsd;
     }
@@ -163,13 +190,18 @@ contract AgentVault is Ownable2Step, ReentrancyGuard {
         uint256 usd = oracle.usdValue(tokenIn, amountIn);
         if (usd > p.perTradeUsd) revert PerTradeCapExceeded(usd, p.perTradeUsd);
 
-        uint32 today = uint32(block.timestamp / 1 days);
-        uint256 spent = p.day == today ? p.spentUsd : 0;
-        uint256 newSpent = spent + usd;
+        uint256 newSpent = spentLast24h(agent) + usd;
         if (newSpent > p.perDayUsd) revert DailyCapExceeded(newSpent, p.perDayUsd);
 
-        policies[agent].spentUsd = uint96(newSpent);
-        policies[agent].day = today;
+        uint256 cur = block.timestamp / 1 hours;
+        uint256 idx = cur % BUCKETS;
+        uint256 w = idx >> 1;
+        uint256 shift = 128 * (idx & 1);
+        uint256 word = _buckets[agent][w];
+        uint256 bk = (word >> shift) & type(uint128).max;
+        uint256 amt = uint32(bk >> 96) == cur ? uint96(bk) + usd : usd; // stale bucket => reset
+        uint256 nb = (cur << 96) | amt;
+        _buckets[agent][w] = (word & ~(uint256(type(uint128).max) << shift)) | (nb << shift);
         emit AgentSpent(agent, usd, newSpent);
     }
 

@@ -2,7 +2,9 @@
 pragma solidity ^0.8.24;
 
 import "./Base.t.sol";
-import {TokenChecks} from "../src/libraries/TokenChecks.sol";
+import {TokenTransfers} from "../src/libraries/TokenTransfers.sol";
+import {MockComplianceAdapter} from "../src/mocks/MockComplianceAdapter.sol";
+import {ITokenComplianceAdapter} from "../src/interfaces/ITokenComplianceAdapter.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -87,11 +89,11 @@ contract FeeRouterTest is Base {
 
         p = _params(address(usdg), address(tsla), 100e6, 1e18, alice);
         vm.prank(alice);
-        vm.expectRevert(); // pool InsufficientOutput
+        vm.expectRevert(); // InsufficientOutput
         router.swap(p);
 
         p.adapter = bob;
-        p.minAmountOut = 0;
+        p.minAmountOut = 1;
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(FeeRouter.AdapterNotAllowed.selector, bob));
         router.swap(p);
@@ -109,24 +111,49 @@ contract FeeRouterTest is Base {
     function test_revert_stockPaused() public {
         tsla.setPaused(true);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(TokenChecks.TokenPaused.selector, address(tsla)));
+        vm.expectPartialRevert(FeeRouter.AdapterSwapFailed.selector); // pool's stock transfer reverted
         router.swap(_params(address(usdg), address(tsla), 100e6, 0, alice));
         assertEq(usdg.balanceOf(alice), 100_000e6); // nothing moved
-        assertFalse(router.precheck(alice, address(usdg), address(tsla), 100e6, alice));
+        assertEq(usdg.balanceOf(safe), 0);
+        // selling a paused stock: the pull itself is blocked
+        vm.prank(alice);
+        vm.expectPartialRevert(TokenTransfers.TransferBlocked.selector);
+        router.swap(_params(address(tsla), address(usdg), 1e18, 0, alice));
     }
 
     function test_revert_senderFrozen() public {
         tsla.setFrozen(alice, true);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(TokenChecks.AccountFrozen.selector, address(tsla), alice));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TokenTransfers.TransferBlocked.selector, address(tsla), alice, address(router),
+                abi.encodeWithSelector(MockStockToken.Frozen.selector, alice)
+            )
+        );
         router.swap(_params(address(tsla), address(usdg), 1e18, 0, alice));
+        assertEq(tsla.balanceOf(alice), 100e18);
+    }
+
+    function test_revert_ineligibleRecipient() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.NotEligible.selector, bob));
+        router.swap(_params(address(usdg), address(tsla), 100e6, 0, bob));
+        assertFalse(router.precheck(alice, address(usdg), address(tsla), 100e6, bob));
     }
 
     function test_revert_recipientFrozen() public {
+        _eligible(bob);
         tsla.setFrozen(bob, true);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(TokenChecks.AccountFrozen.selector, address(tsla), bob));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TokenTransfers.TransferBlocked.selector, address(tsla), address(router), bob,
+                abi.encodeWithSelector(MockStockToken.Frozen.selector, bob)
+            )
+        );
         router.swap(_params(address(usdg), address(tsla), 100e6, 0, bob));
+        assertEq(usdg.balanceOf(alice), 100_000e6);
+        assertEq(tsla.balanceOf(address(router)), 0);
     }
 
     function test_revert_registry() public {
@@ -135,14 +162,38 @@ contract FeeRouterTest is Base {
         tsla.setRegistered(address(router), true);
         // alice not registered
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(TokenChecks.TransferRestricted.selector, address(tsla), address(router), alice)
-        );
+        vm.expectPartialRevert(TokenTransfers.TransferBlocked.selector);
         router.swap(_params(address(usdg), address(tsla), 100e6, 0, alice));
         tsla.setRegistered(alice, true);
         vm.prank(alice);
         router.swap(_params(address(usdg), address(tsla), 100e6, 0, alice));
         assertTrue(router.precheck(alice, address(usdg), address(tsla), 100e6, alice));
+    }
+
+    function test_complianceAdapter_defaultNone_thenPluggable() public {
+        assertEq(address(router.complianceAdapter(address(tsla))), address(0));
+        tsla.setFrozen(alice, true);
+        assertTrue(router.precheck(alice, address(usdg), address(tsla), 100e6, alice)); // unknown without adapter
+        MockComplianceAdapter ca = new MockComplianceAdapter();
+        vm.prank(owner);
+        router.setComplianceAdapter(address(tsla), ITokenComplianceAdapter(address(ca)));
+        assertFalse(router.precheck(alice, address(usdg), address(tsla), 100e6, alice));
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                FeeRouter.ComplianceBlocked.selector, address(tsla), address(router), alice, bytes32("FROZEN")
+            )
+        );
+        router.swap(_params(address(usdg), address(tsla), 100e6, 0, alice));
+    }
+
+    function test_marketClosed_halts() public {
+        vm.prank(owner);
+        oracle.setMarketMode(PriceOracle.MarketMode.Closed);
+        assertFalse(router.precheck(alice, address(usdg), address(tsla), 100e6, alice));
+        vm.prank(alice);
+        vm.expectRevert(FeeRouter.MarketClosed.selector);
+        router.swap(_params(address(usdg), address(tsla), 100e6, 0, alice));
     }
 
     // ------------------------------------------------ Permit2
@@ -184,8 +235,8 @@ contract FeeRouterTest is Base {
             assertEq(usdg.balanceOf(safe), amt * bps / 10_000);
             assertEq(before - usdg.balanceOf(alice), amt);
         } catch {
-            // only acceptable failure: zero output for dust
-            assertEq(pool.quote(address(usdg), address(tsla), amt - amt * bps / 10_000), 0);
+            // only acceptable failure: dust whose output rounds below minOut=1 / oracle floor
+            assertLt(amt, 1e6);
         }
         assertEq(usdg.balanceOf(address(router)), 0);
         assertEq(tsla.balanceOf(address(router)), 0);
@@ -205,7 +256,7 @@ contract FeeRouterTest is Base {
     function testFuzz_slippage(uint256 amt, uint256 minOut) public {
         amt = bound(amt, 1e6, 5_000e6);
         (uint256 q,) = router.quote(address(pool), address(usdg), address(tsla), amt);
-        minOut = bound(minOut, 0, q * 2);
+        minOut = bound(minOut, 1, q * 2);
         vm.prank(alice);
         if (minOut > q) {
             vm.expectRevert();
@@ -214,5 +265,39 @@ contract FeeRouterTest is Base {
             uint256 out = router.swap(_params(address(usdg), address(tsla), amt, minOut, alice));
             assertGe(out, minOut);
         }
+    }
+
+    // ---- H-1(a)(b)
+    function test_zeroMinOutRejected() public {
+        FeeRouter.SwapParams memory p = _params(address(usdg), address(tsla), 100e6, 1, alice);
+        p.minAmountOut = 0;
+        vm.prank(alice);
+        vm.expectRevert(FeeRouter.ZeroMinOut.selector);
+        router.swap(p);
+    }
+
+    function test_mandatoryOracleFloor() public {
+        // oracle says TSLA is 4% cheaper than pool -> buy gets ~4% less than oracle-implied -> revert (cap 3%)
+        _setPrice(240e8);
+        vm.prank(alice);
+        vm.expectPartialRevert(FeeRouter.AdapterSwapFailed.selector);
+        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
+        _setPrice(245e8); // 2% gap: within 3% default
+        vm.prank(alice);
+        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
+        vm.prank(owner);
+        router.setMaxSlippageBps(100); // owner tightens to 1%
+        vm.prank(alice);
+        vm.expectPartialRevert(FeeRouter.AdapterSwapFailed.selector);
+        router.swap(_params(address(usdg), address(tsla), 100e6, 1, alice));
+    }
+
+    function test_maxSlippageBounds() public {
+        vm.startPrank(owner);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.SlippageOutOfBounds.selector, uint16(301)));
+        router.setMaxSlippageBps(301);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.SlippageOutOfBounds.selector, uint16(0)));
+        router.setMaxSlippageBps(0);
+        vm.stopPrank();
     }
 }

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "./Base.t.sol";
-import {TokenChecks} from "../src/libraries/TokenChecks.sol";
+import {TokenTransfers} from "../src/libraries/TokenTransfers.sol";
 
 contract IntentsTest is Base {
     function _intent(uint128 amt, uint64 limit, uint32 interval, uint16 execs, uint256 nonce)
@@ -16,7 +16,7 @@ contract IntentsTest is Base {
             tokenOut: address(tsla),
             adapter: address(pool),
             amountPerExec: amt,
-            minOutPerExec: 0,
+            minOutPerExec: 1,
             limitPriceE8: limit,
             interval: interval,
             maxExecs: execs,
@@ -28,14 +28,14 @@ contract IntentsTest is Base {
     }
 
     function test_limitBuy_executesWhenPriceAtOrBelow() public {
-        FeeRouter.Intent memory i = _intent(1_000e6, 240e8, 0, 1, 1);
-        i.maxOracleDevBps = 500; // pool lags oracle by ~4% in this scenario
+        FeeRouter.Intent memory i = _intent(1_000e6, 245e8, 0, 1, 1);
+        i.maxOracleDevBps = 300; // pool lags oracle by ~2% in this scenario
         bytes memory sig = _sign(alicePk, router.hashIntent(i));
         vm.prank(keeper);
-        vm.expectRevert(abi.encodeWithSelector(FeeRouter.LimitNotMet.selector, PRICE, uint64(240e8)));
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.LimitNotMet.selector, PRICE, uint64(245e8)));
         router.executeIntent(i, sig);
 
-        _setPrice(240e8); // pool still at ~250 -> within 5% band
+        _setPrice(245e8); // pool still at ~250 -> within band
         vm.prank(keeper);
         uint256 out = router.executeIntent(i, sig);
         assertGt(out, 0);
@@ -48,7 +48,6 @@ contract IntentsTest is Base {
         FeeRouter.Intent memory i = _intent(1e18, 260e8, 0, 1, 2);
         i.tokenIn = address(tsla);
         i.tokenOut = address(usdg);
-        i.maxOracleDevBps = 0;
         bytes memory sig = _sign(alicePk, router.hashIntent(i));
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(FeeRouter.LimitNotMet.selector, PRICE, uint64(260e8)));
@@ -95,9 +94,7 @@ contract IntentsTest is Base {
         vm.expectRevert(FeeRouter.NotKeeper.selector);
         router.executeIntent(i, sig);
 
-        vm.prank(owner);
-        router.setPermissionlessExecution(true);
-        vm.prank(bob);
+        vm.prank(keeper);
         router.executeIntent(i, sig);
 
         FeeRouter.Intent memory j = _intent(100e6, 0, 0, 1, 6);
@@ -135,7 +132,7 @@ contract IntentsTest is Base {
         tsla.setFrozen(alice, true);
         uint256 bal = usdg.balanceOf(alice);
         vm.prank(keeper);
-        vm.expectRevert(abi.encodeWithSelector(TokenChecks.AccountFrozen.selector, address(tsla), alice));
+        vm.expectPartialRevert(TokenTransfers.TransferBlocked.selector);
         router.executeIntent(i, sig);
         assertEq(usdg.balanceOf(alice), bal);
         assertEq(router.execCount(router.hashIntent(i)), 0);
@@ -149,8 +146,9 @@ contract IntentsTest is Base {
         bytes memory sig = _sign(alicePk, router.hashIntent(i));
         tsla.setPaused(true);
         vm.prank(keeper);
-        vm.expectRevert(abi.encodeWithSelector(TokenChecks.TokenPaused.selector, address(tsla)));
+        vm.expectPartialRevert(FeeRouter.AdapterSwapFailed.selector);
         router.executeIntent(i, sig);
+        assertEq(router.execCount(router.hashIntent(i)), 0);
     }
 
     function test_crossChainReplay_domainBindsChainId() public {
@@ -158,5 +156,68 @@ contract IntentsTest is Base {
         bytes32 h1 = router.hashIntent(i);
         vm.chainId(46630);
         assertTrue(router.hashIntent(i) != h1);
+    }
+
+    function test_dca_noCatchUp_skipsMissedIntervals() public {
+        FeeRouter.Intent memory i = _intent(100e6, 0, 1 days, 10, 20);
+        bytes memory sig = _sign(alicePk, router.hashIntent(i));
+        bytes32 h = router.hashIntent(i);
+        vm.prank(keeper);
+        router.executeIntent(i, sig); // slice 1 at t0
+        // keeper is down for 3.5 days
+        vm.warp(i.startTime + 3 days + 12 hours);
+        _setPrice(PRICE);
+        vm.prank(keeper);
+        router.executeIntent(i, sig); // only ONE slice runs
+        (uint16 execs, uint40 nextAt) = router.intentState(h);
+        assertEq(execs, 2);
+        assertEq(nextAt, i.startTime + 4 days); // next future boundary
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.NotYet.selector, uint256(i.startTime) + 4 days));
+        router.executeIntent(i, sig); // no back-to-back catch-up
+        vm.warp(i.startTime + 4 days);
+        _setPrice(PRICE);
+        vm.prank(keeper);
+        router.executeIntent(i, sig);
+        (execs, nextAt) = router.intentState(h);
+        assertEq(execs, 3);
+        assertEq(nextAt, i.startTime + 5 days);
+    }
+
+    function test_onlySingleKeeper() public {
+        FeeRouter.Intent memory i = _intent(100e6, 0, 0, 1, 21);
+        bytes memory sig = _sign(alicePk, router.hashIntent(i));
+        address newKeeper = makeAddr("kmsKeeper2");
+        vm.prank(owner);
+        router.setKeeper(newKeeper);
+        vm.prank(keeper);
+        vm.expectRevert(FeeRouter.NotKeeper.selector);
+        router.executeIntent(i, sig);
+        vm.prank(newKeeper);
+        router.executeIntent(i, sig);
+    }
+
+    // ---- H-1(c) / L-1
+    function test_intent_requiresDevBpsInRange_andMinOut() public {
+        uint16[3] memory bad = [uint16(0), uint16(301), uint16(10_001)];
+        for (uint256 k; k < 3; k++) {
+            FeeRouter.Intent memory i = _intent(100e6, 0, 0, 1, 100 + k);
+            i.maxOracleDevBps = bad[k];
+            bytes memory sig = _sign(alicePk, router.hashIntent(i));
+            vm.prank(keeper);
+            vm.expectRevert(FeeRouter.InvalidIntent.selector);
+            router.executeIntent(i, sig);
+        }
+        FeeRouter.Intent memory j = _intent(100e6, 0, 0, 1, 200);
+        j.minOutPerExec = 0;
+        bytes memory sj = _sign(alicePk, router.hashIntent(j));
+        vm.prank(keeper);
+        vm.expectRevert(FeeRouter.ZeroMinOut.selector);
+        router.executeIntent(j, sj);
+        j.minOutPerExec = 1;
+        j.maxOracleDevBps = 300;
+        sj = _sign(alicePk, router.hashIntent(j));
+        vm.prank(keeper);
+        router.executeIntent(j, sj);
     }
 }

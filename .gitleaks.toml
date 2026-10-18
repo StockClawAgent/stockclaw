@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored test vectors and known non-secrets"
+paths = ['''^lib/''', '''(^|/)out/''', '''(^|/)cache/''']
+# prototype/app.js: KEY is a localStorage key name, not a credential.
+regexTarget = "line"
+regexes = ['''const KEY="stockclaw[^"]*"''']

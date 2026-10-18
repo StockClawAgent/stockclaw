@@ -22,7 +22,7 @@ contract Handler is Test {
     function buy(uint256 amt) external {
         amt = bound(amt, 1e6, 2_000e6);
         vm.prank(trader);
-        try router.swap(FeeRouter.SwapParams(address(pool), address(usdg), address(tsla), amt, 0, trader, block.timestamp)) {
+        try router.swap(FeeRouter.SwapParams(address(pool), address(usdg), address(tsla), amt, 1, trader, block.timestamp)) {
             feesExpected += amt * router.feeBps() / 10_000;
         } catch {}
     }
@@ -30,7 +30,7 @@ contract Handler is Test {
     function sell(uint256 amt) external {
         amt = bound(amt, 1e15, 8e18);
         vm.prank(trader);
-        try router.swap(FeeRouter.SwapParams(address(pool), address(tsla), address(usdg), amt, 0, trader, block.timestamp)) {} catch {}
+        try router.swap(FeeRouter.SwapParams(address(pool), address(tsla), address(usdg), amt, 1, trader, block.timestamp)) {} catch {}
     }
 }
 

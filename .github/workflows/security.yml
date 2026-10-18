@@ -1,0 +1,109 @@
+# StockClaw security CI (threat-model.md SR-38..SR-40, T32, T33). TESTNET ONLY (chain 46630).
+# No secrets or deploy keys are used by any job here (SR-39). Actions are pinned by commit SHA.
+name: security
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: forge + slither
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { submodules: recursive, persist-credentials: false }
+      - name: Detect Foundry layout
+        id: layout
+        run: |
+          if [ -f foundry.toml ]; then
+            SRC=$(sed -nE 's/^[[:space:]]*src[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' foundry.toml | head -1)
+          fi
+          SRC=${SRC:-src}
+          [ -d "$SRC" ] || { echo "::error::Solidity source dir '$SRC' not found"; exit 1; }
+          echo "src=$SRC" >> "$GITHUB_OUTPUT"
+          echo "Foundry src dir: $SRC"
+      - uses: foundry-rs/foundry-toolchain@82dee4ba654bd2146511f85f0d013af94670c4de # v1.4.0
+      - run: forge build --sizes
+      - run: forge test -vvv # fuzz + invariant runs come from foundry.toml
+      - name: Slither (fail on high)
+        uses: crytic/slither-action@4fd765aeef19915d04ddf0be90c2930036a774d8 # v0.4.1
+        with:
+          target: .
+          ignore-compile: true
+          fail-on: high
+          slither-config: slither.config.json
+          sarif: results.sarif
+      - name: Upload SARIF
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@48ab28a6f5dbc2a99bf1e0131198dd8f1df78169 # v3.28.0
+        with: { sarif_file: results.sarif }
+
+  deps:
+    name: dependency scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { submodules: recursive, persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 20 }
+      - name: npm audit (each package with a lockfile)
+        run: |
+          found=0
+          while IFS= read -r lock; do
+            d=$(dirname "$lock"); found=1
+            echo "::group::npm audit $d"; (cd "$d" && npm audit --omit=dev --audit-level=high); echo "::endgroup::"
+          done < <(find . -name package-lock.json -not -path '*/node_modules/*' -not -path './lib/*')
+          [ $found = 1 ] || echo "No package-lock.json yet; npm audit skipped (SR-40: commit lockfiles)."
+      - name: Trivy filesystem scan (lockfiles, submodules)
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+  secrets:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: gitleaks (full history)
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar xz gitleaks
+          ./gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 1
+          ./gitleaks dir . --config .gitleaks.toml --redact --no-banner --exit-code 1
+
+  chain-guard:
+    name: no mainnet chain IDs / RPCs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - name: Fail on mainnet references (testnet is 46630)
+        run: |
+          set -o pipefail
+          # Mainnet chain ID 4663 (not 46630), the word mainnet, or mainnet-looking RPC hosts.
+          PATTERN='(^|[^0-9])4663([^0-9]|$)|mainnet|rpc\.chain\.robinhood\.com|robinhood[_-]?mainnet'
+          hits=$(grep -rnIiE "$PATTERN" . \
+                   --exclude-dir=.git --exclude-dir=lib --exclude-dir=node_modules \
+                   --exclude-dir=out --exclude-dir=cache --exclude-dir=test \
+                   --exclude='*.md' --exclude=security.yml || true)
+          if [ -n "$hits" ]; then
+            echo "::error::Mainnet chain ID or RPC referenced. StockClaw is testnet-only (46630)."
+            echo "$hits"; exit 1
+          fi
+          grep -q 'TESTNET_CHAIN_ID = 46630' script/Deploy.s.sol || { echo "::error::Deploy.s.sol testnet chain guard missing"; exit 1; }
+          echo "OK: no mainnet references."

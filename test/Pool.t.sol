@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import "./Base.t.sol";
-import {PriceOracle as PO} from "../src/oracle/PriceOracle.sol";
 
 contract PoolTest is Base {
     function test_onlyRouter() public {

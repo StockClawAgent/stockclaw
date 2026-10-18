@@ -10,18 +10,23 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {IDexAdapter} from "./interfaces/IDexAdapter.sol";
 import {ISignatureTransfer} from "./interfaces/ISignatureTransfer.sol";
-import {TokenChecks} from "./libraries/TokenChecks.sol";
+import {TokenTransfers} from "./libraries/TokenTransfers.sol";
+import {ITokenComplianceAdapter} from "./interfaces/ITokenComplianceAdapter.sol";
 import {PriceOracle} from "./oracle/PriceOracle.sol";
 import {EligibilityRegistry} from "./EligibilityRegistry.sol";
 
 /// @title StockClaw FeeRouter ("StockClawRouter" in ARCHITECTURE.md)
 /// @notice Fee-wrapping router for USDG <-> stock-token swaps on Robinhood Chain testnet (46630).
-///  - Fee: default 30 bps, owner-settable, hard cap 50 bps; taken from the INPUT token before the
+///  - Fee: default 30 bps, owner-settable in [0, 50] bps (hard cap 50); taken from the INPUT token before the
 ///    swap and sent to `feeTreasury` (a 2-of-3 Safe, constructor param).
 ///  - Inputs pulled by ERC-20 approval or Permit2 SignatureTransfer.
 ///  - EIP-712 signed intents (DCA / limit) with unordered nonces, executed by keepers.
 ///    Signatures validated with SignatureChecker (EOA ecrecover or ERC-1271 smart accounts).
-///  - Every swap enforces: eligibility, adapter allowlist, deadline, oracle-deviation floor, minOut.
+///  - Every swap enforces: eligibility (owner-EOA keyed), market hours, adapter allowlist, deadline,
+///    optional per-token compliance adapter, oracle-deviation floor, minOut.
+///  - Restricted-token reverts (freeze/pause/registry) surface as TokenTransfers.TransferBlocked or
+///    AdapterSwapFailed; the whole tx reverts so no funds are ever left in the router.
+///  - DCA: no catch-up. Missed intervals are skipped; only the next slice runs.
 ///  - Pausable; ReentrancyGuard; router holds no balances between calls.
 contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
@@ -29,6 +34,9 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     uint16 public constant DEFAULT_FEE_BPS = 30;
     uint16 public constant MAX_FEE_BPS = 50;
     uint16 internal constant BPS = 10_000;
+    /// Mandatory oracle floor: output must be >= oracle-implied * (1 - maxSlippageBps). Callers and
+    /// intents may only tighten it.
+    uint16 public constant MAX_SLIPPAGE_CAP_BPS = 300;
 
     bytes32 public constant INTENT_TYPEHASH = keccak256(
         "Intent(address account,address tokenIn,address tokenOut,address adapter,uint128 amountPerExec,uint128 minOutPerExec,uint64 limitPriceE8,uint32 interval,uint16 maxExecs,uint16 maxOracleDevBps,uint40 startTime,uint40 expiry,uint256 nonce)"
@@ -61,19 +69,27 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         uint256 nonce; // unordered; cancel via cancelNonce
     }
 
-    // slot: feeTreasury(20) + feeBps(2) + permissionless(1)
+    /// Per-intent execution state, one slot.
+    struct IntentState {
+        uint16 execs; // slices actually executed
+        uint40 nextExecAt; // 0 => startTime
+    }
+
+    // slot: feeTreasury(20) + feeBps(2) + maxSlippageBps(2)
     address public feeTreasury;
     uint16 public feeBps;
-    bool public permissionlessExecution;
+    uint16 public maxSlippageBps = MAX_SLIPPAGE_CAP_BPS;
+    /// Single keeper (key held in cloud KMS, execute-only, no custody).
+    address public keeper;
 
     ISignatureTransfer public immutable permit2;
     PriceOracle public immutable oracle;
     EligibilityRegistry public immutable eligibility;
 
     mapping(address => bool) public isAdapter;
-    mapping(address => bool) public isKeeper;
     mapping(address account => mapping(uint256 nonce => bool)) public nonceCancelled;
-    mapping(bytes32 intentHash => uint16) public execCount;
+    mapping(bytes32 intentHash => IntentState) public intentState;
+    mapping(address token => ITokenComplianceAdapter) public complianceAdapter;
 
     event Swapped(
         address indexed account, address indexed recipient, address indexed adapter,
@@ -84,8 +100,9 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     event FeeUpdated(uint16 feeBps);
     event FeeTreasuryUpdated(address treasury);
     event AdapterSet(address adapter, bool allowed);
-    event KeeperSet(address keeper, bool allowed);
-    event PermissionlessSet(bool v);
+    event KeeperSet(address keeper);
+    event MaxSlippageSet(uint16 bps);
+    event ComplianceAdapterSet(address indexed token, address adapter);
 
     error FeeAboveCap(uint16 bps);
     error ZeroAddress();
@@ -103,6 +120,11 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     error NotKeeper();
     error InvalidIntent();
     error PermitMismatch();
+    error MarketClosed();
+    error ZeroMinOut();
+    error SlippageOutOfBounds(uint16 bps);
+    error ComplianceBlocked(address token, address from, address to, bytes32 reason);
+    error AdapterSwapFailed(address adapter, bytes reason);
 
     constructor(
         address owner_,
@@ -138,14 +160,21 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         emit AdapterSet(a, allowed);
     }
 
-    function setKeeper(address k, bool v) external onlyOwner {
-        isKeeper[k] = v;
-        emit KeeperSet(k, v);
+    function setMaxSlippageBps(uint16 bps) external onlyOwner {
+        if (bps == 0 || bps > MAX_SLIPPAGE_CAP_BPS) revert SlippageOutOfBounds(bps);
+        maxSlippageBps = bps;
+        emit MaxSlippageSet(bps);
     }
 
-    function setPermissionlessExecution(bool v) external onlyOwner {
-        permissionlessExecution = v;
-        emit PermissionlessSet(v);
+    function setKeeper(address k) external onlyOwner {
+        keeper = k;
+        emit KeeperSet(k);
+    }
+
+    /// @notice Pluggable per-token compliance pre-check; address(0) = none (default).
+    function setComplianceAdapter(address token, ITokenComplianceAdapter a) external onlyOwner {
+        complianceAdapter[token] = a;
+        emit ComplianceAdapterSet(token, address(a));
     }
 
     function pause() external onlyOwner {
@@ -158,10 +187,14 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
 
     /// @notice Router holds nothing between calls; recovers mistaken transfers only.
     function rescue(address token, address to, uint256 amount) external onlyOwner {
-        IERC20(token).safeTransfer(to, amount);
+        TokenTransfers.transfer(token, to, amount);
     }
 
     // ================================================================ views
+    function execCount(bytes32 h) external view returns (uint16) {
+        return intentState[h].execs;
+    }
+
     function quote(address adapter, address tokenIn, address tokenOut, uint256 amountIn)
         external
         view
@@ -179,19 +212,33 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         return _domainSeparatorV4();
     }
 
-    /// @notice MCP/keeper pre-flight: issuer restrictions + eligibility. Never reverts.
+    /// @notice MCP/keeper pre-flight (never reverts): eligibility, pause, market hours, and the
+    /// optional compliance adapters. Issuer restrictions without an adapter are only detected on execution.
     function precheck(address account, address tokenIn, address tokenOut, uint256 amountIn, address recipient)
         external
         view
         returns (bool ok)
     {
-        return eligibility.isEligible(account) && !paused()
-            && TokenChecks.canTransfer(tokenIn, account, address(this), amountIn)
-            && TokenChecks.canTransfer(tokenOut, address(this), recipient, 0);
+        if (!eligibility.isEligible(account) || paused() || !oracle.isMarketOpen()) return false;
+        if (recipient != account && !eligibility.isEligible(recipient)) return false;
+        return _complianceOk(tokenIn, account, address(this), amountIn)
+            && _complianceOk(tokenIn, address(this), feeTreasury, 0)
+            && _complianceOk(tokenOut, address(this), recipient, 0);
+    }
+
+    function _complianceOk(address token, address from, address to, uint256 amt) internal view returns (bool) {
+        ITokenComplianceAdapter a = complianceAdapter[token];
+        if (address(a) == address(0)) return true;
+        try a.check(token, from, to, amt) returns (bool ok, bytes32) {
+            return ok;
+        } catch {
+            return false;
+        }
     }
 
     // ================================================================ direct swaps
     function swap(SwapParams calldata p) external nonReentrant whenNotPaused returns (uint256) {
+        if (p.minAmountOut == 0) revert ZeroMinOut();
         _validate(msg.sender, p.adapter, p.tokenIn, p.tokenOut, p.amountIn, p.recipient, p.deadline);
         uint256 received = _pullApproved(p.tokenIn, msg.sender, p.amountIn);
         return _swapHeld(msg.sender, p.adapter, p.tokenIn, p.tokenOut, received, p.minAmountOut, p.recipient, 0);
@@ -202,6 +249,7 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         ISignatureTransfer.PermitTransferFrom calldata permit,
         bytes calldata signature
     ) external nonReentrant whenNotPaused returns (uint256) {
+        if (p.minAmountOut == 0) revert ZeroMinOut();
         _validate(msg.sender, p.adapter, p.tokenIn, p.tokenOut, p.amountIn, p.recipient, p.deadline);
         if (permit.permitted.token != p.tokenIn) revert PermitMismatch();
         uint256 before = IERC20(p.tokenIn).balanceOf(address(this));
@@ -219,7 +267,7 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     }
 
     /// @notice Execute one slice of a signed intent. Funds are pulled from `account` by allowance
-    /// (no escrow => nothing can be stranded in this contract). Keeper-only unless permissionless;
+    /// (no escrow => nothing can be stranded in this contract). Keeper-only (single KMS-held keeper);
     /// the account itself may always execute its own intent (used by AgentVault, which enforces caps).
     function executeIntent(Intent calldata i, bytes calldata signature)
         external
@@ -229,19 +277,31 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     {
         bytes32 h = hashIntent(i);
         if (msg.sender != i.account) {
-            if (!permissionlessExecution && !isKeeper[msg.sender]) revert NotKeeper();
+            if (msg.sender != keeper) revert NotKeeper();
             if (!SignatureChecker.isValidSignatureNow(i.account, h, signature)) revert InvalidSignature();
         }
         if (nonceCancelled[i.account][i.nonce]) revert NonceIsCancelled();
-        if (i.maxExecs == 0 || (i.maxExecs > 1 && i.interval == 0)) revert InvalidIntent();
-        uint16 n = execCount[h];
+        if (
+            i.maxExecs == 0 || (i.maxExecs > 1 && i.interval == 0) || i.maxOracleDevBps == 0
+                || i.maxOracleDevBps > MAX_SLIPPAGE_CAP_BPS
+        ) revert InvalidIntent();
+        if (i.minOutPerExec == 0) revert ZeroMinOut();
+        IntentState memory st = intentState[h];
+        uint16 n = st.execs;
         if (n >= i.maxExecs) revert IntentExhausted();
-        uint256 nextAt = uint256(i.startTime) + uint256(n) * i.interval;
+        uint256 nextAt = st.nextExecAt == 0 ? i.startTime : st.nextExecAt;
         if (block.timestamp < nextAt) revert NotYet(nextAt);
         _validate(i.account, i.adapter, i.tokenIn, i.tokenOut, i.amountPerExec, i.account, i.expiry);
         _checkLimit(i);
 
-        execCount[h] = n + 1; // effects before interactions
+        // Effects before interactions. No catch-up: advance to the first interval boundary strictly
+        // in the future, so missed slices are skipped rather than executed back-to-back.
+        uint256 nextBoundary = type(uint40).max;
+        if (i.interval != 0) {
+            uint256 elapsed = (block.timestamp - i.startTime) / i.interval;
+            nextBoundary = uint256(i.startTime) + (elapsed + 1) * i.interval;
+        }
+        intentState[h] = IntentState(n + 1, uint40(nextBoundary));
 
         uint256 received = _pullApproved(i.tokenIn, i.account, i.amountPerExec);
         amountOut =
@@ -276,18 +336,27 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         if (tokenIn == tokenOut) revert SameToken();
         if (!isAdapter[adapter]) revert AdapterNotAllowed(adapter);
         if (!eligibility.isEligible(account)) revert NotEligible(account);
-        // Issuer pre-flight (freeze / pause / registry) -> clean custom errors.
-        TokenChecks.requireTransferable(tokenIn, account, address(this), amountIn);
-        TokenChecks.requireTransferable(tokenOut, address(this), recipient, 0);
+        if (recipient != account && !eligibility.isEligible(recipient)) revert NotEligible(recipient);
+        if (!oracle.isMarketOpen()) revert MarketClosed();
+        _requireCompliance(tokenIn, account, address(this), amountIn);
+        _requireCompliance(tokenIn, address(this), feeTreasury, 0);
+        _requireCompliance(tokenOut, address(this), recipient, 0);
+    }
+
+    function _requireCompliance(address token, address from, address to, uint256 amt) internal view {
+        ITokenComplianceAdapter a = complianceAdapter[token];
+        if (address(a) == address(0)) return;
+        (bool ok, bytes32 reason) = a.check(token, from, to, amt);
+        if (!ok) revert ComplianceBlocked(token, from, to, reason);
     }
 
     function _pullApproved(address token, address from, uint256 amount) internal returns (uint256) {
         uint256 before = IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransferFrom(from, address(this), amount);
+        TokenTransfers.transferFrom(token, from, address(this), amount);
         return IERC20(token).balanceOf(address(this)) - before;
     }
 
-    /// @param oracleDevBps if non-zero, enforce output >= oracle-implied * (1 - dev).
+    /// @param oracleDevBps optional tighter oracle deviation (0 = protocol default maxSlippageBps).
     function _swapHeld(
         address account,
         address adapter,
@@ -300,19 +369,29 @@ contract FeeRouter is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     ) internal returns (uint256 amountOut) {
         uint256 fee = received * feeBps / BPS;
         uint256 toSwap = received - fee;
-        if (fee != 0) IERC20(tokenIn).safeTransfer(feeTreasury, fee);
+        if (fee != 0) TokenTransfers.transfer(tokenIn, feeTreasury, fee);
 
-        if (oracleDevBps != 0) {
-            uint256 floor = oracle.convert(tokenIn, tokenOut, toSwap) * (BPS - oracleDevBps) / BPS;
+        {
+            uint16 dev = maxSlippageBps;
+            if (oracleDevBps != 0 && oracleDevBps < dev) dev = oracleDevBps; // may only tighten
+            uint256 floor = oracle.convert(tokenIn, tokenOut, toSwap) * (BPS - dev) / BPS;
             if (floor > minOut) minOut = floor;
         }
 
+        // Balance-delta measurement around the adapter call is intentional (defensive vs. adapters that
+        // misreport). Safe: every external entry point is nonReentrant, adapters are owner-allowlisted,
+        // and the router holds no balances between calls (invariant-tested).
+        // slither-disable-next-line reentrancy-balance
         uint256 outBefore = IERC20(tokenOut).balanceOf(address(this));
-        IERC20(tokenIn).safeTransfer(adapter, toSwap);
-        IDexAdapter(adapter).swap(tokenIn, tokenOut, toSwap, minOut, address(this));
+        TokenTransfers.transfer(tokenIn, adapter, toSwap);
+        try IDexAdapter(adapter).swap(tokenIn, tokenOut, toSwap, minOut, address(this)) {}
+        catch (bytes memory reason) {
+            revert AdapterSwapFailed(adapter, reason);
+        }
+        // slither-disable-next-line reentrancy-balance
         amountOut = IERC20(tokenOut).balanceOf(address(this)) - outBefore;
         if (amountOut < minOut) revert InsufficientOutput(amountOut, minOut);
-        IERC20(tokenOut).safeTransfer(recipient, amountOut);
+        TokenTransfers.transfer(tokenOut, recipient, amountOut);
         emit Swapped(account, recipient, adapter, tokenIn, tokenOut, received, amountOut, fee);
     }
 }

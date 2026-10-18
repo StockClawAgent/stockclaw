@@ -13,7 +13,8 @@ contract AgentVaultTest is Base {
         super.setUp();
         agent = vm.addr(agentPk);
         vault = new AgentVault(alice, router); // owner = user EOA
-        _eligible(address(vault));
+        vm.prank(alice);
+        reg.linkAccount(address(vault)); // vault inherits alice's (owner EOA) eligibility
         vm.prank(owner);
         usdg.mint(address(vault), 10_000e6);
         tsla.mint(address(vault), 10e18);
@@ -34,7 +35,7 @@ contract AgentVaultTest is Base {
     }
 
     function test_defaults() public view {
-        (uint128 perTrade, uint40 exp, bool active, uint128 perDay,,) = vault.policies(agent);
+        (uint128 perTrade, uint40 exp, bool active, uint128 perDay) = vault.policies(agent);
         assertEq(perTrade, 100e6);
         assertEq(perDay, 500e6);
         assertTrue(active);
@@ -98,16 +99,108 @@ contract AgentVaultTest is Base {
         _buy(50e6); // exactly to 500 still ok
     }
 
-    function test_daily_resetsAtUtcMidnight() public {
-        _allowBoth();
+    function _spend500() internal {
         for (uint256 k; k < 5; k++) _buy(100e6);
-        uint256 nextDay = (block.timestamp / 1 days + 1) * 1 days;
-        vm.warp(nextDay - 1);
+    }
+
+    function _warpTo(uint256 t) internal {
+        vm.warp(t);
         _setPrice(PRICE);
+    }
+
+    function test_rolling_acrossMidnight_cappedAt500() public {
+        _allowBoth();
+        uint256 midnight = (block.timestamp / 1 days + 1) * 1 days;
+        _warpTo(midnight - 30 minutes); // 23:30 UTC
+        _spend500();
+        _warpTo(midnight + 1 hours); // 01:00 next calendar day: old fixed-day design would allow $500 more
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.DailyCapExceeded.selector, 500e6 + 1, 500e6));
+        _buy(1);
+        (uint256 left,) = vault.remainingToday(agent);
+        assertEq(left, 0);
+    }
+
+    function test_rolling_releaseBoundary() public {
+        _allowBoth();
+        uint256 hourStart = (block.timestamp / 1 hours + 1) * 1 hours;
+        _warpTo(hourStart + 30 minutes); // spend at H:30
+        _spend500();
+        _warpTo(hourStart + 24 hours); // exactly ~23.5h later: still counted
         vm.expectRevert();
         _buy(1);
-        vm.warp(nextDay);
+        _warpTo(hourStart + 25 hours - 1); // last second of bucket window (24h59m59s after bucket start)
+        vm.expectRevert();
+        _buy(1);
+        _warpTo(hourStart + 25 hours); // bucket expired (24.5h after spend)
+        assertEq(vault.spentLast24h(agent), 0);
+        _spend500();
+    }
+
+    function test_rolling_partialRelease() public {
+        _allowBoth();
+        uint256 h0 = (block.timestamp / 1 hours + 1) * 1 hours;
+        _warpTo(h0);
         _buy(100e6);
+        _buy(100e6); // $200 at hour 0
+        _warpTo(h0 + 10 hours);
+        _buy(100e6);
+        _buy(100e6);
+        _buy(100e6); // $300 at hour 10 -> $500 total
+        _warpTo(h0 + 25 hours); // hour-0 bucket expired, hour-10 still in window
+        assertEq(vault.spentLast24h(agent), 300e6);
+        _buy(100e6);
+        _buy(100e6);
+        vm.expectRevert(abi.encodeWithSelector(AgentVault.DailyCapExceeded.selector, 500e6 + 1, 500e6));
+        _buy(1);
+    }
+
+    function test_rolling_ringReuseResetsStaleBucket() public {
+        _allowBoth();
+        uint256 h0 = (block.timestamp / 1 hours + 1) * 1 hours;
+        _warpTo(h0);
+        _spend500();
+        _warpTo(h0 + 25 hours); // same ring index (25 % 25 == 0) -> must not add stale 500
+        _spend500();
+        assertEq(vault.spentLast24h(agent), 500e6);
+    }
+
+    // ---------------- eligibility inherited from owner EOA
+    function test_eligibility_vaultInheritsOwner() public {
+        assertTrue(reg.isEligible(address(vault)));
+        assertEq(reg.eligibleUntil(address(vault)), 0); // not set directly
+        vm.prank(attester);
+        reg.revoke(alice); // owner loses eligibility -> vault too
+        assertFalse(reg.isEligible(address(vault)));
+        _allowBoth();
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.NotEligible.selector, address(vault)));
+        vault.agentSwap(address(pool), address(usdg), address(tsla), 1e6, 0, block.timestamp + 60);
+    }
+
+    function test_eligibility_ownershipTransferBreaksLink() public {
+        vm.prank(alice);
+        vault.transferOwnership(bob);
+        vm.prank(bob);
+        vault.acceptOwnership();
+        assertFalse(reg.isEligible(address(vault))); // bob never attested
+    }
+
+    function test_eligibility_onlyEligibleOwnerCanLink() public {
+        AgentVault v2 = new AgentVault(bob, router);
+        vm.prank(bob);
+        vm.expectRevert(EligibilityRegistry.OwnerNotEligible.selector);
+        reg.linkAccount(address(v2));
+        vm.prank(alice); // eligible, but not the owner
+        vm.expectRevert(EligibilityRegistry.NotAccountOwner.selector);
+        reg.linkAccount(address(v2));
+    }
+
+    function test_marketClosed_vaultHalts() public {
+        _allowBoth();
+        vm.prank(owner);
+        oracle.setMarketMode(PriceOracle.MarketMode.Closed);
+        vm.expectRevert(PriceOracle.MarketClosed.selector);
+        _buy(1e6); // USDG valuation is fine, but stock leg halts at router
     }
 
     // ---------------- expiry / revoke / owner controls
@@ -177,7 +270,7 @@ contract AgentVaultTest is Base {
             tokenOut: address(tsla),
             adapter: address(pool),
             amountPerExec: 100e6,
-            minOutPerExec: 0,
+            minOutPerExec: 1,
             limitPriceE8: 0,
             interval: 1 hours,
             maxExecs: 10,
@@ -213,6 +306,15 @@ contract AgentVaultTest is Base {
         vm.prank(keeper);
         vm.expectRevert(FeeRouter.InvalidSignature.selector);
         router.executeIntent(i, sig);
+    }
+
+    function test_vaultIntent_onlyKeeper() public {
+        _allowBoth();
+        FeeRouter.Intent memory i = _vaultIntent(5);
+        bytes memory sig = _sign(agentPk, router.hashIntent(i));
+        vm.prank(bob);
+        vm.expectRevert(AgentVault.NotKeeper.selector);
+        vault.executeIntent(i, sig);
     }
 
     function test_vaultIntent_nonAgentSigRejected() public {
