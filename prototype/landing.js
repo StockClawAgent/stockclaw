@@ -60,7 +60,7 @@ function Landing(){return `<div class="lp">
 <header class="lp-nav"><a class="lp-logo sc-logo" href="#/" aria-label="StockClaw home">${SCLogo()}</a>
 <nav aria-label="Main"><a href="#lp-how">How it works</a><a href="#lp-safety">Safety</a><a href="#lp-faq">FAQ</a><a class="lp-pill" href="#/onboarding/eligibility">Try the demo</a></nav></header>
 <section class="lp-hero" aria-labelledby="lp-h1">
-<picture class="lp-h3d"><source type="image/webp" srcset="logo3d/blob-3d-256.webp 256w, logo3d/blob-3d-512.webp 512w, logo3d/blob-3d-1024.webp 1024w" sizes="(max-width:600px) 220px, 320px"><img src="logo3d/blob-3d-512.png" width="320" height="227" alt="" fetchpriority="high" onerror="this.onerror=null;var s=this.parentNode.querySelector('source');if(s)s.remove();this.src='logo3d/blob-mark-transparent.svg'"></picture>
+<div class="lp-h3d" data-bot><picture><source type="image/webp" srcset="logo3d/blob-3d-eyeless-256.webp 256w, logo3d/blob-3d-eyeless-512.webp 512w, logo3d/blob-3d-eyeless-1024.webp 1024w" sizes="(max-width:600px) 220px, 320px"><img src="logo3d/blob-3d-eyeless-512.png" width="320" height="227" alt="StockClaw mascot" fetchpriority="high" onerror="this.onerror=null;var p=this.closest('.lp-h3d');p.querySelectorAll('.lp-eye,source').forEach(function(n){n.remove()});p.classList.add('lp-h3d-flat');this.src='logo3d/blob-mark-transparent.svg'"></picture><span class="lp-eye lp-h3e" aria-hidden="true" style="left:34.46%;top:64.78%;width:8.68%;height:13.78%"></span><span class="lp-eye lp-h3e" aria-hidden="true" style="left:59.15%;top:64.78%;width:8.68%;height:13.78%"></span></div>
 <h1 id="lp-h1">Your agent trades<br>tokenized stocks.<br><em>You set the limits.</em></h1>
 <p class="lp-sub">Pick an AI agent, connect your own AI, and let it trade tokenized stocks on Robinhood Chain within limits you set.</p>
 <p class="lp-chips" aria-label="Tradeable on testnet">${["PLTR","NFLX","AMD","AMZN","TSLA"].map(t=>`<span class="lp-chip">${t}</span>`).join("")}${BADGE}</p>
@@ -85,7 +85,7 @@ ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join
 </div>`}
 function LandingBind(){const f=document.getElementById("lp-form");if(!f)return;f.onsubmit=e=>{e.preventDefault();const i=f.querySelector("input"),m=document.getElementById("lp-msg");if(!i.checkValidity()){i.setAttribute("aria-invalid","true");m.textContent="Enter a valid email address.";i.focus();return}i.removeAttribute("aria-invalid");m.textContent="You're on the waitlist (mock, nothing is sent).";f.querySelector("button").disabled=true}}
 function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.body.classList.toggle("is-landing",!(p in R)||p==="/")}
-R["/"]=[Landing,()=>{LandingBind();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
+R["/"]=[Landing,()=>{LandingBind();(()=>{const h=document.querySelector(".lp-h3d");if(h&&"IntersectionObserver" in window)new IntersectionObserver(es=>h.classList.toggle("lp-h3-off",!es[0].isIntersecting)).observe(h)})();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
 addEventListener("hashchange",mark);mark();render();
 // Shared with dashboard/basketfill: basket data + fixed ticker colors.
 window.SCBaskets={get data(){return BK},col:s=>col(s),has:s=>s in TCOL};

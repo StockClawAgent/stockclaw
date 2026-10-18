@@ -153,7 +153,15 @@ html{scroll-padding-top:72px}.lp [id]{scroll-margin-top:72px}body.is-landing .tn
 .sc-logo img{display:block}
 .lp-logo.sc-logo img.sc-l3b,.sc-logo .sc-l3b{height:24px;width:34px;object-fit:contain}
 .lp-logo.sc-logo img.sc-lw,.sc-logo .sc-lw{height:24px;width:auto}
-.lp-h3d{display:block;margin:0 auto 18px;width:320px;max-width:70vw}
+.lp-h3d{position:relative;display:block;margin:0 auto 18px;width:320px;max-width:70vw;aspect-ratio:634/450;transform-origin:50% 100%;animation:lph3bob 4.6s ease-in-out infinite}
 .lp-h3d img{display:block;width:100%;height:auto;filter:drop-shadow(0 18px 40px rgba(198,255,61,.12))}
+.lp-h3d .lp-h3e{border-radius:50%/50%;box-shadow:0 1px 2px rgba(0,0,0,.28),inset -2px -3px 4px rgba(150,150,160,.35)}
+.lp.lp-off .lp-h3d{animation-play-state:paused}
+@keyframes lph3bob{0%,100%{transform:translateY(0) scale(1,1)}45%{transform:translateY(-2.5px) scale(.992,1.015)}55%{transform:translateY(-2.5px) scale(.992,1.015)}}
+@media (prefers-reduced-motion:reduce){.lp-h3d{animation:none}}
 @media(max-width:600px){.lp-h3d{width:220px}}
 .lp-fam-meet{margin:8px auto 20px}
+.lp-h3d.blink .lp-eye{transform:translate(-50%,-50%) translate(var(--ex,0),var(--ey,0)) scaleY(.12);transition:transform 60ms}
+.lp-h3d.lp-h3-off{animation-play-state:paused}
+.lp-h3d-flat{aspect-ratio:auto;animation:none}
+@media (prefers-reduced-motion:reduce){.lp-h3d.blink .lp-eye{transform:translate(-50%,-50%)}}
