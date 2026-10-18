@@ -54,9 +54,9 @@ Ladder of buy-limit intents at pre-set drawdowns from a reference price, each pa
 ```
 Rules: buy rung k limit = ref × (1 − drop_k); on fill the keeper (server, agent key) signs a sell limit at fillPrice × (1 + TP) for the received amount × sellFraction. Expiry ≤ 7 days matches the session-key expiry. `high_7d_keeper` needs price history from the keeper's push log; demo uses `oracle_at_start`. Several rungs firing in one crash are bounded by $500/24h; the later ones revert `over cap` and show as "blocked by limit".
 
-### S3 EMA/VWAP Flip — `ema-vwap-flip@0.1.0` · fully deterministic, keeper-run · post-demo (replaces Momentum Rider, Julius via Cassius 2026-10-18)
+### S3 Trend Flip (9 EMA / VWAP) — `ema-vwap-flip@0.1.0` · fully deterministic, keeper-run · post-demo (replaces Momentum Rider, Julius via Cassius 2026-10-18)
 Avatar slot unchanged: teal goggles blob, `avatars/glossy-momentum-rider.png`.
-**Name options:** **Flip Rider (recommended**, keeps the avatar's "rider" identity and says what it does), Cross Pilot, Trend Flip. Copy avoids "momentum" promises (see §9).
+**Name:** **Trend Flip** (decided by Julius 2026-10-18). Keeps the teal goggles avatar slot. Copy avoids "momentum" promises (see §9).
 
 **Rules (1-min candles, one symbol, long-or-flat, USDG ↔ stock):**
 - EMA9 on 1-min closes (α = 2/10). Session VWAP = Σ(typical price × volume) / Σ volume, reset at session open (13:30 UTC; keeper calendar handles DST/holidays, same source as the contract market schedule). Signals start only after ≥ 9 closed candles in the session (EMA warm-up).
@@ -143,7 +143,7 @@ Order statuses follow the enum agreed with Flavius: open/paused/filled/cancelled
 
 ## 6. Contract changes (Quintus)
 - **Friday: none.** S1 uses DCA intents; S2 uses buy-limit and sell-limit intents (both directions already in `_checkLimit`). Pinning is server-side + event log.
-- **S3 EMA/VWAP Flip: no contract change** (exits are keeper-timed one-shot intents). Open question: do sells count toward the $500 cap (see S3).
+- **S3 Trend Flip (9 EMA / VWAP): no contract change** (exits are keeper-timed one-shot intents). Open question: do sells count toward the $500 cap (see S3).
 - **Only if a resting stop-loss is wanted later: add a stop direction.** Option 1 (preferred): new field `stopPriceE8` in `Intent` (sell fires when oracle ≤ stop; mutually exclusive with `limitPriceE8`) — changes `INTENT_TYPEHASH`, so a version bump and re-sign of open intents. Trailing = keeper/server re-signs a higher stop and cancels the old nonce as price rises (the agent key is server-held, so no user action). Guard: stop sells still need the oracle floor, so in a gap the sell can revert; accept and surface "stop not filled, retrying" (keeper retries each tick until expiry). Option 2: a separate `StopIntent` typehash to leave existing intents untouched.
 - Optional: `bytes32 strategyHash` in the intent (or an event `StrategyTagged`) for onchain attribution. Nice-to-have, not needed for safety.
 
@@ -195,5 +195,5 @@ Position strategies as **tools the user configures and controls**, not recommend
 ## 13. Decisions needed
 1. **[DECISION]** Weekend Edge: redefine as Monday Open Planner (A, recommended), queue-at-open (B), or drop (C).
 2. **[DECISION]** One active strategy per vault for v1 (recommended) vs several sharing the $500 cap.
-3. **[DECISION]** S3 is now EMA/VWAP Flip (decided). Open: name (Flip Rider recommended); sells vs $500 cap (Quintus); candle/volume data source.
+3. **[DECISION]** S3 is now Trend Flip (9 EMA / VWAP) (decided). Name: Trend Flip (decided). Open: sells vs $500 cap (Quintus); candle/volume data source.
 4. Basket composition is limited to the 5 testnet tokens; "mag-7/SPY-style" naming should not appear in the UI until those assets exist.
