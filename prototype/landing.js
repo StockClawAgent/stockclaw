@@ -56,7 +56,7 @@ function baskets(){const ph=!BK||BK.status==="placeholder";const tag='<span clas
 <p class="lp-fine"><span class="lp-tip" tabindex="0" aria-describedby="lp-tipt">Market-cap weighted<span role="tooltip" id="lp-tipt">${esc(tip)}</span></span> · Baskets are not ETFs or funds. Not investment advice. Stock tokens can be frozen or restricted by their issuer; a frozen token can't be sold.</p></section>`}
 const esc=(v)=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function Landing(){return `<div class="lp">
-<header class="lp-nav"><a class="lp-logo" href="#/"><img src="logo-lockup.svg" width="110" height="28" alt="StockClaw home"></a>
+<header class="lp-nav"><a class="lp-logo" href="#/"><img src="logo-lockup.svg?v=2" width="136" height="28" alt="StockClaw home"></a>
 <nav aria-label="Main"><a href="#lp-how">How it works</a><a href="#lp-safety">Safety</a><a href="#lp-faq">FAQ</a><a class="lp-pill" href="#/onboarding/eligibility">Try the demo</a></nav></header>
 <section class="lp-hero" aria-labelledby="lp-h1">
 ${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104],["steady-stacker","Steady Stacker",128],["trend-flip","Trend Flip",104],["weekend-edge",WE_NAME,84]];return `<div class="lp-fam" role="img" aria-label="The five StockClaw agents: ${F.map(f=>f[1]).join(", ")}">${F.map(([id,n,z],i)=>`<div class="lp-fm lp-fm${i}" aria-hidden="true">${window.SCEyes?SCEyes.html(id,"",z):`<img src="avatars/final-${id}-transparent.png" width="${z}" height="${z}" alt="">`}</div>`).join("")}</div>`})()}

@@ -56,5 +56,5 @@ button.sec,.btn.sec{background:#fff;color:var(--sc-ink)}button.danger{background
 .badge{background:var(--sc-lime);border-color:var(--sc-ink);color:var(--sc-ink)}
 .steps .on,.tabs a[aria-current=page]{background:var(--sc-ink);color:var(--sc-lime)}
 .chip2{background:var(--sc-lime);color:var(--sc-ink)}
-.logo{display:inline-block;width:132px;height:40px;background:var(--sc-ink) url(logo-lockup.svg) no-repeat center/104px auto;border-radius:8px;color:transparent!important;overflow:hidden;white-space:nowrap}
+.logo{display:inline-block;width:132px;height:40px;background:var(--sc-ink) url(logo-lockup.svg?v=2) no-repeat center/104px auto;border-radius:8px;color:transparent!important;overflow:hidden;white-space:nowrap}
 .tnbar .linkbtn{background:none;border:0;padding:0;color:inherit}
