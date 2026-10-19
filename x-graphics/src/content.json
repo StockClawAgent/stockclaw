@@ -1,0 +1,30 @@
+{
+  "handle": "@stockclaw_rh",
+  "agents": [
+    {"id":"steady-stacker","name":"Steady Stacker","role":"Buys on your schedule.","status":"In Friday's demo"},
+    {"id":"dip-hunter","name":"Dip Hunter","role":"Buys the dips you define.","status":"In Friday's demo"},
+    {"id":"trend-flip","name":"Trend Flip","role":"Rides the trend. Steps aside when it turns.","status":"Coming soon"},
+    {"id":"ai-thematic","name":"AI Thematic","role":"Your AI reads the news and rebalances, inside your limits.","status":"Coming soon"},
+    {"id":"weekend-edge","name":"Weekend Edge","role":"Queues limit orders over the weekend for the Monday open.","status":"Coming soon"}
+  ],
+  "basketLines": {"ai":"The companies building and running AI.","chips":"Chipmakers and the tools that make chips.","power-nuclear":"Power for the data-center build-out.","defense":"Defense and aerospace contractors.","space":"Rockets, satellites and space networks.","quantum":"Early quantum computing companies.","cyber":"Security software companies."},
+  "basketAvatar": {"power-nuclear":"power"},
+  "steps": [
+    {"n":"1","h":"Pick an agent","p":"Five strategies, each with one clear job."},
+    {"n":"2","h":"Bring your AI","p":"Claude, ChatGPT, Grok or Cursor, over MCP."},
+    {"n":"3","h":"Set your limits","p":"$100 a trade. $500 of buys a day. Revoke in one tap."}
+  ],
+  "countdown": [
+    {"id":"master","big":"Fri 10/23","kicker":"Live demo","sub":"11 AM ET"},
+    {"id":"3d","big":"3 days","kicker":"Demo Friday 10/23","sub":"11 AM ET"},
+    {"id":"2d","big":"2 days","kicker":"Demo Friday 10/23","sub":"11 AM ET"},
+    {"id":"1d","big":"Tomorrow","kicker":"Demo Friday 10/23","sub":"11 AM ET"},
+    {"id":"today","big":"Today","kicker":"Live demo","sub":"11 AM ET"}
+  ],
+  "showcase": [
+    {"id":"browser","h":"Friday, <em>on any screen.</em>"},
+    {"id":"flow","h":"From pick to trade in four screens."},
+    {"id":"basket","h":"Buy a basket.<br><em>Watch it fill.</em>","shot":"x-basket.png","p":"Each slice is its own trade, $100 or less."},
+    {"id":"approve","h":"Big sells<br><em>wait for you.</em>","shot":"x-approve.png","p":"Agent sells over $500 in 24h need your approval."}
+  ]
+}
