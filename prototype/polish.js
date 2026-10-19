@@ -25,7 +25,10 @@ function after(){const r=route(),changed=r!==prevRoute,main=document.getElementB
  if(changed&&steps){const h=main.querySelector(".dx-ob h1");if(h){h.tabIndex=-1;h.focus({preventScroll:true})}}
  // sticky primary on mobile flows: onboarding steps + basket fill page
  document.querySelectorAll(".sc-dock").forEach(x=>x.classList.remove("sc-dock"));
- const flow=main.querySelector(".dx-ob")||(r=="/dashboard/basket"?main:null);const pb=flow&&[...flow.querySelectorAll(".dx-primary")].find(x=>!x.closest(".st,.apr,[hidden]"));
+ const flow=main.querySelector(".dx-ob")||(r=="/dashboard/basket"?main:null);const ok=x=>!x.closest(".st,.apr,[hidden],details");main.querySelectorAll(".sc-prom").forEach(x=>x.classList.remove("dx-primary","sc-prom"));
+ let pb=flow&&[...flow.querySelectorAll(".dx-primary")].find(ok);
+ // legacy steps (app.js) use plain buttons: promote the step's main action so every screen has one consistent primary
+ if(flow&&!pb){pb=[...flow.querySelectorAll("a.btn")].find(ok)||[...flow.querySelectorAll("form button:not([type=button]),button#oa")].find(ok);pb&&pb.classList.add("dx-primary","sc-prom")}
  if(pb)pb.classList.add("sc-dock");document.body.classList.toggle("sc-has-dock",!!pb);
  main.querySelectorAll(".dx-big").forEach((el,i)=>tick(el,r+"#"+i));
  if(changed){prevRoute=r;prevStep=idx}else if(idx>=0)prevStep=idx}

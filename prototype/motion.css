@@ -77,4 +77,12 @@ input[type=checkbox]{accent-color:#C6FF3D}
 .sc-num{font-variant-numeric:tabular-nums}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:1ms!important;animation-iteration-count:1!important;transition-duration:1ms!important;scroll-behavior:auto!important}
  .sk::after{animation:none!important;transform:none;opacity:.4}.lv{animation:none!important}}
-.dx-ob h1[tabindex="-1"]:focus{outline:none}
+.dx-ob h1[tabindex="-1"]:focus,.dx-ob h1[tabindex="-1"]:focus-visible{outline:none!important}
+@media (pointer:coarse),(max-width:600px){main button:not(.sk),.lp-btn,.lp-ghost,.lp-bk-tabs button,summary,.dx-bkgo button{min-height:44px}
+ main button:not(.sk),.lp-btn,.lp-ghost{display:inline-flex;align-items:center;justify-content:center}
+ summary{display:flex;align-items:center}
+ .sc-logo{min-height:44px;align-items:center!important}
+ .st a,.dx-hero p a{display:inline-block;padding:12px 2px;margin:-12px 0}}
+@media (pointer:coarse),(max-width:600px){.af-tx{display:inline-block;padding:12px 4px;margin:-12px 0}}
+/* one primary per screen: other buttons in flows read as secondary */
+body.sc-app .dx-ob form button:not(.dx-primary),body.sc-app .dx-ob button#oa:not(.dx-primary){background:transparent!important;color:#ecebe8!important;border:1px solid #3a3a3f!important;border-radius:var(--r-pill)}
