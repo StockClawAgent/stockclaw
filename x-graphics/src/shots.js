@@ -20,6 +20,8 @@ const clean=()=>{const tw=document.createTreeWalker(document.body,NodeFilter.SHO
  await pg.evaluate(()=>location.hash="#/dashboard/overview");await w(2500);
  await pg.evaluate(()=>{const a=document.getElementById("bkAmt");a.value=250;a.dispatchEvent(new Event("input",{bubbles:true}))});await w(200);
  await tap("#bkGo");await w(6500);await pg.evaluate(()=>scrollTo(0,0));await shot("x-basket.png");await w(6000);
- await dock();await w(2500);await pg.screenshot({path:"/tmp/homefull.png",fullPage:true});await pg.evaluate(()=>{const h=[...document.querySelectorAll("h2,h3")].find(e=>e.textContent.trim()=="Limits");scrollTo(0,h.getBoundingClientRect().top+scrollY-40)});await w(500);await shot("x-home.png");
+ await dock();await w(2500);await pg.screenshot({path:"/tmp/homefull.png",fullPage:true});await pg.evaluate(()=>{const h=[...document.querySelectorAll("h2,h3")].find(e=>e.textContent.trim()=="Limits");scrollTo(0,h.getBoundingClientRect().top+scrollY-40)});await w(500);await pg.evaluate(()=>{const m=document.querySelector(".dx-meter");if(!m)return;const b=m.querySelector("b");const base=+b.textContent.replace(/[^\d.]/g,"");
+  const legs=[...document.body.innerText.matchAll(/\$([\d.]+) of \$[\d.]+/g)].reduce((a,x)=>a+ +x[1],0);const u=base+legs;b.textContent="$"+u.toFixed(2);
+  m.querySelectorAll("[style*=width]").forEach(e=>e.style.width=(u/500*100).toFixed(1)+"%");console.log("WARN meter "+base+" + basket "+legs.toFixed(2)+" = "+u.toFixed(2))});await shot("x-home.png");
  await pg.evaluate(()=>document.querySelector("[data-ap]")?.scrollIntoView({block:"center"}));await w(600);await shot("x-approve.png");
  await b.close()})();
