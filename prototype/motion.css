@@ -86,3 +86,4 @@ input[type=checkbox]{accent-color:#C6FF3D}
 @media (pointer:coarse),(max-width:600px){.af-tx{display:inline-block;padding:12px 4px;margin:-12px 0}}
 /* one primary per screen: other buttons in flows read as secondary */
 body.sc-app .dx-ob form button:not(.dx-primary),body.sc-app .dx-ob button#oa:not(.dx-primary){background:transparent!important;color:#ecebe8!important;border:1px solid #3a3a3f!important;border-radius:var(--r-pill)}
+#main:focus,#main:focus-visible{outline:none!important}
