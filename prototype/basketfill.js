@@ -2,7 +2,7 @@
    Data contract (Lucius, confirmed): {id, basketId, basketVersion, basketHash, totalUsd, status:'pending'|'running'|'partial'|'filled'|'failed',
    createdAt, updatedAt, legs:[{legId, ticker, weight, targetUsd, filledUsd, status:'pending'|'filling'|'filled'|'failed', txHash?, error?}]}
    A ticker over $98 is split into several legs: slices are keyed by TICKER and aggregate their legs.
-   Usage: BasketFill.mount(el, executionId)  — polls every 2s while pending/running, then stops.
+   Usage: BasketFill.mount(el, executionId) — follows api.subscribeExecution (SSE, api.js falls back to polling) until a terminal status.
    Data source: BFAdapter below, all through api.js (mock with ?mock=1, forced leg failure with ?mockFail=1). */
 (function(){
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -19,9 +19,11 @@ const uuid=()=>crypto.randomUUID?crypto.randomUUID():"k-"+Date.now().toString(36
 const BFAdapter={
  newKey:uuid,
  list:()=>api.list_baskets(),
- start:async(basketId,usd,idempotencyKey)=>{const pv=await api.preview_basket_buy(basketId,usd);if(pv&&pv.preflight&&pv.preflight.ok===false)throw new Error((pv.preflight.failures||[]).join("; ")||"Preflight failed");
-  return api.buy_basket({previewId:pv&&pv.previewId,id:basketId,usd,idempotencyKey})},
- get:id=>api.get_basket_execution(id),
+ // buy with previewId (202 + execution). PREVIEW_EXPIRED: re-preview once, silently.
+ start:async(basketId,usd,idempotencyKey)=>{const pre=async()=>{const pv=await api.preview_basket_buy(basketId,usd);if(pv&&pv.preflight&&pv.preflight.ok===false)throw Object.assign(new Error("preflight"),{data:{code:"PREFLIGHT",message:(pv.preflight.failures||[]).join(" ")||"This basket can't be bought right now.",retryable:false}});return pv};
+  let pv=await pre();try{return await api.buy_basket({previewId:pv.previewId,idempotencyKey})}
+  catch(err){if(SCErr.of(err).code!=="PREVIEW_EXPIRED")throw err;pv=await pre();return api.buy_basket({previewId:pv.previewId,idempotencyKey})}},
+ subscribe:(id,on)=>api.subscribeExecution(id,on),
  retry:(id,legId)=>api.retry_basket_leg(id,legId)};
 
 // ---------------- aggregation: slices by ticker ----------------
@@ -46,7 +48,7 @@ function svg(sl,x){assign(sl.map(s=>s.ticker));const tot=sl.reduce((a,s)=>a+s.ta
 function legend(sl){return `<ul class="bf-lg">${sl.map(s=>`<li class="bf-${s.status}"><span class="bf-sw" style="background:${color(s.ticker)}" aria-hidden="true"></span><span class="bf-t" style="color:${color(s.ticker)}">${e(s.ticker)}</span><span class="bf-w">${usd(s.filled)} <span class="bf-of">of ${usd(s.target)}</span></span><span class="bf-st">${
  s.status=="filled"?'<span class="bf-ok" aria-label="Filled">✓</span>':s.status=="failed"?`<button class="bf-retry" data-retry="${e(s.ticker)}" aria-label="Retry ${e(s.ticker)}${s.error?": "+e(s.error):""}">Retry</button>`:s.status=="filling"?'<span class="bf-dot" aria-label="Filling">…</span>':'<span class="bf-pend">Waiting</span>'}</span></li>`).join("")}</ul>`}
 
-function mount(el,id,opts={}){if(!el)return;if(el._bf)clearTimeout(el._bf.t);const st={id,t:null,x:null};el._bf=st;
+function mount(el,id,opts={}){if(!el)return;if(el._bf)el._bf.sub&&el._bf.sub.close();const st={id,sub:null,x:null};el._bf=st;
  const status=document.createElement("p");status.className="bf-live sr-only";status.setAttribute("aria-live","polite");
  const draw=x=>{const sl=slices(x);const was=el.querySelector(".bf-wrap");const html=`<div class="bf-wrap"><div class="bf-ring">${svg(sl,x)}</div>${legend(sl)}</div>`;
   const tmp=document.createElement("div");tmp.innerHTML=html;const nw=tmp.firstChild;
@@ -58,10 +60,18 @@ function mount(el,id,opts={}){if(!el)return;if(el._bf)clearTimeout(el._bf.t);con
   else{was.replaceWith(nw);nw.classList.add("bf-in")}
   const done=sl.filter(s=>s.status=="filled").length;status.textContent=x.status=="filled"?"Basket filled":x.status=="partial"||x.status=="failed"?`Partial: ${done} of ${sl.length} filled`:`${done} of ${sl.length} filled`;
   el.querySelectorAll("[data-retry]").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="Retrying…";const s=sl.find(s=>s.ticker==b.dataset.retry);
-   try{for(const l of s.legs.filter(l=>l.status=="failed"))await BFAdapter.retry(id,l.legId);clearTimeout(st.t);tick()}catch(err){b.disabled=false;b.textContent="Retry";status.textContent="Retry failed: "+err.message}});
+   try{for(const l of s.legs.filter(l=>l.status=="failed"))await BFAdapter.retry(id,l.legId);follow()}catch(err){b.disabled=false;b.textContent="Retry";const i=SCErr.of(err);status.textContent=i.message}});
   opts.onUpdate&&opts.onUpdate(x)};
- const tick=async()=>{if(el._bf!==st||!el.isConnected&&st.x)return;try{const x=await BFAdapter.get(id);st.x=x;draw(x);if(x.status=="pending"||x.status=="running")st.t=setTimeout(tick,opts.interval||2000)}
-  catch(err){if(opts.onError){const s=el.closest("section");if(s)s.hidden=true;return}el.innerHTML=`<p class="st err" role="alert">Couldn't load the basket order: ${e(err.message)}</p>`}};
- tick();return st}
+ // events: snapshot {execution} | leg_* {legId, ticker, targetUsd, filledUsd, txHash?, code?} | execution_status {status}
+ const onEv=ev=>{if(el._bf!==st||!el.isConnected&&st.x)return st.sub&&st.sub.close();
+  if(ev.type=="snapshot"){st.x=JSON.parse(JSON.stringify(ev.execution))}
+  else if(!st.x)return;
+  else if(/^leg_/.test(ev.type)){const k=ev.type.slice(4);let l=st.x.legs.find(l=>l.legId==ev.legId);if(!l){l={legId:ev.legId,ticker:ev.ticker,weight:0};st.x.legs.push(l)}
+   Object.assign(l,{status:k,ticker:ev.ticker||l.ticker,targetUsd:ev.targetUsd!=null?ev.targetUsd:l.targetUsd,filledUsd:ev.filledUsd!=null?ev.filledUsd:l.filledUsd},ev.txHash?{txHash:ev.txHash}:{},ev.code?{error:ev.code}:{});
+   if(st.x.status=="pending")st.x.status="running"}
+  else if(ev.type=="execution_status"){st.x.status=ev.status}
+  draw(st.x)};
+ const follow=()=>{st.sub&&st.sub.close();st.sub=BFAdapter.subscribe(id,onEv)};
+ follow();return st}
 window.BasketFill={mount,slices,adapter:BFAdapter};
 })();
