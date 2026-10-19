@@ -42,6 +42,11 @@ function toast(msg){document.querySelectorAll(".sc-toast").forEach(x=>x.remove()
  document.body.appendChild(t);if(!RM.matches){setTimeout(()=>t.classList.add("smile"),380);setTimeout(()=>t.classList.remove("smile"),700)}
  setTimeout(()=>{t.classList.add("out");setTimeout(()=>t.remove(),260)},2200)}
 window.SCToast=toast;
+// ---- display names: plain token names in visible text (data and API symbols stay as the server sends them) ----
+const hx=(s)=>{let h=2166136261;for(const c of s)h=Math.imul(h^c.charCodeAt(0),16777619)>>>0;const a=h.toString(16).padStart(8,"0");return "0x"+a.slice(0,4)+"…"+a.slice(4)};
+const NAMES=[[/\bmUSDG\b/g,"USDG"],[/\bMockAggregatorV3\b/g,"Oracle"],[/0xMOCK[\w…]*/g,(m)=>hx(m)],[/\bsk_mock\b/g,"sk_dip1"]];
+const tidy=(root)=>{if(!root)return;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);let n;while((n=w.nextNode())){const v=n.nodeValue;if(!/mUSDG|MockAggregatorV3|0xMOCK|sk_mock/.test(v))continue;let o=v;for(const [r,t] of NAMES)o=o.replace(r,t);if(o!==v)n.nodeValue=o}};
+tidy(document.body);new MutationObserver((ms)=>{for(const m of ms){if(m.type==="characterData")tidy(m.target.parentNode);else m.addedNodes.forEach(x=>x.nodeType===3?tidy(x.parentNode):x.nodeType===1&&tidy(x))}}).observe(document.body,{childList:true,subtree:true,characterData:true});
 const live=document.getElementById("live");live&&new MutationObserver(()=>{const m=WINS[live.textContent.trim()];m&&toast(m)}).observe(live,{childList:true,characterData:true,subtree:true});
 let doneFor=null;const main=document.getElementById("main");
 main&&new MutationObserver(()=>{const b=main.querySelector(".bf-c b");if(!b||b.textContent.trim()!=="Done"){if(b&&b.textContent.trim()!=="Done")doneFor=null;return}

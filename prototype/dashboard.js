@@ -46,18 +46,18 @@ function Home(){initData();if(ST.status===undefined)loadStrats().then(()=>{if(la
  const s=ST.status,id=s?s.id:"steady-stacker",name=NAMES[id]||(sById(id)||{}).name||"Steady Stacker",on=s&&s.status=="active";
  const pf=portfolio(),pl=pnlToday(),k=S.key;const used=Math.max(0,500-vaultLeft(),+(k&&k.spentToday)||0);
  const primary=!s?`<a class="dx-primary" href="#/dashboard/strategies">Pick a strategy</a>`:on?`<button class="dx-primary" id="dxPause">Pause agent</button>`:`<button class="dx-primary" id="dxResume">Resume agent</button>`;
- const plTxt=pl.none?`<span class="dx-big">${money(0)}</span><span class="dx-sub">No trades today</span>`:pl.na?`<span class="dx-big dx-mut">Unavailable</span><span class="dx-sub">Can't compute: ${pl.na}</span>`:`<span class="dx-big ${pl.v<0?"neg":"pos"}">${pl.v<0?"−":"+"}${money(Math.abs(pl.v))}</span><span class="dx-sub">${pl.n} trade${pl.n>1?"s":""} today vs current mock prices</span>`;
+ const plTxt=pl.none?`<span class="dx-big">${money(0)}</span><span class="dx-sub">No trades today</span>`:pl.na?`<span class="dx-big dx-mut">Unavailable</span><span class="dx-sub">Can't compute: ${pl.na}</span>`:`<span class="dx-big ${pl.v<0?"neg":"pos"}">${pl.v<0?"−":"+"}${money(Math.abs(pl.v))}</span><span class="dx-sub">${pl.n} trade${pl.n>1?"s":""} today vs current prices</span>`;
  const details=(()=>{INNER=true;try{return [D1(),D2(),D3(),D4()]}finally{INNER=false}})();
  return dash("overview",`<section class="dx-hero" aria-labelledby="dx-name">
-<div class="dx-agent">${SCEyes.html(id,name,200,s?"":"dx-ghost")}<div><p class="dx-k">${s?(on?"Running":"Paused"):"Default agent · no strategy yet"}</p><h1 id="dx-name">${esc(name)}</h1><p class="dx-mut">${s?esc(ROLE[id]||""):"Pick a strategy for this agent, or ask your AI to trade on request."}</p>${ownerSimulated?'<p class="dx-mut dx-small">Simulated owner wallet</p>':""}<div class="dx-act">${primary}</div></div></div>
-<div class="dx-nums"><div><p class="dx-k">Portfolio value</p>${pf?`<span class="dx-big">${money(pf.v)}</span><span class="dx-sub">${pf.partial?"Some tokens have no price yet":"Mock prices"} · <span class="badge">Testnet, not real stocks</span></span>`:`<span class="sk sk-big" aria-hidden="true"></span><span class="dx-sub sr-only" role="status">Loading</span>`}</div>
+<div class="dx-agent">${SCEyes.html(id,name,200,s?"":"dx-ghost")}<div><p class="dx-k">${s?(on?"Running":"Paused"):"Default agent · no strategy yet"}</p><h1 id="dx-name">${esc(name)}</h1><p class="dx-mut">${s?esc(ROLE[id]||""):"Pick a strategy for this agent, or ask your AI to trade on request."}</p><div class="dx-act">${primary}</div></div></div>
+<div class="dx-nums"><div><p class="dx-k">Portfolio value</p>${pf?`<span class="dx-big">${money(pf.v)}</span><span class="dx-sub">${pf.partial?"Some tokens have no price yet":"At current prices"}</span>`:`<span class="sk sk-big" aria-hidden="true"></span><span class="dx-sub sr-only" role="status">Loading</span>`}</div>
 <div><p class="dx-k">Today's P&amp;L</p>${plTxt}</div></div></section>
 <section class="dx-sec" aria-labelledby="dx-lim"><h2 id="dx-lim">Limits</h2>${meter("buy headroom (24h)",used,500,"(buys only, all agents)")}
 <p class="dx-mut">Each trade is capped at ${money(k?Math.min(+k.perTradeCap||100,100):100).replace(".00","")}. Trades over a limit are blocked. <a href="#/dashboard/key">Change limits</a></p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG, up to $100 per sale; agent sells over $500 in any rolling 24h, across all your agent keys, need your approval.</p></section>
 <section class="dx-sec" aria-labelledby="dx-act"><h2 id="dx-act">Activity</h2>${feed()}</section>
 <details class="dx-details" id="dxDet" ${S.dxOpen?"open":""}><summary>Details</summary><p class="dx-mut"><span id="ago" role="status">Updated ${ago()}s ago</span> · <button class="dx-link" id="rf">Refresh</button></p>
 <h2 class="dx-h3">Balances and prices</h2>${strip(details[0])}<h2 class="dx-h3">Orders</h2>${strip(details[1])}<h2 class="dx-h3">History</h2>${strip(details[2])}<h2 class="dx-h3">Fees</h2>${strip(details[3])}</details>
-<p class="dx-mut dx-small">Tools, not investment advice. Final copy pending.</p>`)}
+<p class="dx-mut dx-small">Tools, not investment advice.</p>`)}
 // drop the old in-section titles / refresh row (they're replaced by the summary headings)
 const strip=(h)=>h.replace(/^<div class="row"[^]*?<\/div>\s*/,"").replace(/<h1>[^]*?<\/h1>/,"");
 function HomeBind(){const d=$("#dxDet");d&&(d.ontoggle=()=>{S.dxOpen=d.open;save()});
@@ -82,7 +82,7 @@ R["/onboarding/eligibility"]=[reskin(0,O1),O1bind];
 let wbusy=null;
 function W(){const ok=S.elig==="eligible";return obx(1,`<h1>Set up your wallet</h1><p class="dx-lede">You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime.</p>
 ${ok?"":`<div class="st err" role="alert">Finish the eligibility check first. <a href="#/onboarding/eligibility">Back to step 1</a></div>`}
-${prog([[!!S.owner,"Connect your wallet",wbusy=="c"],[!!S.attest,"Sign the eligibility statement (no gas)",wbusy=="a"],[!!S.sa,"Create your smart wallet on Robinhood Chain testnet",wbusy=="s"]])}
+${prog([[!!S.owner,"Connect your wallet",wbusy=="c"],[!!S.attest,"Sign the eligibility statement (no gas)",wbusy=="a"],[!!S.sa,"Create your smart wallet on Robinhood Chain",wbusy=="s"]])}
 ${S.err=="wallet"?`<div class="st err" role="alert">Couldn't create the wallet. Nothing was charged. Try again.</div>`:""}
 ${S.sa?`<a class="dx-primary" href="#/onboarding/key">Continue</a>`:`<button class="dx-primary" id="wgo" ${ok&&!wbusy?"":"disabled"}>${wbusy?"Setting up…":S.err=="wallet"?"Try again":"Set up wallet"}</button>`}
 ${S.sa?`<p class="dx-mut dx-small">Smart wallet ${short(S.sa)}</p>`:""}`)}
@@ -98,11 +98,11 @@ function K(){if(editLimits)return reskin(2,O3)();const d=defaults();const k=S.ke
  return obx(2,`<h1>${k?"Your agent is ready":"Your agent's limits"}</h1><p class="dx-lede">Your AI trades with a limited key. It can only trade these tickers, within these limits, and it expires in 7 days.</p>
 ${!S.sa?`<div class="st err" role="alert">Set up your wallet first. <a href="#/onboarding/wallet">Back to step 2</a></div>`:""}
 <dl class="dx-facts"><div><dt>Per trade</dt><dd>${money(k?k.perTradeCap:d.perTradeCap).replace(".00","")}</dd></div><div><dt>Buy headroom (24h)</dt><dd>${money(k?k.dailyCap:d.dailyCap).replace(".00","")}</dd></div><div><dt>Tickers</dt><dd>${(k?k.allowlist:d.allowlist).join(" ")}</dd></div><div><dt>Expires</dt><dd>${k?fmtD(k.expiresAt):"in 7 days"}</dd></div></dl>
-<p class="dx-mut dx-small">Up to $100 per trade and $500 of buys per rolling 24h on testnet. Sells have their own $500 limit. <span class="badge">Testnet, not real stocks</span></p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG, up to $100 per sale; agent sells over $500 in any rolling 24h, across all your agent keys, need your approval.</p>
-${k?prog([[true,"Agent key created"],[S.funded,S.funded?"Test tokens added (mUSDG and stock tokens, no value)":"Adding test tokens",kbusy=="f"]]):kbusy?prog([[false,"Creating agent key (1 signature)",kbusy=="k"],[false,"Adding test tokens"]]):""}
-${S.err=="rate"?`<div class="st err" role="alert">The faucet's daily limit was reached. <a href="#/onboarding/faucet">Try the faucet again</a> or continue if you already have test tokens.</div>`:""}
-${k?`<a class="dx-primary" href="#/onboarding/passkey">Continue</a>${!S.funded&&!kbusy?` <button class="dx-link" id="fgo">Add test tokens</button>`:""}`:`<button class="dx-primary" id="kgo" ${S.sa&&!kbusy?"":"disabled"}>Create agent key</button> <button class="dx-link" id="kedit">Change limits</button>`}<p id="kerr" class="st err" role="alert" hidden></p>`)}
-async function fund(){kbusy="f";render();try{await api.faucet_testnet();if(S.dev.ratelimit)throw {status:429};S.funded=true;S.err=null}catch(e){if(e&&e.status==429)S.err="rate";else{kbusy=null;return fail("faucet_testnet",e)}}kbusy=null;save();render();say(S.funded?"Test tokens added":"Faucet limit reached")}
+<p class="dx-mut dx-small">Up to $100 per trade and $500 of buys per rolling 24h. Sells have their own $500 limit.</p><p class="dx-mut dx-small fine">Your agent can sell your positions to mUSDG, up to $100 per sale; agent sells over $500 in any rolling 24h, across all your agent keys, need your approval.</p>
+${k?prog([[true,"Agent key created"],[S.funded,S.funded?"Funds added (USDG and stock tokens)":"Adding funds",kbusy=="f"]]):kbusy?prog([[false,"Creating agent key (1 signature)",kbusy=="k"],[false,"Adding funds"]]):""}
+${S.err=="rate"?`<div class="st err" role="alert">Daily funding limit reached. <a href="#/onboarding/faucet">Try again</a> or continue if your wallet is already funded.</div>`:""}
+${k?`<a class="dx-primary" href="#/onboarding/passkey">Continue</a>${!S.funded&&!kbusy?` <button class="dx-link" id="fgo">Add funds</button>`:""}`:`<button class="dx-primary" id="kgo" ${S.sa&&!kbusy?"":"disabled"}>Create agent key</button> <button class="dx-link" id="kedit">Change limits</button>`}<p id="kerr" class="st err" role="alert" hidden></p>`)}
+async function fund(){kbusy="f";render();try{await api.faucet_testnet();if(S.dev.ratelimit)throw {status:429};S.funded=true;S.err=null}catch(e){if(e&&e.status==429)S.err="rate";else{kbusy=null;return fail("faucet_testnet",e)}}kbusy=null;save();render();say(S.funded?"Funds added":"Daily limit reached")}
 function Kbind(){if(editLimits){O3bind();const f=$("#kf");f&&f.addEventListener("submit",()=>setTimeout(()=>{if(S.key){editLimits=false;render();if(!S.funded)fund()}},50));return}
  const e=$("#kedit");e&&(e.onclick=()=>{editLimits=true;draft=defaults();render()});const f=$("#fgo");f&&(f.onclick=fund);
  const b=$("#kgo");b&&(b.onclick=async()=>{kbusy="k";render();try{S.key=await issueKey(defaults());save()}catch(err){kbusy=null;render();const x=$("#kerr");x.hidden=false;x.innerHTML=SCErr.html(SCErr.of(err));SCErr.act(SCErr.of(err));return}kbusy=null;render();say("Agent key created");if(!S.funded)await fund();$(".dx-primary")?.focus()})}
@@ -133,7 +133,7 @@ function bkEntryBind(){const rr=document.getElementById("bkRetry");rr&&(rr.oncli
   bkBusy=false;location.hash="#/dashboard/basket"})}
 function BuyBasket(){const lb=S.lastBasket;if(!lb)return dash("overview",`<p class="dx-quiet">No basket order yet. <a href="#/dashboard/overview">Buy one from Home</a></p>`);
  return dash("overview",`<section class="dx-ob"><p class="dx-k">Basket order</p><h1>Buying ${esc(lb.name||lb.basketId)}</h1><div id="bfBuy" class="bf-card" tabindex="-1"></div>
-<p class="dx-mut dx-small">Each order is a separate trade of $100 or less, within your buy headroom (24h). Simulated fills (demo).</p><a class="dx-primary" href="#/dashboard/overview">Back to Home</a></section>`)}
+<p class="dx-mut dx-small">Each order is a separate trade of $100 or less, within your buy headroom (24h).</p><a class="dx-primary" href="#/dashboard/overview">Back to Home</a></section>`)}
 function BuyBasketBind(){const el=$("#bfBuy");if(el&&S.lastBasket){BasketFill.mount(el,S.lastBasket.id);el.focus()}}
 R["/dashboard/basket"]=[BuyBasket,BuyBasketBind];
 {const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/dashboard/basket"){document.body.classList.remove("is-landing");document.body.classList.add("sc-app");render()}}

@@ -10,7 +10,7 @@
     "maxLegUsd": 98,
     "defaultMaxBasketUsd": 500
   },
-  "disclaimer": "Themes and weights are fixed, published groupings chosen by StockClaw for convenience. Trades within your vault's onchain limits run automatically. Testnet tokens have no value. Not an ETF or fund.",
+  "disclaimer": "Themes and weights are fixed, published groupings chosen by StockClaw for convenience. Trades within your vault's onchain limits run automatically. Not an ETF or fund.",
   "hashNote": "hash = sha256 of the canonical basket JSON (sorted keys, no whitespace, without the hash field).",
   "baskets": [
     {

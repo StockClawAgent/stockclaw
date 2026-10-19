@@ -32,7 +32,7 @@ const APRAdapter={
  reasonText:a=>a.reasonText||(a.reasonCode==="SELL_CAP_EXCEEDED"?"Over the $500 agent sell limit, needs your approval":"Needs your approval"), // supplied by the server/mock (approval id + params hash); we don't invent crypto
  // Card copy and actions live here (per-sell is final).
  copy:{title:a=>`${a.agentName||a.keyLabel||"Your agent"} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} mUSDG`,primary:"Approve sell",secondary:"Decline",
-  note:"Simulated owner signature (demo)",expired:"Approval expired or invalid. Ask your agent to re-propose.",declined:"Declined. Your agent won't sell this.",approved:"Approved. The sell is going through."}};
+  note:"",expired:"Approval expired or invalid. Ask your agent to re-propose.",declined:"Declined. Your agent won't sell this.",approved:"Approved. The sell is going through."}};
 
 // ---------- passkey ----------
 const pk=()=>S.passkey||null;
@@ -74,7 +74,7 @@ function card(a,i,active){const s=ui.st[a.id]||{k:left(a)?"pending":"expired"};c
   s.k=="expired"?`<p class="apr-msg">${e(s.msg||C.expired)}</p>`:s.k=="moved"?`<p class="apr-msg">${e(s.msg)}</p>`:s.k=="declined"?`<p class="apr-msg">${e(C.declined)}</p>`:
   s.k=="nopk"?`<p class="apr-msg">You need a passkey to approve sells.</p><a class="dx-primary" href="#/onboarding/passkey">Set up passkey</a>`:
   `<div class="apr-act"><button class="dx-primary" data-ap="${e(a.id)}" ${s.k=="approving"||s.nr?"disabled":""}>${s.k=="approving"?"Approving…":e(C.primary)}</button> <button class="dx-link" data-dc="${e(a.id)}" ${s.k=="approving"?"disabled":""}>${e(C.secondary)}</button></div>${s.msg?`<p class="st err" role="alert">${e(s.msg)}</p>`:""}`;
- return `<li class="apr apr-${s.k}${muted?" apr-muted":""}" data-id="${e(a.id)}"><p class="apr-t">${e(C.title(a))}</p>${a.keyLabel&&a.agentName&&a.keyLabel!=a.agentName?`<p class="apr-k">${e(a.keyLabel)}</p>`:""}<p class="apr-r">${e(APRAdapter.reasonText(a))}${s.k=="pending"||s.k=="approving"||s.k=="nopk"?` · <span class="apr-cd" data-cd="${e(a.id)}">${fmtLeft(left(a))}</span>`:""}</p>${body}${a.ownerSignatureSimulated?`<p class="apr-n">${e(C.note)}</p>`:""}</li>`}
+ return `<li class="apr apr-${s.k}${muted?" apr-muted":""}" data-id="${e(a.id)}"><p class="apr-t">${e(C.title(a))}</p>${a.keyLabel&&a.agentName&&a.keyLabel!=a.agentName?`<p class="apr-k">${e(a.keyLabel)}</p>`:""}<p class="apr-r">${e(APRAdapter.reasonText(a))}${s.k=="pending"||s.k=="approving"||s.k=="nopk"?` · <span class="apr-cd" data-cd="${e(a.id)}">${fmtLeft(left(a))}</span>`:""}</p>${body}${a.ownerSignatureSimulated&&C.note?`<p class="apr-n">${e(C.note)}</p>`:""}</li>`}
 function draw(){const el=document.getElementById("aprSlot");if(!el)return;const list=ui.items.slice().sort((x,y)=>Date.parse(x.createdAt)-Date.parse(y.createdAt));
  const unres=x=>{const k=(ui.st[x.id]||{k:"pending"}).k;return k=="pending"||k=="approving"||k=="nopk"};const act=(list.find(x=>unres(x)&&left(x))||{}).id;
  if(!list.length){el.innerHTML="";return}const vis=list.slice(0,3),more=list.length-vis.length;

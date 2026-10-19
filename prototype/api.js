@@ -7,10 +7,13 @@ const API_BASE = (typeof window !== "undefined" && window.STOCKCLAW_API) || (typ
 const CHAIN_ID = 46630;
 const EXPLORER = "https://explorer.testnet.chain.robinhood.com";
 const FEE_BPS = 30; // 0.30%, taken from the input token (router default; cap 0.50%)
-const USE_MOCK = (() => { try { return (typeof location !== "undefined" && new URLSearchParams(location.search).get("mock") === "1") || (typeof localStorage !== "undefined" && localStorage.getItem("stockclaw-use-mock") === "1"); } catch { return false; } })();
+// Public static build (GitHub Pages, no backend): config.js sets STOCKCLAW_PUBLIC/STOCKCLAW_USE_MOCK, *.github.io is detected too.
+const PUBLIC_SITE = (typeof window !== "undefined" && window.STOCKCLAW_PUBLIC === true) || (typeof location !== "undefined" && /\.github\.io$/i.test(location.hostname || ""));
+const USE_MOCK = (() => { try { return PUBLIC_SITE || (typeof window !== "undefined" && window.STOCKCLAW_USE_MOCK === true) || (typeof location !== "undefined" && new URLSearchParams(location.search).get("mock") === "1") || (typeof localStorage !== "undefined" && localStorage.getItem("stockclaw-use-mock") === "1"); } catch { return false; } })();
 class Unreachable extends Error {}
 // ---------------------------------------------------------------- original mocks (unchanged)
 const delay = (v) => new Promise((r) => setTimeout(() => r(v), 50));
+const SAMPLE_PX = { TSLA: 248.5, AMZN: 186.2, PLTR: 42.1, NFLX: 702.3, AMD: 149.6 }; // sample prices for mock mode only
 const MOCK = {
   eligibility: { eligible: true, reason: null, expiresAt: "2026-11-18T00:00:00Z" },
   wallet: { address: "0xABCD000000000000000000000000000000001234", chainId: CHAIN_ID, owner: "0x9F00000000000000000000000000000000000000",
@@ -20,7 +23,7 @@ const MOCK = {
     { symbol: "TSLA", address: "0xC9f9…Bd4E", amount: 5, usdValue: 0 },
     { symbol: "AMZN", address: "0x5884…9E02", amount: 5, usdValue: 0 },
   ],
-  assets: ["TSLA","AMZN","PLTR","NFLX","AMD"].map((s) => ({ symbol: s, decimals: 18, priceUsd: 0, source: "MockAggregatorV3" })),
+  assets: ["TSLA","AMZN","PLTR","NFLX","AMD"].map((s) => ({ symbol: s, decimals: 18, priceUsd: SAMPLE_PX[s], source: "MockAggregatorV3" })),
   orders: [
     { intentId: "int_mock_1", type: "DCA", tokenIn: "mUSDG", tokenOut: "TSLA", amount: 10, interval: "daily", execs: "1/5", nextRunAt: "2026-10-19T09:00:00Z", status: "active" },
     { intentId: "int_mock_2", type: "Limit", tokenIn: "mUSDG", tokenOut: "AMD", amount: 25, limitPrice: 0, expiry: "2026-10-22T00:00:00Z", status: "open" },
@@ -40,7 +43,7 @@ const mockApi = {
   revoke_session_key: () => delay({ txHash: "0xMOCKREVOKE", explorerUrl: EXPLORER + "/tx/0xMOCKREVOKE", status: "confirmed" }),
   get_balances: (tokens) => delay(MOCK.balances),
   list_assets: () => delay(MOCK.assets),
-  get_price: (symbol) => delay({ priceUsd: 0, source: "MockAggregatorV3", updatedAt: new Date().toISOString() }),
+  get_price: (symbol) => delay({ priceUsd: SAMPLE_PX[symbol] || 0, source: "MockAggregatorV3", updatedAt: new Date().toISOString() }),
   quote_swap: (tokenIn, tokenOut, amountIn) => { const feeAmount = amountIn * FEE_BPS / 10000; return delay({ amountIn, feeAmount, netIn: amountIn - feeAmount, amountOut: 0, minOut: 0, route: "StockClawPool", priceImpact: 0, quoteId: "q_mock", expiresAt: null }); },
   execute_swap: (quoteId) => delay({ txHash: "0xMOCKTX", explorerUrl: EXPLORER + "/tx/0xMOCKTX", status: "pending" }),
   create_dca: (p) => delay({ intentId: "int_mock_new", nextRunAt: null }),
@@ -78,8 +81,8 @@ const mockApi = {
 };
 // ---------------------------------------------------------------- basket / approval / activity mocks
 const MOCK_FAIL = typeof location !== "undefined" && /[?&]mockFail=1/.test(location.search || "");
-const MOCK_BASKETS = { list: [{ id: "ai-tech-mini", version: "1.0.0", basketHash: "sha256:mock", name: "AI & Tech (mini, testnet)", legs: [{ symbol: "AMZN", weightBps: 3334 }, { symbol: "AMD", weightBps: 3333 }, { symbol: "PLTR", weightBps: 3333 }], chainAvailable: true, executable: true, notExecutableReason: null, thin: true },
-  { id: "ai", version: "1.0.0", basketHash: "sha256:mock-ai", name: "AI", legs: [{ symbol: "NVDA", weightBps: 2500 }, { symbol: "GOOGL", weightBps: 2123 }, { symbol: "MSFT", weightBps: 2024 }, { symbol: "TSM", weightBps: 1102 }, { symbol: "META", weightBps: 931 }, { symbol: "AVGO", weightBps: 808 }, { symbol: "MU", weightBps: 512 }], chainAvailable: false, executable: false, notExecutableReason: "Not executable locally: mainnet registry tickers have no StockClaw pool on the local/testnet chain.", thin: false }] };  // chain-guard: allow
+const MOCK_BASKETS = { list: [{ id: "ai-tech-mini", version: "1.0.0", basketHash: "sha256:mock", name: "AI & Tech (mini)", legs: [{ symbol: "AMZN", weightBps: 3334 }, { symbol: "AMD", weightBps: 3333 }, { symbol: "PLTR", weightBps: 3333 }], chainAvailable: true, executable: true, notExecutableReason: null, thin: true },
+  { id: "ai", version: "1.0.0", basketHash: "sha256:mock-ai", name: "AI", legs: [{ symbol: "NVDA", weightBps: 2500 }, { symbol: "GOOGL", weightBps: 2123 }, { symbol: "MSFT", weightBps: 2024 }, { symbol: "TSM", weightBps: 1102 }, { symbol: "META", weightBps: 931 }, { symbol: "AVGO", weightBps: 808 }, { symbol: "MU", weightBps: 512 }], chainAvailable: false, executable: false, notExecutableReason: "Coming soon.", thin: false }] };  // chain-guard: allow
 const splitUsd = (usd) => { const n = Math.ceil(usd / 98 - 1e-9); if (n === 1) return [usd]; const rest = +(usd - 98 * (n - 1)).toFixed(2); return rest >= 5 ? [...Array(n - 1).fill(98), rest] : Array(n).fill(+(usd / n).toFixed(2)); };
 function mockLegs(id, usd) { const b = MOCK_BASKETS.list.find((x) => x.id === id) || MOCK_BASKETS.list[0]; const out = [];
   for (const l of b.legs) for (const part of splitUsd(+(usd * l.weightBps / 10000).toFixed(2))) out.push({ legId: "leg_mock" + out.length, ticker: l.symbol, weight: l.weightBps / 10000, targetUsd: part }); return { b, legs: out }; }
@@ -103,7 +106,7 @@ function mockRetryLeg(id, legId) { const e = MOCK_EXEC[id], l = e && e.legs.find
   if (cur.status !== "failed") throw Object.assign(new Error(`Only failed legs can be retried (leg is ${cur.status})`), { status: 409 });
   l.retryStart = Date.now(); return mockExecution(id); }
 const inH = (h) => new Date(Date.now() + h * 3600e3).toISOString();
-const MOCK_APPROVALS = [{ id: "apr_mock1", agentKeyId: "sk_mock", agentName: "Dip Hunter", keyLabel: "Agent key sk_mock", ticker: "AMD", amountIn: 0.6, estUsdgOut: 89.73, estUsdgOutMin: 88.83, reason: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", reasonCode: "SELL_CAP_EXCEEDED", reasonText: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", status: "pending", createdAt: inH(-0.1), expiresAt: inH(0.9), challenge: "YXByX21vY2sxOjB4bW9jaw", ownerSignatureSimulated: true }];
+const MOCK_APPROVALS = [{ id: "apr_mock1", agentKeyId: "sk_mock", agentName: "Dip Hunter", keyLabel: "Agent key sk_dip1", ticker: "AMD", amountIn: 0.6, estUsdgOut: 89.73, estUsdgOutMin: 88.83, reason: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", reasonCode: "SELL_CAP_EXCEEDED", reasonText: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", status: "pending", createdAt: inH(-0.1), expiresAt: inH(0.9), challenge: "YXByX21vY2sxOjB4bW9jaw", ownerSignatureSimulated: true }];
 function mockApprove(id) { const a = MOCK_APPROVALS.find((x) => x.id === id); if (!a) throw Object.assign(new Error("Unknown approval"), { status: 404 });
   if (a.status !== "pending") throw Object.assign(new Error(`Approval is ${a.status} (one approval per sell)`), { status: 409 });
   if (MOCK_FAIL) { a.status = "failed"; a.error = "Price moved 3.40% since the request (> 3%); not executed. Ask the agent to sell again."; throw Object.assign(new Error(a.error), { status: 409 }); }
@@ -279,4 +282,4 @@ const api = Object.fromEntries(Object.keys(mockApi).map((name) => [name, (name =
   try { return await liveApi[name](...args); }
   catch (e) { if (e instanceof Unreachable) { console.warn(`[api] server unreachable, using mock for ${name}`); return mockApi[name](...args); } throw e; }
 }]));
-if (typeof window !== "undefined") Object.assign(window, { api, FEE_BPS, EXPLORER, CHAIN_ID, USE_MOCK, StockClawAuth });
+if (typeof window !== "undefined") Object.assign(window, { api, FEE_BPS, EXPLORER, CHAIN_ID, USE_MOCK, PUBLIC_SITE, StockClawAuth });
