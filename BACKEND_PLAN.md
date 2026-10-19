@@ -1,7 +1,13 @@
 # StockClaw — Backend Plan (routing, wallets, reliability)
-Owner: Lucius (CTO) · 2026-10-18 · **Local sim (31337) and testnet (46630) only. Nothing on mainnet.**
+Owner: Lucius (CTO) · 2026-10-18 · **Local sim and testnet (46630) only. Nothing on mainnet.** Friday stage demo: public testnet 46630, pending Julius's go-ahead to deploy (local anvil fallback).
 Owners: **Lucius** = server/keeper/routing · **Quintus** = contracts · **Gaius** = security · **Flavius** = wallet UX.
 Current state (checked in repo): Node/TS server with viem; state lives in `server/data/state.json` (`service.ts` `save()` rewrites it); per-account in-memory tx queue in `chain.ts`; keeper is a `setInterval` loop; AgentVault (not 4337) is the wallet; `FeeRouter.isRouteSupported(adapter, tokenIn, tokenOut)` exists; exit exemption landed in 5491737.
+
+## Friday stage demo target (updated 2026-10-19)
+- **Target: public Robinhood Chain testnet 46630, not the local sim.** This is pending Julius's final go-ahead for the deploy. No deploy or faucet claim happens before that.
+- **Fallback: local anvil (chain id 46630, MOCK_TOKENS=1)** stays fully working and rehearsed. It's the same build, switched with `RPC_URL`. If the testnet deploy isn't approved, funded and smoke-tested by **Thu 22, 6 pm ET**, or if testnet RPC/faucet/sequencer problems appear on Friday, the demo runs locally.
+- Prep done (no txs): dry run of Quintus's HEAD contracts against a 46630 fork (44 txs, ~0.0004 ETH). Fresh testnet-only role keys are kept outside the repo. Blockscout tx links are in place. Runbook and funding table: `docs/TESTNET_DEPLOY.md`.
+- Testnet adds: real testnet stock tokens (faucet), Blockscout links in the activity feed and history, keeper-pushed NYSE sessions (fail-closed: market closed until pushed), and a separate KEEPER and FEED_UPDATER (S-4).
 
 ## Friday scope
 | Area | Friday (demo) | After |
@@ -39,5 +45,5 @@ Current state (checked in repo): Node/TS server with viem; state lives in `serve
 - **Mon 19:** SQLite + jobs + nonce manager (Lucius); Gaius reviews 5491737.
 - **Tue 20:** routing via `isRouteSupported`, basket preflight/legs/idempotency (Lucius); Flavius basket progress UI.
 - **Wed 21:** restart-recovery and partial-state e2e; `/healthz`; Gaius review of execution paths.
-- **Thu 22:** 4337 local spike only if everything above is green; freeze 6 pm ET.
-- **Fri 23:** demo on the local sim.
+- **Thu 22:** after Julius's go-ahead, fund roles → deploy to 46630 → Safe accepts ownership → seed pools → smoke test with Blockscout links; 4337 local spike only if everything is green; freeze 6 pm ET (go/no-go: testnet or local).
+- **Fri 23:** stage demo on **public testnet 46630**; local anvil is the fallback.
