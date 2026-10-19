@@ -68,6 +68,7 @@ const mockApi = {
   resume_key: (keyId) => delay({ keyId, breaker: { tripped: false } }),
   getActivity: (since) => mockApi.get_activity(since),
   getBreaker: () => delay({ tripped: [] }),
+  subscribeExecution: (id, onEvent) => pollExecution((x) => Promise.resolve(mockExecution(x)), id, onEvent),
   resumeKey: (keyId) => mockApi.resume_key(keyId),
   // mock stream: replays entries after `since`, then a fake trade every 15s. Returns {close()}.
   openActivityStream: (onEvent, since) => { let n = 0; const seen = MOCK_ACTIVITY.filter((a) => !since || a.id > Number(since)).reverse(); setTimeout(() => seen.forEach(onEvent), 0);
@@ -164,6 +165,43 @@ function openStream(onEvent, since) {
   run();
   return { close: () => { closed = true; ctl && ctl.abort(); } };
 }
+// Per-leg basket progress. Calls onEvent({type, ...}) with type in snapshot | leg_pending | leg_filling | leg_filled |
+// leg_failed | execution_status, and stops after a terminal execution_status. Uses SSE; if that fails, polls every 2s
+// and turns state changes into the same events. Returns {close()}.
+const TERMINAL = ["filled", "partial", "failed"];
+function pollExecution(get, id, onEvent) {
+  let closed = false, prev = null, first = true;
+  const tick = async () => {
+    if (closed) return;
+    try { const ex = await get(id); const now = new Date().toISOString();
+      if (first) { first = false; onEvent({ type: "snapshot", executionId: id, execution: ex, at: now }); }
+      else { for (const l of ex.legs) { const o = prev.legs.find((x) => x.legId === l.legId); if (!o || o.status !== l.status) onEvent({ type: `leg_${l.status}`, executionId: id, at: now, legId: l.legId, ticker: l.ticker, targetUsd: l.targetUsd, filledUsd: l.filledUsd, ...(l.txHash ? { txHash: l.txHash } : {}), ...(l.error ? { error: l.error } : {}) }); }
+        if (prev.status !== ex.status) onEvent({ type: "execution_status", executionId: id, at: now, status: ex.status, legsFilled: ex.legs.filter((l) => l.status === "filled").length, legsTotal: ex.legs.length }); }
+      prev = ex; if (TERMINAL.includes(ex.status)) { closed = true; return; }
+    } catch (e) { /* keep polling */ }
+    if (!closed) setTimeout(tick, 2000);
+  };
+  tick();
+  return { close: () => { closed = true; } };
+}
+function subscribeExec(id, onEvent) {
+  let closed = false, fallback = null; const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const goPoll = () => { if (!closed && !fallback) fallback = pollExecution((x) => call("GET", `baskets/executions/${encodeURIComponent(x)}`), id, onEvent); };
+  (async () => {
+    try {
+      const tok = await ownerToken();
+      const r = await fetch(`${API_BASE}/api/baskets/executions/${encodeURIComponent(id)}/stream`, { headers: { authorization: `Bearer ${tok}`, "x-owner-token": tok, accept: "text/event-stream" }, signal: ctl && ctl.signal });
+      if (!r.ok || !r.body || typeof TextDecoder === "undefined") return goPoll();
+      const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "", ended = false;
+      for (;;) { const { value, done } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true });
+        let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+          const data = chunk.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
+          if (data) { try { const e = JSON.parse(data); onEvent(e); if ((e.type === "execution_status" && TERMINAL.includes(e.status)) || (e.type === "snapshot" && TERMINAL.includes(e.execution.status))) ended = true; } catch {} } } }
+      if (!ended && !closed) goPoll(); // stream dropped early: keep going by polling
+    } catch (e) { if (!closed) goPoll(); }
+  })();
+  return { close: () => { closed = true; ctl && ctl.abort(); fallback && fallback.close(); } };
+}
 const savedCountry = () => { try { return JSON.parse(localStorage.getItem("stockclaw-proto-v1") || "{}").country; } catch { return undefined; } };
 const liveApi = {
   check_eligibility: (country) => call("GET", "check_eligibility", { country: country ?? savedCountry() }), // {eligible, reason, expiresAt}
@@ -204,9 +242,10 @@ const liveApi = {
   getBreaker: () => call("GET", "keys/breaker"),                         // {tripped:[{keyId, reason, trippedAt}]}
   resumeKey: (keyId) => call("POST", `keys/${encodeURIComponent(keyId)}/resume`),
   openActivityStream: (onEvent, since) => openStream(onEvent, since),     // {close()}
+  subscribeExecution: (id, onEvent) => subscribeExec(id, onEvent),        // {close()}
   faucet_testnet: () => call("POST", "faucet_testnet"),
 };
-const api = Object.fromEntries(Object.keys(mockApi).map((name) => [name, name === "openActivityStream" ? (...args) => (USE_MOCK ? mockApi : liveApi)[name](...args) : async (...args) => {
+const api = Object.fromEntries(Object.keys(mockApi).map((name) => [name, (name === "openActivityStream" || name === "subscribeExecution") ? (...args) => (USE_MOCK ? mockApi : liveApi)[name](...args) : async (...args) => {
   if (USE_MOCK || !liveApi[name]) return mockApi[name](...args);
   try { return await liveApi[name](...args); }
   catch (e) { if (e instanceof Unreachable) { console.warn(`[api] server unreachable, using mock for ${name}`); return mockApi[name](...args); } throw e; }

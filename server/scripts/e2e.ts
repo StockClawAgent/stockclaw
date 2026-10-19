@@ -425,7 +425,7 @@ try {
   await step("basket partial: forced revert in leg 2 => partial (leg 1 kept, no auto-retry); replay = no new txs; only failed legs retry (owner, idempotent); transport error retried once", async () => {
     bk._setFaults({ revertLeg: 1 });
     const b = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 60 }, OWNER, { "idempotency-key": "e2e-k2" });
-    assert.equal(b.status, 200, JSON.stringify(b.body));
+    assert.equal(b.status, 202, JSON.stringify(b.body));
     const e = await waitExec(b.body.id);
     assert.equal(e.status, "partial", JSON.stringify(e));
     assert.deepEqual(e.legs.map((l: any) => l.status), ["filled", "failed", "pending"]);
@@ -437,7 +437,7 @@ try {
     assert.equal((await callH("POST", `baskets/executions/${e.id}/legs/${l3.legId}/retry`)).status, 409, "pending legs can't be retried");
     assert.equal((await callH("POST", `baskets/executions/${e.id}/legs/${l1.legId}/retry`)).body.legs[0].status, "filled", "filled leg: no-op");
     assert.equal((await callH("POST", `baskets/executions/${e.id}/legs/${l2.legId}/retry`, {}, MCPT)).status, 403, "owner token only");
-    const rt = await callH("POST", `baskets/executions/${e.id}/legs/${l2.legId}/retry`); assert.equal(rt.status, 200, JSON.stringify(rt.body));
+    const rt = await callH("POST", `baskets/executions/${e.id}/legs/${l2.legId}/retry`); assert.equal(rt.status, 202, JSON.stringify(rt.body));
     const e2 = await waitExec(e.id, (x) => x.legs[1].status === "filled" || x.legs[1].status === "failed");
     assert.equal(e2.legs[1].status, "filled"); assert.equal(e2.status, "partial", "leg 3 untouched");
     const n2 = txCount("basket:%"); assert.equal(n2, n + 1);
@@ -609,7 +609,7 @@ try {
     process.env.BREAKER = "on";
     try {
       await freshUser();
-      const b1 = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 500 }); assert.equal(b1.status, 200, JSON.stringify(b1.body));
+      const b1 = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 500 }); assert.equal(b1.status, 202, JSON.stringify(b1.body));
       const e1 = await waitExec(b1.body.id); assert.equal(e1.status, "filled", JSON.stringify(e1)); assert.equal(e1.legs.length, 6);
       assert.equal((await callH("GET", "keys/breaker")).body.tripped.length, 0, "single basket doesn't trip");
       const al = (await callH("GET", "activity")).body.find((x: any) => x.kind === "alert"); assert.ok(al && al.code === "KEY_SINGLE_EXECUTION_80PCT" && al.ref === b1.body.id, "single-execution 80% alert in the feed");
@@ -624,13 +624,72 @@ try {
       await callH("POST", `keys/${svc._agent()!.id}/resume`);
       // each basket = one trade toward "> 5 trades in 10 min" (legs aren't counted): 5 baskets ok, the 6th trips
       await freshUser();
-      for (let i = 0; i < 5; i++) { const b = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 15 }); assert.equal(b.status, 200, `basket ${i + 1} ${JSON.stringify(b.body)}`); assert.equal((await waitExec(b.body.id)).status, "filled"); }
+      for (let i = 0; i < 5; i++) { const b = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 15 }); assert.equal(b.status, 202, `basket ${i + 1} ${JSON.stringify(b.body)}`); assert.equal((await waitExec(b.body.id)).status, "filled"); }
       const b6 = await callH("POST", "baskets/buy", { id: "ai-tech-mini", usd: 15 });
       assert.equal(b6.status, 423); assert.match(b6.body.error, /more than 5 trades in 10 minutes/);
       await callH("POST", `keys/${svc._agent()!.id}/resume`);
     } finally { process.env.BREAKER = "off"; }
   });
 
+
+
+  await step("UX: basket buy answers 202 in <150ms (queued); per-leg SSE events (leg_filling/leg_filled + execution_status); api.js subscribeExecution (SSE and 2s-poll fallback); stuck leg times out to failed with a reason on the stream; errors are {code,message,retryable,hint}; /healthz p50/p95", async () => {
+    await freshUser();
+    // (d) error shape + central revert mapping
+    const e1 = await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 150 });
+    assert.equal(e1.status, 403); assert.equal(e1.body.code, "PER_TRADE_CAP"); assert.equal(e1.body.retryable, false); assert.ok(e1.body.hint); assert.match(e1.body.message, /^[A-Z].*\.$/); assert.ok(e1.body.error, "detail kept");
+    const { toUserError } = await import("../src/errors.js");
+    const m = (x: string, st = 409) => toUserError(x, st).code;
+    assert.equal(m("VaultSellCapExceeded"), "SELL_CAP_EXCEEDED"); assert.equal(m("Blocked by limit: vault's $500.00 rolling-24h cap shared by all agent keys"), "BUY_CAP_EXCEEDED");
+    assert.equal(m("Market closed: trading halted"), "MARKET_CLOSED"); assert.equal(m("Price feed stale (>1h): trading halted"), "PRICE_UNAVAILABLE"); assert.equal(m("OracleFloor"), "PRICE_UNAVAILABLE");
+    assert.equal(m("Slippage / oracle-band protection"), "PRICE_MOVED"); assert.equal(m("ZeroMinOut"), "PRICE_MOVED"); assert.equal(m("Preview expired (quotes are stale after 60s); preview again", 410), "PREVIEW_EXPIRED");
+    assert.equal(m("x", 429), "RATE_LIMITED"); assert.equal(m("weird", 500), "INTERNAL"); assert.equal(toUserError("weird", 500).retryable, true);
+    const nf = await callH("GET", "baskets/executions/bx_nope"); assert.equal(nf.status, 404); assert.equal(nf.body.code, "NOT_FOUND");
+    const un = await fetch(`${API}/get_wallet`); const ub = await un.json(); assert.equal(un.status, 401); assert.equal(ub.code, "AUTH_REQUIRED"); assert.equal(typeof ub.retryable, "boolean");
+    // (b)+(a) 202 fast, then live leg events over SSE
+    const pv = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 45 })).body;
+    const t0 = performance.now(); const b = await callH("POST", "baskets/buy", { previewId: pv.previewId }); const dt = performance.now() - t0;
+    assert.equal(b.status, 202, JSON.stringify(b.body)); assert.ok(dt < 150, `buy took ${dt.toFixed(0)}ms`); assert.ok(["pending", "running"].includes(b.body.status), b.body.status);
+    const evs: any[] = [];
+    const sres = await fetch(`${API}/baskets/executions/${b.body.id}/stream`, { headers: { "x-owner-token": OWNER } });
+    const rd = sres.body!.getReader(); let txt = "";
+    for (const t1 = Date.now(); Date.now() - t1 < 15000;) { const { value, done } = await rd.read(); if (done) break; txt += new TextDecoder().decode(value); }
+    for (const ch of txt.split("\n\n")) { const d = /data: (.*)/.exec(ch); if (d) evs.push(JSON.parse(d[1])); }
+    assert.ok(txt.startsWith(": ok"));
+    assert.equal(evs[0].type, "snapshot"); const types = evs.map((e) => e.type);
+    assert.ok(types.filter((t) => t === "leg_filled").length + evs[0].execution.legs.filter((l: any) => l.status === "filled").length >= 3, types.join(","));
+    const last = evs[evs.length - 1]; assert.equal(last.type, "execution_status"); assert.equal(last.status, "filled"); assert.equal(last.legsFilled, 3);
+    // api.js subscribeExecution: SSE path, then the 2s polling fallback (stream endpoint unreachable)
+    const A = mkApi(memStore({ "stockclaw-owner-token": OWNER }));
+    const pv2 = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+    const b2 = (await callH("POST", "baskets/buy", { previewId: pv2.previewId })).body;
+    const got: any[] = []; await new Promise<void>((res) => { A.subscribeExecution(b2.id, (e: any) => { got.push(e); if ((e.type === "execution_status" || e.type === "snapshot") && ["filled", "partial", "failed"].includes(e.status ?? e.execution?.status)) res(); }); setTimeout(res, 15000); });
+    assert.equal(got[0].type, "snapshot"); assert.ok(got.some((e) => e.type === "execution_status" && e.status === "filled") || got[0].execution.status === "filled", JSON.stringify(got.map((e) => e.type)));
+    const realFetch = fetch; const ctxFetch = (u: any, o: any) => (/\/stream$/.test(String(u)) ? Promise.reject(new TypeError("blocked")) : realFetch(u, o));
+    const c2: any = { fetch: ctxFetch, URLSearchParams, console, setTimeout, setInterval, clearInterval, TextDecoder, AbortController, crypto, localStorage: { getItem: () => null }, sessionStorage: memStore({ "stockclaw-owner-token": OWNER }), window: { STOCKCLAW_API: `http://127.0.0.1:${PORT_API}` } };
+    vm.createContext(c2); vm.runInContext(fs.readFileSync(path.resolve("../prototype/api.js"), "utf8"), c2);
+    const pv3 = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+    const b3 = (await callH("POST", "baskets/buy", { previewId: pv3.previewId })).body;
+    const got3: any[] = []; await new Promise<void>((res) => { c2.window.api.subscribeExecution(b3.id, (e: any) => { got3.push(e); if (e.type === "execution_status" && e.status === "filled") res(); if (e.type === "snapshot" && e.execution.status === "filled") res(); }); setTimeout(res, 12000); });
+    assert.equal(got3[0].type, "snapshot", "poll fallback emits a snapshot"); assert.ok(got3.some((e) => e.type === "execution_status" && e.status === "filled") || got3[0].execution.status === "filled");
+    // (c) stuck leg => timeout => failed with reason, emitted on the stream
+    process.env.LEG_TIMEOUT_MS = "1500";
+    try {
+      bk._setFaults({ hangLeg: 0 });
+      const pv4 = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+      const b4 = (await callH("POST", "baskets/buy", { previewId: pv4.previewId })).body;
+      const s4 = await fetch(`${API}/baskets/executions/${b4.id}/stream`, { headers: { "x-owner-token": OWNER } }); const r4 = s4.body!.getReader(); let t4 = "";
+      for (const t1 = Date.now(); Date.now() - t1 < 10000;) { const { value, done } = await r4.read(); if (done) break; t4 += new TextDecoder().decode(value); }
+      const ev4 = t4.split("\n\n").map((ch) => /data: (.*)/.exec(ch)).filter(Boolean).map((d) => JSON.parse(d![1]));
+      const lf = ev4.find((e) => e.type === "leg_failed"); assert.ok(lf, t4.slice(0, 500)); assert.match(lf.error, /Timed out after 2s|Timed out after 1s/); assert.equal(lf.code, "TIMEOUT"); assert.equal(lf.retryable, true);
+      assert.equal(ev4[ev4.length - 1].type, "execution_status"); assert.equal(ev4[ev4.length - 1].status, "failed");
+      await new Promise((r) => setTimeout(r, 2500)); // the hung attempt wakes up and must not trade
+      assert.equal((await callH("GET", `baskets/executions/${b4.id}`)).body.legs[0].status, "failed");
+    } finally { delete process.env.LEG_TIMEOUT_MS; }
+    // (e) latency in /healthz
+    const hz = await (await fetch(`http://127.0.0.1:${PORT_API}/healthz`)).json();
+    const k = hz.latencyMs["POST /api/baskets/buy"]; assert.ok(k && k.n >= 4 && k.p50 <= k.p95, JSON.stringify(hz.latencyMs).slice(0, 300));
+  });
 
   await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
     await freshUser();

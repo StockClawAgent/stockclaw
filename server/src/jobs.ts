@@ -8,7 +8,11 @@ import { log, withCtx } from "./log.js";
 export type Job = { id: number; kind: string; payload: any; attempts: number; max_attempts: number };
 type Handler = (payload: any, job: Job) => Promise<unknown>;
 const handlers = new Map<string, Handler>();
-export const register = (kind: string, h: Handler) => { handlers.set(kind, h); };
+type Opts = { timeoutMs?: number; onTimeout?: (payload: any) => void };
+const opts = new Map<string, Opts>();
+/** Every job has a timeout (default JOB_TIMEOUT_MS or 120s): on expiry it is failed (final) with a reason and onTimeout settles its state. */
+export const register = (kind: string, h: Handler, o: Opts = {}) => { handlers.set(kind, h); opts.set(kind, o); };
+export class JobTimeout extends Error {}
 /** Thrown by fault injection (e2e) to emulate the process dying mid-job: the job is left "running" with its lease. */
 export class SimulatedCrash extends Error { constructor() { super("simulated crash (process died)"); } }
 const LEASE_MS = 120_000;
@@ -35,7 +39,11 @@ async function runJob(j: Job) {
   return withCtx({ jobId: j.id, jobKind: j.kind }, async () => {
     try {
       if (!h) throw new Error(`no handler for ${j.kind}`);
-      await h(j.payload, j);
+      const o = opts.get(j.kind) ?? {}, ms = o.timeoutMs ?? Number(process.env.JOB_TIMEOUT_MS ?? 120_000);
+      let t: NodeJS.Timeout | undefined;
+      try { await Promise.race([h(j.payload, j), new Promise((_, rej) => { t = setTimeout(() => rej(new JobTimeout(`Timed out after ${Math.round(ms / 1000)}s`)), ms); })]); }
+      catch (e) { if (e instanceof JobTimeout) { try { o.onTimeout?.(j.payload); } catch { /* best effort */ } j.attempts = j.max_attempts; } throw e; }
+      finally { clearTimeout(t); }
       d.prepare("UPDATE jobs SET status='done', locked_until=NULL, last_error=NULL, updated_at=? WHERE id=?").run(Date.now(), j.id);
     } catch (e) {
       if (e instanceof SimulatedCrash) { log.warn("job interrupted (simulated crash); lease left in place", { jobId: j.id }); crashed = true; return; }

@@ -1,6 +1,7 @@
 // Themed baskets (BASKETS.md): registry (baskets.json + server/baskets/<id>/<version>.json, sha256-pinned),
 // preview (split <= $98, >= $5 legs, headroom), auto-execution within the onchain limits, sequential leg execution as a
 // durable job with idempotency keys, persisted per-leg state, partial status and one retry on transport errors only.
+import { toUserError } from "./errors.js";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -189,7 +190,7 @@ export function start_execution(proposalId: string, idemKey?: string) {
     p.status = "confirmed"; p.executionId = id; putProposal(p); idemPut(key, "execution", id);
     return { id, fresh: true };
   });
-  if (r.fresh) { jobs.enqueue("basket.execute", { executionId: r.id }, { dedupe: `basket:${r.id}`, maxAttempts: 3 }); log.info("basket started", { executionId: r.id, idempotencyKey: key }); }
+  if (r.fresh) { jobs.enqueue("basket.execute", { executionId: r.id }, { dedupe: `basket:${r.id}`, maxAttempts: 3 }); setImmediate(() => void jobs.kick()); log.info("basket started", { executionId: r.id, idempotencyKey: key }); }
   return get_execution(r.id);
 }
 
@@ -200,8 +201,25 @@ function idemPut(key: string, scope: string, ref: string) { getDb().prepare("INS
 // ---------------------------------------------------------------- execution state
 type LegRow = { legId: string; ticker: string; weight: number; targetUsd: number; filledUsd: number; status: "pending" | "filling" | "filled" | "failed"; txHash?: string; error?: string; amountOut?: number; attempts?: number };
 const legsOf = (id: string): (LegRow & { idx: number })[] => (getDb().prepare("SELECT idx, status, tx_hash, json FROM legs WHERE execution_id=? ORDER BY idx").all(id) as any[]).map((r) => ({ ...JSON.parse(r.json), idx: r.idx, status: r.status, ...(r.tx_hash ? { txHash: r.tx_hash } : {}) }));
-function setLeg(id: string, l: LegRow) { const { status, txHash, ...rest } = l as any; delete rest.idx; getDb().prepare("UPDATE legs SET status=?, tx_hash=?, json=? WHERE leg_id=?").run(status, txHash ?? null, JSON.stringify(rest), l.legId); touch(id); }
-function setStatus(id: string, status: string) { getDb().prepare("UPDATE basket_executions SET status=?, updated_at=? WHERE id=?").run(status, nowIso(), id); }
+// ---- live execution events (SSE /api/baskets/executions/:id/stream). Emitted after each DB write, so a client that
+// reads the snapshot and then subscribes never misses a transition.
+export type ExecEvent = { type: string; executionId: string; at: string; [k: string]: unknown };
+const execSubs = new Map<string, Set<(e: ExecEvent) => void>>();
+export function onExecEvent(id: string, fn: (e: ExecEvent) => void) { let s = execSubs.get(id); if (!s) execSubs.set(id, (s = new Set())); s.add(fn); return () => { s!.delete(fn); if (!s!.size) execSubs.delete(id); }; }
+function emit(e: ExecEvent) { for (const fn of execSubs.get(e.executionId) ?? []) { try { fn(e); } catch { /* subscriber gone */ } } }
+const lastLegEmit = new Map<string, string>();
+function setLeg(id: string, l: LegRow) {
+  const { status, txHash, ...rest } = l as any; delete rest.idx;
+  getDb().prepare("UPDATE legs SET status=?, tx_hash=?, json=? WHERE leg_id=?").run(status, txHash ?? null, JSON.stringify(rest), l.legId); touch(id);
+  const sig = `${status}:${txHash ?? ""}:${rest.error ?? ""}`;
+  if (lastLegEmit.get(l.legId) !== sig) { lastLegEmit.set(l.legId, sig);
+    emit({ type: `leg_${status}`, executionId: id, at: nowIso(), legId: l.legId, ticker: l.ticker, targetUsd: l.targetUsd, filledUsd: rest.filledUsd ?? 0, ...(txHash ? { txHash } : {}), ...(rest.error ? { error: rest.error, ...toUserError(rest.error, 409) } : {}) }); }
+}
+function setStatus(id: string, status: string) {
+  getDb().prepare("UPDATE basket_executions SET status=?, updated_at=? WHERE id=?").run(status, nowIso(), id);
+  const ls = legsOf(id);
+  emit({ type: "execution_status", executionId: id, at: nowIso(), status, filledUsd: +ls.reduce((a, l) => a + (l.filledUsd ?? 0), 0).toFixed(2), legsFilled: ls.filter((l) => l.status === "filled").length, legsTotal: ls.length });
+}
 function touch(id: string) { getDb().prepare("UPDATE basket_executions SET updated_at=? WHERE id=?").run(nowIso(), id); }
 export function get_execution(id: string) {
   const r = getDb().prepare("SELECT status, created_at, updated_at, json FROM basket_executions WHERE id=?").get(id) as any;
@@ -218,7 +236,10 @@ function finalStatus(id: string) {
 }
 
 // ---------------------------------------------------------------- fault injection (e2e only; local chain only)
-type Faults = { revertLeg?: number; transientOnceLeg?: number; crashAfterSubmitLeg?: number };
+type Faults = { revertLeg?: number; transientOnceLeg?: number; crashAfterSubmitLeg?: number; hangLeg?: number };
+/** No stuck states: a leg that hasn't settled in LEG_TIMEOUT_MS (default 30s) is marked failed with a reason. */
+const legTimeoutMs = () => Number(process.env.LEG_TIMEOUT_MS ?? 30_000);
+class LegTimeout extends Error {}
 let faults: Faults = {};
 export const _setFaults = (f: Faults) => { if (!cfg.IS_LOCAL) throw new Error("faults are local-only"); faults = { ...f }; };
 
@@ -231,9 +252,22 @@ async function outFromReceipt(hash: Hex, tokenOut: Address, vault: Address, dec:
 }
 /** Run one leg. Returns false to stop the basket. Never resubmits a leg that has a tx hash (reconciles by receipt instead). */
 async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const ms = legTimeoutMs();
+  const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new LegTimeout()), ms); });
+  try { return await Promise.race([runLegInner(exId, l, slippageBps), timeout]); }
+  catch (e) {
+    if (!(e instanceof LegTimeout)) throw e;
+    const cur = legsOf(exId).find((x) => x.legId === l.legId)!;
+    const reason = `Timed out after ${Math.round(ms / 1000)}s${cur.txHash ? " waiting for confirmation (retry checks the receipt first, so nothing is duplicated)" : " before submitting"}`;
+    setLeg(exId, { ...cur, status: "failed", error: reason }); log.warn("leg timed out", { executionId: exId, legId: l.legId, ms });
+    return false;
+  } finally { clearTimeout(timer); }
+}
+async function runLegInner(exId: string, l: LegRow & { idx: number }, slippageBps: number): Promise<boolean> {
   return withCtx({ executionId: exId, legId: l.legId }, async () => {
     const vault = svc._vault()!, t = svc._token(l.ticker);
-    if (l.status === "filling" && l.txHash) { // in flight when the process died: settle by receipt
+    if (l.txHash && (l.status === "filling" || /Timed out/.test(l.error ?? ""))) { // in flight (crash or timeout): settle by receipt
       try { const r = await outFromReceipt(l.txHash as Hex, t.address, vault, t.decimals);
         if (r.ok) { setLeg(exId, { ...l, status: "filled", filledUsd: l.targetUsd, amountOut: r.out }); log.info("leg reconciled from receipt", { txHash: l.txHash }); return true; }
         setLeg(exId, { ...l, status: "failed", error: "Transaction reverted" }); return false;
@@ -242,6 +276,7 @@ async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: nu
     for (let attempt = 0; attempt < 2; attempt++) {
       setLeg(exId, { ...l, status: "filling", txHash: undefined, error: undefined, attempts: (l.attempts ?? 0) + 1 });
       try {
+        if (faults.hangLeg === l.idx) { faults.hangLeg = undefined; await new Promise((res) => setTimeout(res, legTimeoutMs() + 2000)); return false; } // already marked failed by the timeout
         if (faults.transientOnceLeg === l.idx) { faults.transientOnceLeg = undefined; throw Object.assign(new Error("HTTP request failed: fetch failed (simulated RPC timeout)"), { transient: true }); }
         svc._trade()?.guard(svc._agent()!.id, exId); // anomaly breaker: a basket counts as one trade
         const q = await svc.quote_swap("mUSDG", l.ticker, l.targetUsd, slippageBps);
@@ -275,6 +310,7 @@ async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: nu
     return false;
   });
 }
+const settleStuck = ({ executionId }: { executionId: string }) => { for (const l of legsOf(executionId)) if (l.status === "pending" || l.status === "filling") setLeg(executionId, { ...l, status: "failed", error: l.status === "filling" ? "Timed out waiting for confirmation" : "Timed out before this leg started" }); finalStatus(executionId); };
 jobs.register("basket.execute", async ({ executionId }: { executionId: string }) => {
   const r = getDb().prepare("SELECT status, json FROM basket_executions WHERE id=?").get(executionId) as any;
   if (!r || ["filled", "partial", "failed"].includes(r.status)) return;
@@ -286,7 +322,7 @@ jobs.register("basket.execute", async ({ executionId }: { executionId: string })
     if (!(await runLeg(executionId, l, ex.slippageBps))) break;
   }
   log.info("basket finished", { executionId, status: finalStatus(executionId) });
-});
+}, { timeoutMs: 15 * 60_000, onTimeout: settleStuck });
 jobs.register("basket.retryLeg", async ({ executionId, legId }: { executionId: string; legId: string }) => {
   const ex = JSON.parse((getDb().prepare("SELECT json FROM basket_executions WHERE id=?").get(executionId) as any).json);
   const l = legsOf(executionId).find((x) => x.legId === legId);
@@ -307,7 +343,7 @@ export function retry_leg(executionId: string, legId: string) {
     const { idx: _i, ...row } = l; setLeg(executionId, { ...row, status: "pending", error: undefined } as LegRow); setStatus(executionId, "running");
     return true;
   });
-  if (res) jobs.enqueue("basket.retryLeg", { executionId, legId }, { maxAttempts: 1 });
+  if (res) { jobs.enqueue("basket.retryLeg", { executionId, legId }, { maxAttempts: 1 }); setImmediate(() => void jobs.kick()); }
   return get_execution(executionId);
 }
 export function resetBaskets() { const d = getDb(); for (const t of ["basket_proposals", "basket_executions", "legs", "idempotency"]) d.prepare(`DELETE FROM ${t}`).run(); jobs._purge("basket."); }

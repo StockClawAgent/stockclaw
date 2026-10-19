@@ -24,6 +24,8 @@ const anyRole: express.RequestHandler = (req, res, next) => (isOwner(req) || isA
 const mcpOnly: express.RequestHandler = (req, res, next) => (mcpToken() && bearer(req) !== mcpToken() ? res.status(401).json({ error: "MCP token required" }) : next());
 
 import { Limiter } from "./limiter.js";
+import { toUserError } from "./errors.js";
+import * as lat from "./latency.js";
 import * as cfg from "./config.js";
 import { pub as chainPub } from "./chain.js";
 export { Limiter };
@@ -33,6 +35,10 @@ const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?"
 export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerMin?: number; healthPerMin?: number } = {}) {
   const app = express();
   app.use(express.json({ limit: "100kb" }));
+  // UX: every error body gets {code, message, retryable, hint?} (central mapping in errors.ts); `error` keeps the detail
+  app.use((_req, res, next) => { const j = res.json.bind(res); res.json = (b: any) => j(res.statusCode >= 400 && b && typeof b === "object" && b.error && !b.code ? { ...b, ...toUserError(String(b.error), res.statusCode) } : b); next(); });
+  // per-endpoint latency (p50/p95 in /healthz); SSE streams excluded
+  app.use((req, res, next) => { const t0 = process.hrtime.bigint(); res.on("finish", () => { if (!/\/stream$/.test(req.path)) lat.record(`${req.method} ${req.baseUrl}${req.route?.path ?? (req.baseUrl ? "" : req.path)}`, Number(process.hrtime.bigint() - t0) / 1e6); }); next(); });
   // structured request logs with a request id (X-Request-Id echoed) and idempotency key; tokens never logged
   app.use((req, res, next) => {
     const requestId = (req.headers["x-request-id"] as string | undefined)?.slice(0, 64) || randomUUID(), t0 = Date.now();
@@ -67,6 +73,12 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   const h = (fn: (req: express.Request) => unknown) => async (req: express.Request, res: express.Response) => {
     svc.countCall();
     try { res.json(await fn(req)); }
+    catch (e) { res.status((e as svc.ApiError).status ?? 500).json({ error: (e as Error).message, ...((e as any).extra ?? {}) }); }
+  };
+  // 202 Accepted: the work is queued (basket legs run in the job worker); body = the execution
+  const h202 = (fn: (req: express.Request) => unknown) => async (req: express.Request, res: express.Response) => {
+    svc.countCall();
+    try { const out = await fn(req); res.status(202).json(out); }
     catch (e) { res.status((e as svc.ApiError).status ?? 500).json({ error: (e as Error).message, ...((e as any).extra ?? {}) }); }
   };
   app.use(["/api", "/mcp"], (req, res, next) => { const g = geo(req); if (g && !svc.regionCheck(g).eligible) return res.status(451).json({ error: svc.regionCheck(g).reason }); next(); });
@@ -123,9 +135,22 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.get("/baskets", anyRole, h(() => bk.list_baskets()));
   r.get("/baskets/executions", anyRole, h((q) => bk.list_executions(q.query.limit ? Number(q.query.limit) : undefined)));
   r.get("/baskets/executions/:id", anyRole, h((q) => bk.get_execution(String(q.params.id))));
-  r.post("/baskets/executions/:id/legs/:legId/retry", ownerOnly, h((q) => bk.retry_leg(String(q.params.id), String(q.params.legId))));
+  r.post("/baskets/executions/:id/legs/:legId/retry", ownerOnly, h202((q) => bk.retry_leg(String(q.params.id), String(q.params.legId))));
   r.post("/baskets/preview", anyRole, h((q) => bk.preview_basket_buy(q.body.id, Number(q.body.usd), { version: q.body.version, allowScaleDown: !!q.body.allowScaleDown, slippageBps: q.body.slippageBps })));
-  r.post("/baskets/buy", anyRole, h((q) => bk.buy_basket(q.body, role(q), idem(q))));
+  r.post("/baskets/buy", anyRole, h202((q) => bk.buy_basket(q.body, role(q), idem(q))));
+  // per-leg fill events (SSE): snapshot, then leg_pending/leg_filling/leg_filled/leg_failed + execution_status; closes when done
+  r.get("/baskets/executions/:id/stream", anyRole, (req, res) => {
+    let ex: any; try { ex = bk.get_execution(String(req.params.id)); } catch (e) { return res.status((e as any).status ?? 404).json({ error: (e as Error).message }); }
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", "x-accel-buffering": "no" });
+    res.flushHeaders(); res.write(": ok\n\n");
+    const send = (e: any) => res.write(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
+    send({ type: "snapshot", executionId: ex.id, execution: ex });
+    const done = (st: string) => ["filled", "partial", "failed"].includes(st);
+    if (done(ex.status)) return res.end();
+    const off = bk.onExecEvent(ex.id, (e) => { send(e); if (e.type === "execution_status" && done(String(e.status))) { off(); clearInterval(hb); res.end(); } });
+    const hb = setInterval(() => res.write(": ping\n\n"), 15_000);
+    req.on("close", () => { off(); clearInterval(hb); });
+  });
   r.get("/baskets/:id", anyRole, h((q) => bk.get_basket(String(q.params.id), q.query.version as string | undefined)));
   // sell approvals + passkeys (owner only)
   r.get("/approvals", ownerOnly, h((q) => apr.list_approvals(q.query.status as string | undefined)));
@@ -149,7 +174,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.post("/passkey/register/verify", ownerOnly, h((q) => apr.passkey_register_verify(q.body?.response ?? q.body)));
   app.use("/api", r);
   // liveness/readiness for ops: 503 when any critical alert (e.g. anvil down)
-  app.get("/healthz", async (_req, res) => { const hh = await mon.health(); res.status(hh.ok ? 200 : 503).json({ ok: hh.ok, status: hh.status, alerts: hh.alerts.map((a) => a.code), rpc: hh.rpc, queue: hh.queue }); });
+  app.get("/healthz", async (_req, res) => { const hh = await mon.health(); res.status(hh.ok ? 200 : 503).json({ ok: hh.ok, status: hh.status, alerts: hh.alerts.map((a) => a.code), rpc: hh.rpc, queue: hh.queue, latencyMs: lat.summary() }); });
 
   // MCP Streamable HTTP, stateless; MCP token only. TODO: OAuth 2.1 resource server (PRM, audience check).
   app.post("/mcp", mcpOnly, async (req, res) => {
