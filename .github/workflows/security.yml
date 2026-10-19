@@ -35,14 +35,14 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@82dee4ba654bd2146511f85f0d013af94670c4de # v1.4.0
       - run: forge build --sizes
       - run: forge test -vvv # fuzz + invariant runs come from foundry.toml
+      # slither-action + --ignore-compile can't read Foundry 1.x build-info (KeyError: 'output').
+      # Run pinned Slither directly; crytic-compile does its own `forge build --build-info`.
+      - name: Install Slither (pinned)
+        run: |
+          python3 -m venv /tmp/slither
+          /tmp/slither/bin/pip install --quiet slither-analyzer==0.11.6 crytic-compile==0.4.2
       - name: Slither (fail on high)
-        uses: crytic/slither-action@4fd765aeef19915d04ddf0be90c2930036a774d8 # v0.4.1
-        with:
-          target: .
-          ignore-compile: true
-          fail-on: high
-          slither-config: slither.config.json
-          sarif: results.sarif
+        run: /tmp/slither/bin/slither . --config-file slither.config.json --fail-high --sarif results.sarif
       - name: Upload SARIF
         if: always() && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@48ab28a6f5dbc2a99bf1e0131198dd8f1df78169 # v3.28.0
@@ -65,7 +65,7 @@ jobs:
           done < <(find . -name package-lock.json -not -path '*/node_modules/*' -not -path './lib/*')
           [ $found = 1 ] || echo "No package-lock.json yet; npm audit skipped (SR-40: commit lockfiles)."
       - name: Trivy filesystem scan (lockfiles, submodules)
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -95,14 +95,27 @@ jobs:
       - name: Fail on mainnet references (testnet is 46630)
         run: |
           set -o pipefail
-          # Mainnet chain ID 4663 (not 46630), the word mainnet, or mainnet-looking RPC hosts.
-          PATTERN='(^|[^0-9])4663([^0-9]|$)|mainnet|rpc\.chain\.robinhood\.com|robinhood[_-]?mainnet'
-          hits=$(grep -rnIiE "$PATTERN" . \
-                   --exclude-dir=.git --exclude-dir=lib --exclude-dir=node_modules \
-                   --exclude-dir=out --exclude-dir=cache --exclude-dir=test \
-                   --exclude='*.md' --exclude=security.yml || true)
+          EXCL=(--exclude-dir=.git --exclude-dir=lib --exclude-dir=node_modules
+                --exclude-dir=out --exclude-dir=cache --exclude-dir=test
+                --exclude='*.md' --exclude=security.yml)
+          # 1) Mainnet RPC hosts: no allowlist at all.
+          RPC='rpc\.chain\.robinhood\.com|robinhood[_-]?mainnet'
+          rpc_hits=$(grep -rnIiE "$RPC" . "${EXCL[@]}" || true)
+          if [ -n "$rpc_hits" ]; then
+            echo "::error::Mainnet RPC host referenced. StockClaw is testnet-only (46630)."
+            echo "$rpc_hits"; exit 1
+          fi
+          # 2) Mainnet chain ID 4663 (not 46630) or the word mainnet.
+          #    Allowlist: snapshot data files (registry dump / market-cap CSV row numbers),
+          #    .gitignore (ignores private docs), and lines explicitly marked `chain-guard: allow`
+          #    (e.g. the server guard that REFUSES chain 4663). Marked lines are still checked by (1).
+          PATTERN='(^|[^0-9])4663([^0-9]|$)|mainnet'
+          hits=$(grep -rnIiE "$PATTERN" . "${EXCL[@]}" \
+                   --exclude=.gitignore \
+                 | grep -vE '^\./data/[^/]+\.(csv|json):' \
+                 | grep -v 'chain-guard: allow' || true)
           if [ -n "$hits" ]; then
-            echo "::error::Mainnet chain ID or RPC referenced. StockClaw is testnet-only (46630)."
+            echo "::error::Mainnet chain ID referenced. StockClaw is testnet-only (46630)."
             echo "$hits"; exit 1
           fi
           grep -q 'TESTNET_CHAIN_ID = 46630' script/Deploy.s.sol || { echo "::error::Deploy.s.sol testnet chain guard missing"; exit 1; }

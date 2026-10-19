@@ -53,7 +53,7 @@ function findBasket(id: string, version?: string) {
   return b;
 }
 function executability(b: Basket): { executable: boolean; reason: string | null } {
-  if (!b.executableLocally) return { executable: false, reason: `Not executable locally: ${b.theme} uses mainnet registry tickers (${b.tickers.map((t) => t.ticker).join(", ")}) that have no StockClaw pool on the local/testnet chain. Listed for information only.` };
+  if (!b.executableLocally) return { executable: false, reason: `Not executable locally: ${b.theme} uses mainnet registry tickers (${b.tickers.map((t) => t.ticker).join(", ")}) that have no StockClaw pool on the local/testnet chain. Listed for information only.` };  // chain-guard: allow
   const missing = b.tickers.filter((t) => !svc.dep().stocks[t.ticker]).map((t) => t.ticker);
   return missing.length ? { executable: false, reason: `No local pool for ${missing.join(", ")}` } : { executable: true, reason: null };
 }

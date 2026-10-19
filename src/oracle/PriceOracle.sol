@@ -12,7 +12,7 @@ import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
 /// `setSession(openAt, closeAt)` from the exchange calendar (handles DST, holidays, half-days).
 /// Trading is allowed only when openAt <= now < closeAt. No session pushed or session expired => closed.
 /// Owner emergency modes: ForceClosed (incident halt); ForceOpen (TESTNET/DEMO ONLY - must never be
-/// used on mainnet; lets demos run outside US market hours).
+/// used on mainnet; lets demos run outside US market hours).  (chain-guard: allow)
 contract PriceOracle is Ownable2Step {
     enum MarketMode {
         Session,

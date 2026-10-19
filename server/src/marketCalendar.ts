@@ -1,6 +1,6 @@
 // NYSE regular-session calendar 2026-2027 (hardcoded). Times in minutes after 00:00 UTC.
 // Regular session 09:30-16:00 ET; early close 13:00 ET. US DST: EDT => 13:30-20:00 UTC, EST => 14:30-21:00 UTC.
-// Source: NYSE published holiday/early-close schedule. TODO: re-verify against nyse.com before mainnet; extend past 2027.
+// Source: NYSE published holiday/early-close schedule. TODO: re-verify against nyse.com before mainnet; extend past 2027.  (chain-guard: allow)
 export const NYSE_HOLIDAYS: Record<string, string> = {
   "2026-01-01": "New Year's Day", "2026-01-19": "Martin Luther King Jr. Day", "2026-02-16": "Washington's Birthday",
   "2026-04-03": "Good Friday", "2026-05-25": "Memorial Day", "2026-06-19": "Juneteenth", "2026-07-03": "Independence Day (observed)",

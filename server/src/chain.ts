@@ -4,7 +4,7 @@ import { createPublicClient, createWalletClient, http, defineChain, type Abi, ty
 import { privateKeyToAccount } from "viem/accounts";
 import { getDb, nowIso } from "./db.js";
 import { log } from "./log.js";
-import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE } from "./config.js";
+import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE } from "./config.js";  // chain-guard: allow (guard import)
 
 export const chain = defineChain({
   id: TESTNET_CHAIN_ID, name: "Robinhood Chain Testnet (or local anvil)",
@@ -14,7 +14,7 @@ export const pub = createPublicClient({ chain, transport: http(RPC_URL), polling
 
 export async function assertChain() {
   const id = await pub.getChainId();
-  if (id === MAINNET_CHAIN_ID) throw new Error("REFUSING: RPC_URL points at Robinhood Chain MAINNET (4663). Mainnet needs legal review + founder approval.");
+  if (id === MAINNET_CHAIN_ID) throw new Error("REFUSING: RPC_URL points at Robinhood Chain MAINNET (4663). Mainnet needs legal review + founder approval.");  // chain-guard: allow (refuses mainnet)
   if (id !== TESTNET_CHAIN_ID) throw new Error(`REFUSING: chainId ${id} != 46630`);
 }
 
