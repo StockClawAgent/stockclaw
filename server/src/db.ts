@@ -41,6 +41,7 @@ export function getDb() {
   db = new Database(DB_FILE);
   db.pragma("journal_mode = WAL"); db.pragma("synchronous = NORMAL"); db.pragma("busy_timeout = 5000");
   db.exec(SCHEMA);
+  try { db.exec("ALTER TABLE jobs ADD COLUMN result TEXT"); } catch { /* already there */ }
   return db;
 }
 export const tx = <T>(fn: () => T): T => getDb().transaction(fn)();

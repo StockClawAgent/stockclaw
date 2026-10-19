@@ -43,7 +43,14 @@ async function call(method: "GET" | "POST", name: string, body?: Record<string, 
   let url = `${API}/${name}`;
   if (method === "GET" && body) url += "?" + new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)]));
   const r = await fetch(url, { method, headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: method === "POST" ? JSON.stringify(body ?? {}) : undefined });
-  return { status: r.status, body: (await r.json()) as any };
+  return unwrapJob({ status: r.status, body: (await r.json()) as any }, token);
+}
+/** Trade writes answer 202 + job; tests that care about the outcome wait for it (GET /jobs/:id?wait) and see the old {status, body}. */
+async function unwrapJob(res: { status: number; body: any }, token: string | null) {
+  if (res.status !== 202 || !res.body?.jobId || !String(res.body.kind).startsWith("trade.")) return res;
+  let v = res.body;
+  for (let i = 0; i < 20 && !["done", "failed"].includes(v.status); i++) v = await (await fetch(`${API}/jobs/${v.jobId}?wait=30000`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json();
+  return v.status === "done" ? { status: 200, body: v.result, job: v } : { status: v.error.status, body: v.error, job: v };
 }
 
 try {
@@ -211,7 +218,7 @@ try {
     assert.equal((await mkApi(s2, { __requestOwnerToken: async () => { asked++; return OWNER; } }).get_wallet()).chainId, 46630);
     assert.equal(asked, 1); assert.equal(s2.getItem("stockclaw-owner-token"), OWNER);
     const s3 = memStore({ "stockclaw-owner-token": "bogus" });
-    await assert.rejects(mkApi(s3).revoke_session_key(), /Owner token required/); assert.equal(s3.getItem("stockclaw-owner-token"), null, "cleared after 401");
+    await assert.rejects(mkApi(s3).revoke_session_key(), (e: any) => /Owner token required/.test(e.detail) && e.code === "AUTH_REQUIRED" && /^Sign in/.test(e.message)); assert.equal(s3.getItem("stockclaw-owner-token"), null, "cleared after 401");
     const s4 = memStore({ "stockclaw-owner-token": MCPT }); // wrong role -> 403, token kept (only a 401 clears)
     await assert.rejects(mkApi(s4).revoke_session_key(), (e: any) => e.status === 403); assert.equal(s4.getItem("stockclaw-owner-token"), MCPT);
     assert.ok(!fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8").includes("window.prompt("), "no unmasked prompt");
@@ -339,7 +346,7 @@ try {
     let url = `${API}/${name}`;
     if (method === "GET" && body) url += "?" + new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)]));
     const r = await fetch(url, { method, headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers }, body: method === "POST" ? JSON.stringify(body ?? {}) : undefined });
-    return { status: r.status, body: (await r.json()) as any };
+    return unwrapJob({ status: r.status, body: (await r.json()) as any }, token);
   };
   const freshUser = async (allowlist = ["TSLA", "AMZN", "AMD", "PLTR"]) => {
     assert.equal((await call("POST", "dev/reset")).status, 200);
@@ -558,7 +565,7 @@ try {
     let txt = ""; const t0 = Date.now();
     while (!/event: activity/.test(txt) && Date.now() - t0 < 5000) txt += new TextDecoder().decode((await reader.read()).value);
     ac.abort();
-    const ev = JSON.parse(/data: (.*)/.exec(txt)![1]); assert.equal(ev.kind, "trade"); assert.ok(ev.id > top); assert.match(ev.title, /Agent bought: 5.00 mUSDG/);
+    const ev = JSON.parse(/event: activity\ndata: (.*)/.exec(txt)![1]); assert.equal(ev.kind, "trade"); assert.ok(ev.id > top); assert.match(ev.title, /Agent bought: 5.00 mUSDG/);
     assert.equal((await callH("GET", "activity", { since: top })).body.length, 1, "polling with since");
     // api.js: getActivity(since id cursor), getBreaker, openActivityStream (fetch-SSE with the owner token inside); ': ok' sent at once
     const A = mkApi(memStore({ "stockclaw-owner-token": OWNER }));
@@ -704,6 +711,75 @@ try {
     const k = hz.latencyMs["POST /api/baskets/buy"]; assert.ok(k && k.n >= 4 && k.p50 <= k.p95, JSON.stringify(hz.latencyMs).slice(0, 300));
   });
 
+
+  await step("no double-send: a timed-out basket leg (tx still pending) is retried by speeding up the SAME nonce; exactly one tx mines, one fill recorded", async () => {
+    await freshUser();
+    const { pub: P, txState } = await import("../src/chain.js");
+    const agentAddr = svc._agentWallet().address;
+    const n0 = await P.getTransactionCount({ address: agentAddr, blockTag: "latest" });
+    process.env.LEG_TIMEOUT_MS = "1500"; process.env.SETTLE_TIMEOUT_MS = "30000";
+    try {
+      const pv = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+      await P.request({ method: "evm_setAutomine", params: [false] } as any);
+      const b = await callH("POST", "baskets/buy", { previewId: pv.previewId }); assert.equal(b.status, 202);
+      const e1 = await waitExec(b.body.id);
+      const l0 = e1.legs[0]; assert.equal(l0.status, "failed", JSON.stringify(e1)); assert.match(l0.error, /Timed out/); assert.ok(l0.txHash, "hash tracked");
+      assert.equal(await txState(l0.txHash), "pending");
+      const nonce0 = (getDb().prepare("SELECT nonce FROM tx_log WHERE hash=?").get(l0.txHash) as any).nonce; assert.equal(nonce0, n0);
+      process.env.LEG_TIMEOUT_MS = "20000"; process.env.PENDING_WAIT_MS = "300";
+      assert.equal((await callH("POST", `baskets/executions/${b.body.id}/legs/${l0.legId}/retry`)).status, 202);
+      let sp: any; for (let i = 0; i < 100 && !sp; i++) { sp = getDb().prepare("SELECT hash, nonce FROM tx_log WHERE label=?").get(`basket:${l0.legId}:speedup`); if (!sp) await new Promise((r) => setTimeout(r, 100)); }
+      assert.ok(sp, "speed-up sent"); assert.equal(sp.nonce, nonce0, "same nonce");
+      await P.request({ method: "evm_mine", params: [] } as any);
+      await P.request({ method: "evm_setAutomine", params: [true] } as any);
+      const e2 = await waitExec(b.body.id, (e: any) => e.legs[0].status === "filled" || e.legs[0].status === "failed");
+      assert.equal(e2.legs[0].status, "filled", JSON.stringify(e2.legs[0])); assert.equal(e2.legs[0].txHash, sp.hash);
+      await assert.rejects(P.getTransactionReceipt({ hash: l0.txHash }), "original never mined");
+      assert.equal(await P.getTransactionCount({ address: agentAddr, blockTag: "latest" }), n0 + 1, "one nonce used");
+      await new Promise((r) => setTimeout(r, 1000));
+      assert.equal((await call("GET", "get_history", { limit: 50 })).body.filter((h: any) => h.executionId === b.body.id && h.status === "filled").length, 1, "one fill recorded");
+      assert.match((getDb().prepare("SELECT status FROM tx_log WHERE hash=?").get(l0.txHash) as any).status, /replac/);
+    } finally {
+      await P.request({ method: "evm_setAutomine", params: [true] } as any).catch(() => {});
+      delete process.env.LEG_TIMEOUT_MS; delete process.env.PENDING_WAIT_MS; delete process.env.SETTLE_TIMEOUT_MS;
+    }
+  });
+
+  await step("trade writes: REST execute_swap/create_dca answer 202 + job fast; outcome via SSE job event and GET /jobs/:id; Idempotency-Key dedupes; MCP waits (or hands back a jobId) and MCP errors carry {code,message,retryable}", async () => {
+    await freshUser();
+    const H = { "content-type": "application/json", authorization: `Bearer ${OWNER}` };
+    const ac = new AbortController(); const sse = await fetch(`${API}/activity/stream`, { headers: { "x-owner-token": OWNER }, signal: ac.signal }); const rd = sse.body!.getReader();
+    const t0 = performance.now();
+    const r = await fetch(`${API}/execute_swap`, { method: "POST", headers: { ...H, "idempotency-key": "e2e-swap-1" }, body: JSON.stringify({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 7 }) });
+    const dt = performance.now() - t0; const j = await r.json();
+    assert.equal(r.status, 202); assert.ok(dt < 150, `${dt.toFixed(0)}ms`); assert.equal(j.kind, "trade.execute_swap"); assert.ok(["queued", "running"].includes(j.status)); assert.equal(j.statusUrl, `/api/jobs/${j.jobId}`);
+    const done = await (await fetch(`${API}/jobs/${j.jobId}?wait=20000`, { headers: H })).json(); assert.equal(done.status, "done", JSON.stringify(done)); assert.match(done.result.txHash, /^0x/);
+    const dup = await (await fetch(`${API}/execute_swap`, { method: "POST", headers: { ...H, "idempotency-key": "e2e-swap-1" }, body: JSON.stringify({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 7 }) })).json();
+    assert.equal(dup.jobId, j.jobId); assert.equal(dup.result.txHash, done.result.txHash, "same key: same job, no second swap");
+    let txt = ""; for (const t1 = Date.now(); !new RegExp(`"jobId":${j.jobId},[^\\n]*"status":"done"`).test(txt) && Date.now() - t1 < 5000;) txt += new TextDecoder().decode((await rd.read()).value);
+    ac.abort(); assert.match(txt, /event: job/); assert.match(txt, /"kind":"job"/);
+    const bad = await (await fetch(`${API}/execute_swap`, { method: "POST", headers: H, body: JSON.stringify({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 150 }) })).json();
+    const badDone = await (await fetch(`${API}/jobs/${bad.jobId}?wait=20000`, { headers: H })).json();
+    assert.equal(badDone.status, "failed"); assert.equal(badDone.error.code, "PER_TRADE_CAP"); assert.equal(badDone.error.status, 403); assert.equal(badDone.error.retryable, false);
+    const dca = await fetch(`${API}/create_dca`, { method: "POST", headers: H, body: JSON.stringify({ tokenIn: "mUSDG", tokenOut: "AMZN", amountPerExec: 5, interval: "daily", maxExecs: 2 }) });
+    assert.equal(dca.status, 202); const dj = await (await fetch(`${API}/jobs/${(await dca.json()).jobId}?wait=20000`, { headers: H })).json(); assert.equal(dj.status, "done", JSON.stringify(dj));
+    assert.equal((await fetch(`${API}/jobs/999999`, { headers: H })).status, 404);
+    // MCP: synchronous-friendly
+    const c = await mcpClient();
+    const ok1 = mcpJson(await c.callTool({ name: "execute_swap", arguments: { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 6 } })); assert.match(ok1.txHash, /^0x/);
+    const e1: any = await c.callTool({ name: "execute_swap", arguments: { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 150 } });
+    assert.equal(e1.isError, true); const eb = JSON.parse(e1.content[0].text);
+    assert.equal(eb.code, "PER_TRADE_CAP"); assert.equal(eb.retryable, false); assert.match(eb.message, /per-trade limit/); assert.match(eb.error, /per-trade cap/); assert.equal(e1.structuredContent.code, "PER_TRADE_CAP");
+    const e2: any = await c.callTool({ name: "get_price", arguments: { symbol: "NOPE" } }); assert.equal(e2.isError, true); const eb2 = JSON.parse(e2.content[0].text); assert.ok(eb2.code && typeof eb2.retryable === "boolean" && eb2.message, e2.content[0].text);
+    process.env.MCP_WAIT_MS = "1";
+    try {
+      const slow = mcpJson(await c.callTool({ name: "execute_swap", arguments: { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 5 } }));
+      assert.ok(slow.jobId && ["queued", "running"].includes(slow.status), JSON.stringify(slow)); assert.match(slow.message, /get_job/);
+      const g = mcpJson(await c.callTool({ name: "get_job", arguments: { jobId: slow.jobId, waitSec: 20 } })); assert.equal(g.status, "done"); assert.match(g.result.txHash, /^0x/);
+    } finally { delete process.env.MCP_WAIT_MS; }
+    await c.close();
+  });
+
   await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
     await freshUser();
     assert.equal((await call("POST", "create_session_key", { allowlist: ["AMD", "TSLA"], label: "E2E seller", name: "Research bot" })).status, 200);
@@ -764,6 +840,11 @@ try {
     assert.match(run(`const s = await import(${svcP}); await import(${brkP}); ${check}`, {}), /"breaker":"on"/);
     assert.match(run(`const s = await import(${svcP}); ${check}`, { BREAKER: "off" }), /only allowed on a local chain with ALLOW_OPEN_LOCAL=1/);
     assert.match(run(`const s = await import(${svcP}); ${check}`, { BREAKER: "off", ALLOW_OPEN_LOCAL: "1" }), /local test mode/);
+    // testnet explorer links (Blockscout) when RPC_URL points at 46630; none on local anvil
+    const cfgP = JSON.stringify(path.resolve("src/config.ts"));
+    const ex = run(`const c = await import(${cfgP}); console.log("RESULT" + JSON.stringify([c.explorerTx("0xabc"), c.explorerAddress("0xdef")]));`, { RPC_URL: "https://rpc.testnet.chain.robinhood.com" });
+    assert.equal(ex, JSON.stringify(["https://explorer.testnet.chain.robinhood.com/tx/0xabc", "https://explorer.testnet.chain.robinhood.com/address/0xdef"]));
+    assert.equal(run(`const c = await import(${cfgP}); console.log("RESULT" + JSON.stringify(c.explorerTx("0xabc")));`, {}), "null");
   });
   await step("MCP per-key trade limit: 10 trade-tool calls/min per agent key, then refused; read tools unaffected", async () => {
     const { _resetTradeLimiter } = await import("../src/mcp.js"); _resetTradeLimiter();

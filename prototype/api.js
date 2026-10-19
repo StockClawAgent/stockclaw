@@ -128,6 +128,12 @@ async function ownerToken() {
   if (!t) { const e = new Error("owner token required"); e.status = 401; e.code = "OWNER_TOKEN_REQUIRED"; throw e; }
   return t;
 }
+// Errors carry the server's {code, message, retryable, hint}; err.message is the plain user sentence.
+function apiError(data, status) {
+  const e = new Error((data && (data.message || data.error)) || `HTTP ${status}`); e.status = status; e.data = data;
+  if (data) { e.code = data.code; e.retryable = data.retryable; e.hint = data.hint; e.detail = data.error; if (data.stepUpChallenge) e.stepUpChallenge = data.stepUpChallenge; }
+  return e;
+}
 async function call(method, name, body, headers = {}) {
   let url = `${API_BASE}/api/${name}`;
   const tok = await ownerToken();
@@ -137,7 +143,18 @@ async function call(method, name, body, headers = {}) {
   let r; try { r = await fetch(url, opt); } catch (e) { throw new Unreachable(String(e)); }
   const data = await r.json().catch(() => ({}));
   if (r.status === 401) StockClawAuth.clear(); // missing/bad owner token. A 403 (wrong role, step-up, caps) keeps it.
-  if (!r.ok) { const e = new Error(data.error || `HTTP ${r.status}`); e.status = r.status; e.data = data; if (data.stepUpChallenge) e.stepUpChallenge = data.stepUpChallenge; throw e; }
+  if (!r.ok) throw apiError(data, r.status);
+  // trade writes answer 202 + job: wait for the outcome so callers keep the same result shape
+  if (r.status === 202 && data && data.jobId && String(data.kind || "").startsWith("trade.")) {
+    let v = data;
+    for (let i = 0; i < 8 && v.status !== "done" && v.status !== "failed"; i++) {
+      const jr = await fetch(`${API_BASE}/api/jobs/${v.jobId}?wait=25000`, { headers: opt.headers }).catch((e) => { throw new Unreachable(String(e)); });
+      v = await jr.json().catch(() => v);
+    }
+    if (v.status === "done") return v.result;
+    if (v.status === "failed") throw apiError(v.error, v.error.status);
+    const e = new Error("Still running; check the activity feed"); e.status = 202; e.jobId = v.jobId; e.code = "PENDING"; e.retryable = true; throw e;
+  }
   return data;
 }
 // Idempotency-Key header for retry-safe writes (server also accepts body.idempotencyKey as a fallback)
@@ -164,7 +181,7 @@ function openStream(onEvent, opts) {
         for (;;) { const { value, done } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true });
           let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
             const data = chunk.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
-            if (data) { try { const e = JSON.parse(data); if (e.id) last = e.id; onEvent(e); } catch {} } } }
+            if (data) { try { const e = JSON.parse(data); if (e.kind === "job") { o.onJob && o.onJob(e); continue; } if (e.id) last = e.id; onEvent(e); } catch {} } } }
       } catch (e) {
         if (closed) return;
         if (e && (e.fatal || e.code === "OWNER_TOKEN_REQUIRED")) { state("error", { message: "owner token required", status: e.status || 401 }); return; }

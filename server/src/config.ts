@@ -26,7 +26,10 @@ export const IS_LOCAL = isLocalRpc(RPC_URL);
 export const PORT = Number(process.env.PORT ?? 8787);
 export const DATA_DIR = process.env.DATA_DIR ?? path.join(ROOT, "data");
 export const DEPLOYMENTS_FILE = process.env.DEPLOYMENTS_FILE ?? path.join(DATA_DIR, IS_LOCAL ? "local-46630.json" : "testnet-46630.json");
-export const EXPLORER = IS_LOCAL ? "local-anvil" : "https://explorer.testnet.chain.robinhood.com";
+// Block explorer (Blockscout). Testnet 46630: explorer.testnet.chain.robinhood.com. Local anvil: none (hash shown as text).
+export const EXPLORER: string | null = IS_LOCAL ? null : (process.env.EXPLORER_URL ?? "https://explorer.testnet.chain.robinhood.com").replace(/\/+$/, "");
+export const explorerTx = (hash: string) => (EXPLORER && hash ? `${EXPLORER}/tx/${hash}` : null);
+export const explorerAddress = (addr: string) => (EXPLORER && addr ? `${EXPLORER}/address/${addr}` : null);
 export const KEEPER_INTERVAL_MS = Number(process.env.KEEPER_INTERVAL_MS ?? 60_000);
 /** "open" forces market open (local demo only); "schedule" uses the onchain NYSE schedule (halts off-hours). */
 export const getMarketMode = () => (process.env.MARKET_MODE ?? (IS_LOCAL ? "open" : "schedule")) as "open" | "schedule";

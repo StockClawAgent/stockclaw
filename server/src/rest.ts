@@ -9,6 +9,7 @@ import * as bk from "./baskets.js";
 import * as apr from "./approvals.js";
 import * as act from "./activity.js";
 import * as brk from "./breaker.js";
+import * as trades from "./trades.js";
 import { randomUUID } from "node:crypto";
 import { log, withCtx } from "./log.js";
 import { REPO, ownerToken, mcpToken } from "./config.js";
@@ -93,9 +94,9 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.get("/list_assets", anyRole, h(() => svc.list_assets()));
   r.get("/get_price", anyRole, h((q) => svc.get_price(String(q.query.symbol))));
   r.get("/quote_swap", anyRole, h((q) => svc.quote_swap(String(q.query.tokenIn), String(q.query.tokenOut), Number(q.query.amountIn), q.query.slippageBps ? Number(q.query.slippageBps) : undefined)));
-  r.post("/execute_swap", anyRole, h((q) => svc.execute_swap(q.body.quoteId ?? q.body)));
-  r.post("/create_dca", anyRole, h((q) => svc.create_dca(q.body)));
-  r.post("/create_limit_order", anyRole, h((q) => svc.create_limit_order(q.body)));
+  // 202 + job (never blocks on chain); outcome via SSE `job` events or GET /api/jobs/:id?wait=ms
+  for (const fn of ["execute_swap", "create_dca", "create_limit_order"] as const) r.post(`/${fn}`, anyRole, h202((q) => trades.submit(fn, q.body ?? {}, idem(q))));
+  r.get("/jobs/:id", anyRole, h(async (q) => { const v = await trades.waitView(Number(q.params.id), Number(q.query.wait ?? 0)); if (!v) throw new svc.ApiError(404, "Unknown job"); return v; }));
   r.get("/list_orders", anyRole, h((q) => svc.list_orders(q.query.status as string | undefined)));
   r.get("/get_history", anyRole, h((q) => svc.get_history(q.query.limit ? Number(q.query.limit) : undefined)));
   r.post("/faucet_testnet", anyRole, h(() => svc.faucet_testnet()));
@@ -165,8 +166,9 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
     const since = Number(req.query.since ?? req.headers["last-event-id"] ?? 0);
     for (const e of act.list(since, 50).reverse()) res.write(`id: ${e.id}\nevent: activity\ndata: ${JSON.stringify(e)}\n\n`);
     const off = act.subscribe((e) => res.write(`id: ${e.id}\nevent: activity\ndata: ${JSON.stringify(e)}\n\n`));
+    const offJobs = act.subscribeJobs((j) => res.write(`event: job\ndata: ${JSON.stringify({ ...(j as any), jobKind: (j as any).kind, kind: "job" })}\n\n`));
     const hb = setInterval(() => res.write(": ping\n\n"), 25_000);
-    req.on("close", () => { off(); clearInterval(hb); });
+    req.on("close", () => { off(); offJobs(); clearInterval(hb); });
   });
   r.get("/keys/breaker", ownerOnly, h(() => ({ tripped: brk.tripped().map((t) => ({ keyId: t.key_id, reason: t.reason, trippedAt: new Date(t.tripped_at).toISOString() })) })));
   r.post("/keys/:keyId/resume", ownerOnly, h((q) => brk.resume(String(q.params.keyId))));

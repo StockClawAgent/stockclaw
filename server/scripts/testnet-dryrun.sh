@@ -17,5 +17,6 @@ export FEED_UPDATER="${FEED_UPDATER:-0x2222222222222222222222222222222222222222}
 export KEEPER="${KEEPER:-0x3333333333333333333333333333333333333333}"
 export ATTESTER="${ATTESTER:-0x4444444444444444444444444444444444444444}"
 export MOCK_TOKENS="${MOCK_TOKENS:-0}"   # 0 = real testnet stock tokens (reverts if any is missing)
+[ -f artifacts/COMMIT ] && echo "Contracts: $(cat artifacts/COMMIT)  (roles/funding: docs/TESTNET_DEPLOY.md)"
 echo "Dry run on $RPC (46630), MOCK_TOKENS=$MOCK_TOKENS, sender $SENDER. NOT broadcasting."
 cd artifacts/head && "$FORGE" script script/Deploy.s.sol:Deploy --rpc-url "$RPC" --sender "$SENDER" --out ../out --cache-path ../cache "$@"

@@ -39,17 +39,20 @@ async function runJob(j: Job) {
   return withCtx({ jobId: j.id, jobKind: j.kind }, async () => {
     try {
       if (!h) throw new Error(`no handler for ${j.kind}`);
+      let out: unknown;
       const o = opts.get(j.kind) ?? {}, ms = o.timeoutMs ?? Number(process.env.JOB_TIMEOUT_MS ?? 120_000);
       let t: NodeJS.Timeout | undefined;
-      try { await Promise.race([h(j.payload, j), new Promise((_, rej) => { t = setTimeout(() => rej(new JobTimeout(`Timed out after ${Math.round(ms / 1000)}s`)), ms); })]); }
+      try { out = await Promise.race([h(j.payload, j), new Promise((_, rej) => { t = setTimeout(() => rej(new JobTimeout(`Timed out after ${Math.round(ms / 1000)}s`)), ms); })]); }
       catch (e) { if (e instanceof JobTimeout) { try { o.onTimeout?.(j.payload); } catch { /* best effort */ } j.attempts = j.max_attempts; } throw e; }
       finally { clearTimeout(t); }
-      d.prepare("UPDATE jobs SET status='done', locked_until=NULL, last_error=NULL, updated_at=? WHERE id=?").run(Date.now(), j.id);
+      d.prepare("UPDATE jobs SET status='done', locked_until=NULL, last_error=NULL, result=?, updated_at=? WHERE id=?").run(out === undefined ? null : JSON.stringify(out), Date.now(), j.id);
+      notify(j.id);
     } catch (e) {
       if (e instanceof SimulatedCrash) { log.warn("job interrupted (simulated crash); lease left in place", { jobId: j.id }); crashed = true; return; }
       const msg = (e as Error).message?.slice(0, 300);
       const final = j.attempts >= j.max_attempts;
-      d.prepare("UPDATE jobs SET status=?, run_at=?, locked_until=NULL, last_error=?, updated_at=? WHERE id=?").run(final ? "failed" : "queued", Date.now() + 2000 * j.attempts, msg, Date.now(), j.id);
+      d.prepare("UPDATE jobs SET status=?, run_at=?, locked_until=NULL, last_error=?, result=?, updated_at=? WHERE id=?").run(final ? "failed" : "queued", Date.now() + 2000 * j.attempts, msg, final ? JSON.stringify({ status: (e as any).status ?? 500, extra: (e as any).extra ?? null }) : null, Date.now(), j.id);
+      if (final) notify(j.id);
       log[final ? "error" : "warn"]("job failed", { jobId: j.id, kind: j.kind, attempt: j.attempts, final, error: msg });
     }
   });
@@ -81,5 +84,27 @@ export function stats() {
   const by = Object.fromEntries(rows.map((r) => [r.status, r.n]));
   const oldest = getDb().prepare("SELECT MIN(run_at) t FROM jobs WHERE status='queued'").get() as { t: number | null };
   return { queued: by.queued ?? 0, running: by.running ?? 0, failed: by.failed ?? 0, done: by.done ?? 0, oldestQueuedAgeSec: oldest.t ? Math.max(0, Math.round((Date.now() - oldest.t) / 1000)) : 0 };
+}
+// ---- job watchers (REST long-poll, MCP wait, SSE job events)
+const watchers = new Set<(id: number) => void>();
+function notify(id: number) { for (const w of watchers) { try { w(id); } catch {} } }
+export const onJobSettled = (f: (id: number) => void) => { watchers.add(f); return () => watchers.delete(f); };
+export function get(id: number) {
+  return getDb().prepare("SELECT id, kind, status, attempts, last_error, result, created_at, updated_at FROM jobs WHERE id=?").get(id) as { id: number; kind: string; status: string; attempts: number; last_error: string | null; result: string | null; created_at: number; updated_at: number } | undefined;
+}
+/** Wait until the job is done/failed (or timeoutMs passes). */
+export async function wait(id: number, timeoutMs: number) {
+  const fin = () => { const j = get(id); return !j || j.status === "done" || j.status === "failed"; };
+  if (fin()) return get(id);
+  await new Promise<void>((res) => { const off = onJobSettled((x) => { if (x === id) { clearTimeout(t); off(); res(); } }); const t = setTimeout(() => { off(); res(); }, timeoutMs); });
+  return get(id);
+}
+/** Run one specific queued job now, in this process (atomic claim; the worker can't run it twice). */
+export async function runNow(id: number) {
+  const d = getDb(), now = Date.now();
+  const u = d.prepare("UPDATE jobs SET status='running', attempts=attempts+1, locked_until=?, updated_at=? WHERE id=? AND status='queued'").run(now + LEASE_MS, now, id);
+  if (!u.changes) return;
+  const j = d.prepare("SELECT id, kind, payload, attempts, max_attempts FROM jobs WHERE id=?").get(id) as any;
+  await runJob({ ...j, payload: JSON.parse(j.payload) });
 }
 export const _purge = (kindPrefix: string) => getDb().prepare("DELETE FROM jobs WHERE kind LIKE ?").run(kindPrefix + "%");

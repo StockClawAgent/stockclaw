@@ -107,3 +107,9 @@ Definitions live in `strategies/<id>/<version>/{prompt.md,schema.json}` plus `ca
 - Approvals include `reasonCode` (`SELL_CAP_EXCEEDED`), `reasonText` and `agentName` (the key's `label`, set through `create_session_key({label})`).
 - On the local chain, `explorerUrl` is `null`, so the UI shows the hash as plain text.
 - Dev fixture: `npm run seed:approval [TICKER] [USD]` calls `POST /api/dev/seed-approval` (owner only, refused unless the chain is anvil).
+
+### Async trade writes, retries, MCP errors
+- `POST /api/execute_swap`, `/create_dca` and `/create_limit_order` return **202** `{jobId, kind:"trade.<fn>", status:"queued"|"running", statusUrl, createdAt, updatedAt}`. They never wait on the chain. `Idempotency-Key` dedupes to the same job.
+- Outcome: `GET /api/jobs/:id?wait=<ms≤30000>` returns `{status:"done", result}` or `{status:"failed", error:{code,message,retryable,hint?,error,status}}`, and the activity stream sends an SSE `event: job` (`kind:"job"`, `jobKind`). In `api.js`, the existing functions wait for the job, so their return shapes don't change. `openActivityStream(onEvent, {onJob})` receives the job events.
+- MCP trade tools run the same job and wait up to `MCP_WAIT_MS` (25s). If it is still running, they return `{status, jobId}` and the agent calls `get_job`. MCP errors are `{error, code, message, retryable, hint?}` (as JSON text and as `structuredContent`).
+- Basket leg retry never sends twice: the leg's tx hash and nonce are tracked. If the old tx is still pending, it is sped up at the **same nonce**. If it was dropped, it is re-sent at the same nonce unless that nonce was already used. A timed-out run can't send any more.

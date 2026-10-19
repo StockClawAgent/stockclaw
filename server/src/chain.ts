@@ -51,7 +51,23 @@ const txLog = (hash: string, f: Partial<{ signer: string; nonce: number; label: 
   if (f.signer) d.prepare("INSERT OR IGNORE INTO tx_log(hash, signer, nonce, label, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)").run(hash, f.signer, f.nonce ?? null, f.label ?? null, f.status ?? "submitted", nowIso(), nowIso());
   else d.prepare("UPDATE tx_log SET status=?, error=?, updated_at=? WHERE hash=?").run(f.status, f.error ?? null, nowIso(), hash);
 };
-export type WriteOpts = { label?: string; onSubmitted?: (hash: Hex) => void };
+export type WriteOpts = { label?: string; onSubmitted?: (hash: Hex) => void; beforeSend?: () => void; nonce?: number };
+const SETTLE_TIMEOUT_MS = () => Number(process.env.SETTLE_TIMEOUT_MS ?? 180_000);
+/** Status of a tx by hash: mined | reverted | pending (known to the node, no receipt) | unknown (not found / dropped). */
+export async function txState(hash: Hex): Promise<"mined" | "reverted" | "pending" | "unknown"> {
+  try { const r = await pub.getTransactionReceipt({ hash }); return r.status === "success" ? "mined" : "reverted"; } catch { /* no receipt */ }
+  try { await pub.getTransaction({ hash }); return "pending"; } catch { return "unknown"; }
+}
+export const txLogRow = (hash: string) => getDb().prepare("SELECT hash, signer, nonce, label, status FROM tx_log WHERE hash=?").get(hash) as { hash: Hex; signer: Address; nonce: number; label: string; status: string } | undefined;
+/** Wait until any of the hashes has a receipt (a replaced tx and its replacement share a nonce: only one can mine). */
+export async function waitAny(hashes: Hex[], timeoutMs: number) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    for (const h of hashes) { try { const r = await pub.getTransactionReceipt({ hash: h }); return r; } catch { /* not yet */ } }
+    await new Promise((res) => setTimeout(res, 150));
+  }
+  throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${hashes.join(" / ")}`);
+}
 export function wallet(pk: Hex) {
   const account = privateKeyToAccount(pk);
   const client = createWalletClient({ account, chain, transport: http(RPC_URL) });
@@ -61,7 +77,13 @@ export function wallet(pk: Hex) {
     queues.set(account.address, next);
     return next;
   };
-  const send = async (label: string, fn: (nonce: number) => Promise<Hex>): Promise<Hex> => {
+  const send = async (label: string, fn: (nonce: number) => Promise<Hex>, fixedNonce?: number): Promise<Hex> => {
+    if (fixedNonce != null) { // re-send at a known nonce (dropped tx): can never mine twice
+      const hash = await fn(fixedNonce);
+      txLog(hash, { signer: account.address, nonce: fixedNonce, label, status: "submitted" });
+      log.info("tx re-sent at the same nonce", { signer: account.address, nonce: fixedNonce, label, txHash: hash });
+      return hash;
+    }
     for (let attempt = 0; ; attempt++) {
       const nonce = await takeNonce(account.address);
       try {
@@ -77,22 +99,40 @@ export function wallet(pk: Hex) {
     }
   };
   const settle = async (hash: Hex, label: string) => {
-    const r = await pub.waitForTransactionReceipt({ hash });
-    txLog(hash, { status: r.status === "success" ? "mined" : "reverted" });
+    const r = await pub.waitForTransactionReceipt({ hash, timeout: SETTLE_TIMEOUT_MS() });
+    if (r.transactionHash.toLowerCase() !== hash.toLowerCase()) { txLog(hash, { status: "replaced" }); txLog(r.transactionHash, { status: r.status === "success" ? "mined" : "reverted" }); }
+    else txLog(hash, { status: r.status === "success" ? "mined" : "reverted" });
     if (r.status !== "success") throw new Error(`tx reverted: ${label} ${hash}`);
     return r;
   };
   return {
     account, address: account.address, client,
     /** simulate (surfaces revert reason) then send with a managed nonce and wait for success */
-    write: (address: Address, abi: Abi, functionName: string, args: unknown[] = [], opts: WriteOpts = {}) => run(async () => {
+    write: (address: Address, abi: Abi, functionName: string, args: unknown[] = [], opts: WriteOpts = {}) => (opts.nonce != null ? (f: () => Promise<any>) => f() : run)(async () => {
       const { request } = await pub.simulateContract({ account, address, abi, functionName, args } as any);
       const label = opts.label ?? functionName;
-      const hash = await send(label, (nonce) => client.writeContract({ ...(request as any), nonce }));
+      opts.beforeSend?.();
+      const hash = await send(label, (nonce) => client.writeContract({ ...(request as any), nonce }), opts.nonce);
       opts.onSubmitted?.(hash);
       const receipt = await settle(hash, label);
       return { hash, receipt };
     }),
+    /** Speed-up: re-send a PENDING tx (same to/data/value) at the SAME nonce with higher fees. Bypasses the signer
+     * queue on purpose: no new nonce is taken, so the original and the replacement can never both mine. */
+    speedUp: async (hash: Hex, label: string) => {
+      const t = await pub.getTransaction({ hash });
+      if (t.from.toLowerCase() !== account.address.toLowerCase()) throw new Error("speedUp: not this signer's tx");
+      const fees = await pub.estimateFeesPerGas().catch(() => ({ maxFeePerGas: 0n, maxPriorityFeePerGas: 0n }));
+      const bump = (x: bigint | undefined | null) => ((x ?? 0n) * 3n) / 2n + 1n;
+      const maxPriorityFeePerGas = [bump(t.maxPriorityFeePerGas ?? t.gasPrice), fees.maxPriorityFeePerGas ?? 0n].reduce((a, b) => (a > b ? a : b));
+      let maxFeePerGas = [bump(t.maxFeePerGas ?? t.gasPrice), fees.maxFeePerGas ?? 0n].reduce((a, b) => (a > b ? a : b));
+      if (maxFeePerGas < maxPriorityFeePerGas) maxFeePerGas = maxPriorityFeePerGas;
+      const h2 = await client.sendTransaction({ account, chain, to: t.to!, data: t.input, value: t.value, nonce: t.nonce, gas: t.gas, maxFeePerGas, maxPriorityFeePerGas } as any);
+      txLog(h2, { signer: account.address, nonce: t.nonce, label: `${label}:speedup`, status: "submitted" });
+      txLog(hash, { status: "replacing" });
+      log.warn("tx sped up (same nonce)", { signer: account.address, nonce: t.nonce, old: hash, txHash: h2 });
+      return h2;
+    },
     deploy: (c: { abi: Abi; bytecode: Hex }, args: unknown[] = []) => run(async () => {
       const hash = await send("deploy", (nonce) => client.deployContract({ abi: c.abi, bytecode: c.bytecode, args, nonce } as any));
       const r = await settle(hash, "deploy");

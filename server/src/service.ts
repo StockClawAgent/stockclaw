@@ -99,7 +99,7 @@ const agentWallet = () => {
   if (!S.agent) throw new ApiError(409, "No agent key. Call create_session_key first.");
   return wallet(cfg.keys.agentPool()[S.agent.idx]);
 };
-const txOut = (hash: string) => ({ txHash: hash, explorerUrl: cfg.IS_LOCAL ? null : `${cfg.EXPLORER}/tx/${hash}`, status: "confirmed" });
+const txOut = (hash: string) => ({ txHash: hash, explorerUrl: cfg.explorerTx(hash), status: "confirmed" });
 const chainNow = async () => Number((await pub.getBlock()).timestamp);
 
 // ---------------------------------------------------------------- assets
