@@ -1,6 +1,5 @@
 out/
 cache/
-lib/
 broadcast/
 .env
 .env.*
@@ -11,3 +10,14 @@ __pycache__/
 !/png/.keep
 /avatars/*.png
 /logo/new-logo-reference.png
+
+# Private: kept locally, not for the public repo (copies in /workspace/stockclaw-private)
+threat-model.md
+audit/
+docs/MAINNET_HARDENING.md
+blobs/
+consumer-positioning.md
+gtm-brief.md
+x-plan-review.md
+x_calendar_v2.md
+x_seo_plan.md
