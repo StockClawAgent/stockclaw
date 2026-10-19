@@ -36,6 +36,7 @@ async function rpc(method: string, params: unknown[] = []) {
 for (let i = 0; i < 50; i++) { try { if (await rpc("eth_chainId")) break; } catch {} await new Promise((r) => setTimeout(r, 200)); }
 const warp = async (sec: number) => { await rpc("evm_increaseTime", [sec]); await rpc("evm_mine"); };
 
+const mkApi = (store: any, win: any = {}) => { const c: any = { fetch, URLSearchParams, console, setTimeout, setInterval, clearInterval, TextDecoder, AbortController, crypto, localStorage: { getItem: () => null }, sessionStorage: store, window: { STOCKCLAW_API: `http://127.0.0.1:${PORT_API}`, ...win } }; vm.createContext(c); vm.runInContext(fs.readFileSync(path.resolve("../prototype/api.js"), "utf8"), c); return c.window.api; };
 function memStore(init: Record<string, string>) { const m = new Map(Object.entries(init)); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, String(v)), removeItem: (k: string) => void m.delete(k) }; }
 const API = `http://127.0.0.1:${PORT_API}/api`;
 async function call(method: "GET" | "POST", name: string, body?: Record<string, unknown>, token: string | null = OWNER) {
@@ -204,14 +205,15 @@ try {
     const k2 = await api.create_session_key({ perTradeCap: 60, dailyCap: 200, days: 3, allowlist: ["TSLA"] }); assert.equal(k2.revoked.key, k.id); assert.match(k2.revoked.txHash, /^0x/); assert.equal(k2.perTradeCap, 60);
     const x = await api.execute_swap({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 40 }); assert.match(x.txHash, /^0x/);
     // owner-token handling: missing -> clear error; __requestOwnerToken used if present; 403 on owner call clears it
-    const mk = (store: any, win: any = {}) => { const c: any = { fetch, URLSearchParams, console, setTimeout, localStorage: { getItem: () => null }, sessionStorage: store, window: { STOCKCLAW_API: `http://127.0.0.1:${PORT_API}`, ...win } }; vm.createContext(c); vm.runInContext(fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8"), c); return c.window.api; };
     const empty = memStore({});
-    await assert.rejects(mk(empty).get_wallet(), /owner token required/);
+    await assert.rejects(mkApi(empty).get_wallet(), /owner token required/);
     let asked = 0; const s2 = memStore({});
-    assert.equal((await mk(s2, { __requestOwnerToken: async () => { asked++; return OWNER; } }).get_wallet()).chainId, 46630);
+    assert.equal((await mkApi(s2, { __requestOwnerToken: async () => { asked++; return OWNER; } }).get_wallet()).chainId, 46630);
     assert.equal(asked, 1); assert.equal(s2.getItem("stockclaw-owner-token"), OWNER);
-    const s3 = memStore({ "stockclaw-owner-token": MCPT });
-    await assert.rejects(mk(s3).revoke_session_key(), /Owner token required/); assert.equal(s3.getItem("stockclaw-owner-token"), null, "cleared after 403");
+    const s3 = memStore({ "stockclaw-owner-token": "bogus" });
+    await assert.rejects(mkApi(s3).revoke_session_key(), /Owner token required/); assert.equal(s3.getItem("stockclaw-owner-token"), null, "cleared after 401");
+    const s4 = memStore({ "stockclaw-owner-token": MCPT }); // wrong role -> 403, token kept (only a 401 clears)
+    await assert.rejects(mkApi(s4).revoke_session_key(), (e: any) => e.status === 403); assert.equal(s4.getItem("stockclaw-owner-token"), MCPT);
     assert.ok(!fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8").includes("window.prompt("), "no unmasked prompt");
   });
 
@@ -477,6 +479,7 @@ try {
     const c = await mcpClient();
     const held = mcpJson(await c.callTool({ name: "execute_swap", arguments: { tokenIn: "AMD", tokenOut: "mUSDG", amountIn: 0.6 } }));
     await c.close();
+    assert.equal(held.approval.reasonCode, "SELL_CAP_EXCEEDED"); assert.match(held.approval.reasonText, /Daily agent sell limit/); assert.match(held.approval.agentName, /^Agent key sk_/);
     assert.equal(held.status, "pending_owner_approval"); assert.match(held.message, /pending owner approval/); assert.equal(await bal("AMD"), amd0, "nothing submitted");
     assert.equal((await callH("GET", "approvals", { status: "pending" }, MCPT)).status, 403);
     const list = (await callH("GET", "approvals", { status: "pending" })).body; assert.equal(list.length, 1);
@@ -496,6 +499,9 @@ try {
     assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge, { tamper: true }) })).status, 401);
     assert.equal((await callH("POST", `approvals/${ap.id}/approve`, { webauthnAssertion: va.assert(ap.challenge, { noUV: true }) })).status, 401, "userVerification required");
     // a second passkey can't be added with the owner token alone (Gaius R5); a step-up assertion from the first one is needed
+    { const st = memStore({ "stockclaw-owner-token": OWNER }); // api.js passes stepUpChallenge through and keeps the token on a step-up 403
+      await assert.rejects(mkApi(st).passkey_register_options(), (e: any) => e.status === 403 && typeof e.stepUpChallenge === "string");
+      assert.equal(st.getItem("stockclaw-owner-token"), OWNER); }
     const su = await callH("POST", "passkey/register/options"); assert.equal(su.status, 403); assert.ok(su.body.stepUpChallenge);
     assert.equal((await callH("POST", "passkey/register/options", { webauthnAssertion: va.assert(su.body.stepUpChallenge, { tamper: true }) })).status, 401);
     const ro2 = await callH("POST", "passkey/register/options", { webauthnAssertion: va.assert(su.body.stepUpChallenge) }); assert.equal(ro2.status, 200, JSON.stringify(ro2.body));
@@ -554,6 +560,18 @@ try {
     ac.abort();
     const ev = JSON.parse(/data: (.*)/.exec(txt)![1]); assert.equal(ev.kind, "trade"); assert.ok(ev.id > top); assert.match(ev.title, /Agent bought: 5.00 mUSDG/);
     assert.equal((await callH("GET", "activity", { since: top })).body.length, 1, "polling with since");
+    // api.js: getActivity(since id cursor), getBreaker, openActivityStream (fetch-SSE with the owner token inside); ': ok' sent at once
+    const A = mkApi(memStore({ "stockclaw-owner-token": OWNER }));
+    assert.equal((await A.getActivity(top)).length, 1); assert.deepEqual(Object.keys(await A.getBreaker()), ["tripped"]);
+    const first = await fetch(`${API}/activity/stream?since=${ev.id}`, { headers: { "x-owner-token": OWNER } }); const fr = first.body!.getReader();
+    assert.match(new TextDecoder().decode((await fr.read()).value), /^: ok/); await fr.cancel();
+    const got: any[] = []; const hs = A.openActivityStream((e: any) => got.push(e), ev.id);
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal((await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 5 })).status, 200);
+    for (let i = 0; i < 50 && !got.length; i++) await new Promise((res) => setTimeout(res, 100));
+    hs.close(); assert.equal(got.length, 1); assert.equal(got[0].kind, "trade"); assert.equal(got[0].actions[0].type, "revoke_key");
+    for (const k of ["type", "label", "method", "href"]) assert.ok(k in got[0].actions[0], k);
+    const hist = (await call("GET", "get_history")).body; assert.equal(hist[0].explorerUrl, null, "local chain: hash shown as plain text");
   });
 
   await step("anomaly breaker: a 6th trade within 10 min trips the key (alert, feed, health); swaps, baskets and keeper intents stop; owner resumes; 80% of the buy cap or sell cap within 1h trips", async () => {
@@ -613,6 +631,15 @@ try {
     } finally { process.env.BREAKER = "off"; }
   });
 
+
+  await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
+    await freshUser();
+    assert.equal((await call("POST", "create_session_key", { allowlist: ["AMD", "TSLA"], label: "E2E seller" })).status, 200);
+    assert.equal((await callH("POST", "dev/seed-approval", {}, MCPT)).status, 403, "owner only");
+    const r = await callH("POST", "dev/seed-approval", { ticker: "AMD" }); assert.equal(r.status, 200, JSON.stringify(r.body));
+    const a = r.body.approval; assert.equal(a.status, "pending"); assert.equal(a.reasonCode, "SELL_CAP_EXCEEDED"); assert.equal(a.agentName, "E2E seller"); assert.ok(a.ownerSignatureSimulated);
+    assert.ok((await callH("GET", "approvals", { status: "pending" })).body.some((x: any) => x.id === a.id));
+  });
 
   await step("R6-1: breaker ON: Steady Stacker 3 periods (9 fills) + Dip Hunter rungs run with no trip (a strategy period = one trade)", async () => {
     await freshUser();

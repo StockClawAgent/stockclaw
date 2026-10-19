@@ -19,11 +19,13 @@ import { REPO, ownerToken, mcpToken } from "./config.js";
 const bearer = (req: express.Request) => (req.headers["x-owner-token"] as string | undefined) || (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
 const isOwner = (req: express.Request) => !ownerToken() || bearer(req) === ownerToken();
 const isAgent = (req: express.Request) => !mcpToken() || bearer(req) === mcpToken();
-const ownerOnly: express.RequestHandler = (req, res, next) => (ownerToken() && bearer(req) !== ownerToken() ? res.status(bearer(req) ? 403 : 401).json({ error: "Owner token required (dashboard action)" }) : next());
+const ownerOnly: express.RequestHandler = (req, res, next) => (ownerToken() && bearer(req) !== ownerToken() ? (bearer(req) && mcpToken() && bearer(req) === mcpToken() ? res.status(403).json({ error: "Owner token required (dashboard action): the agent token cannot do this" }) : res.status(401).json({ error: "Owner token required (dashboard action): missing or bad token" })) : next());
 const anyRole: express.RequestHandler = (req, res, next) => (isOwner(req) || isAgent(req) ? next() : res.status(401).json({ error: "Missing or bad bearer token" }));
 const mcpOnly: express.RequestHandler = (req, res, next) => (mcpToken() && bearer(req) !== mcpToken() ? res.status(401).json({ error: "MCP token required" }) : next());
 
 import { Limiter } from "./limiter.js";
+import * as cfg from "./config.js";
+import { pub as chainPub } from "./chain.js";
 export { Limiter };
 const deny = (res: express.Response, wait: number) => { res.setHeader("Retry-After", String(wait)); res.status(429).json({ error: "Rate limit exceeded" }); };
 const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?";
@@ -94,6 +96,11 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.post("/revoke_session_key", ownerOnly, h(() => svc.revoke_session_key()));
   r.post("/cancel_order", ownerOnly, h((q) => svc.cancel_order(q.body.intentId, "owner")));
   r.post("/dev/reset", ownerOnly, h(() => svc.dev_reset()));
+  r.post("/dev/seed-approval", ownerOnly, h(async (q) => {
+    const ver = cfg.IS_LOCAL ? String(await chainPub.request({ method: "web3_clientVersion" } as any).catch(() => "")) : "";
+    if (!/anvil/i.test(ver)) throw new svc.ApiError(403, "dev/seed-approval is local-anvil only (refused on this chain)");
+    return apr.seedApproval(q.body ?? {});
+  }));
   r.post("/demo/reset", ownerOnly, h(() => svc.dev_reset()));
 
   // strategies (STRATEGIES.md §5)
@@ -129,6 +136,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.get("/activity", ownerOnly, h((q) => act.list(q.query.since ? Number(q.query.since) : undefined, q.query.limit ? Number(q.query.limit) : undefined)));
   r.get("/activity/stream", ownerOnly, (req, res) => {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", "x-accel-buffering": "no" });
+    res.flushHeaders(); res.write(": ok\n\n"); // let the client know the stream is open before any event
     const since = Number(req.query.since ?? req.headers["last-event-id"] ?? 0);
     for (const e of act.list(since, 50).reverse()) res.write(`id: ${e.id}\nevent: activity\ndata: ${JSON.stringify(e)}\n\n`);
     const off = act.subscribe((e) => res.write(`id: ${e.id}\nevent: activity\ndata: ${JSON.stringify(e)}\n\n`));

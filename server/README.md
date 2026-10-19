@@ -99,3 +99,11 @@ Definitions live in `strategies/<id>/<version>/{prompt.md,schema.json}` plus `ca
 - **PRODUCTION signing:** responses carry `ownerSignatureSimulated: true` because the demo owner key is held by the server. In production the `SellApproval` must be signed by the user's own wallet (or an EIP-1271 smart-account signature) on their device; there must be **no operator signing path**.
 - **Guardrails:** `GET /api/activity?since=&limit=` and SSE `GET /api/activity/stream` (owner token), each trade entry has a `revoke_key` action; anomaly breaker per key (80%-of-cap-within-1h pauses only when the usage comes from >= 2 executions; one execution reaching 80% raises a KEY_SINGLE_EXECUTION_80PCT alert in the feed and /healthz without pausing; each basket = one trade toward > 5 trades/10 min; `GET /api/keys/breaker`, `POST /api/keys/:keyId/resume`; `BREAKER=off` disables); MCP trade tools limited to 10 calls/min per agent key (`MCP_TRADE_PER_MIN`).
 
+
+### Dashboard integration notes (Flavius)
+- Writes accept an `Idempotency-Key` header (fallback: `body.idempotencyKey`).
+- `api.js`: `getActivity(since)`, `getBreaker()`, `resumeKey(id)`, `openActivityStream(onEvent, since?) -> {close()}`. `since` is an activity id cursor. The stream sends `: ok` right away.
+- Only a 401 clears the stored owner token. A 403 keeps it, and step-up 403s expose `err.stepUpChallenge`.
+- Approvals include `reasonCode` (`SELL_CAP_EXCEEDED`), `reasonText` and `agentName` (the key's `label`, set through `create_session_key({label})`).
+- On the local chain, `explorerUrl` is `null`, so the UI shows the hash as plain text.
+- Dev fixture: `npm run seed:approval [TICKER] [USD]` calls `POST /api/dev/seed-approval` (owner only, refused unless the chain is anvil).

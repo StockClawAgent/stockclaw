@@ -13,7 +13,8 @@
     "strategies:lock": "tsx src/strategies.ts lock",
     "demo:env": "bash scripts/gen-demo-env.sh",
     "testnet:dryrun": "bash scripts/testnet-dryrun.sh",
-    "passkey:status": "tsx scripts/passkey-status.ts"
+    "passkey:status": "tsx scripts/passkey-status.ts",
+    "seed:approval": "tsx scripts/seed-approval.ts"
   },
   "keywords": [],
   "author": "",

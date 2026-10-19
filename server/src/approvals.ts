@@ -38,29 +38,46 @@ const perVault = <T>(vault: string, fn: () => Promise<T>) => { const prev = lock
 async function usd(sym: string, amt: number) { return (amt * Number((await svc.priceE8(sym)).p)) / 1e8; }
 
 type Approval = { id: string; vault: Address; agentKeyId: string; agentName: string; ticker: string; amountIn: number; estUsd: number; estUsdgOut: number; estUsdgOutMin: number;
-  reason: string; status: "pending" | "executing" | "executed" | "rejected" | "expired" | "failed"; createdAt: string; expiresAt: string; paramsHash: string; challenge: string;
+  reason: string; reasonCode: string; reasonText: string; status: "pending" | "executing" | "executed" | "rejected" | "expired" | "failed"; createdAt: string; expiresAt: string; paramsHash: string; challenge: string;
   txHash?: string; error?: string; exitApproval?: Record<string, unknown>; decidedAt?: string };
 const put = (a: Approval) => getDb().prepare("INSERT INTO approvals(id, vault, status, created_at, expires_at, json) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, json=excluded.json").run(a.id, a.vault, a.status, a.createdAt, a.expiresAt, JSON.stringify(a));
 const get = (id: string): Approval | null => { const r = getDb().prepare("SELECT json FROM approvals WHERE id=?").get(id) as { json: string } | undefined; return r ? JSON.parse(r.json) : null; };
-const pub = (a: Approval) => ({ id: a.id, agentKeyId: a.agentKeyId, agentName: a.agentName, ticker: a.ticker, amountIn: a.amountIn, estUsdgOut: a.estUsdgOut, estUsdgOutMin: a.estUsdgOutMin, reason: a.reason, status: a.status, createdAt: a.createdAt, expiresAt: a.expiresAt,
+const pub = (a: Approval) => ({ id: a.id, agentKeyId: a.agentKeyId, agentName: a.agentName, ticker: a.ticker, amountIn: a.amountIn, estUsdgOut: a.estUsdgOut, estUsdgOutMin: a.estUsdgOutMin, reason: a.reason, reasonCode: a.reasonCode ?? "SELL_CAP_EXCEEDED", reasonText: a.reasonText ?? a.reason, status: a.status, createdAt: a.createdAt, expiresAt: a.expiresAt,
   challenge: a.challenge, paramsHash: a.paramsHash, ...(a.txHash ? { txHash: a.txHash } : {}), ...(a.error ? { error: a.error } : {}), ...(a.exitApproval ? { exitApproval: a.exitApproval } : {}), ownerSignatureSimulated: true as const, mode: approvalMode() });
 function expire(a: Approval) { if (a.status === "pending" && Date.parse(a.expiresAt) < Date.now()) { a.status = "expired"; put(a); } return a; }
 export const paramsHash = (p: { vault: string; ticker: string; amountIn: number; tokenOut: string }) => "0x" + createHash("sha256").update(JSON.stringify([p.vault.toLowerCase(), p.ticker, p.amountIn.toFixed(8), p.tokenOut])).digest("hex");
 export const challengeFor = (id: string, ph: string) => isoBase64URL.fromUTF8String(`${id}:${ph}`);
+
+const agentName = (agent: { id: string; label?: string }) => agent.label || `Agent key ${agent.id}`;
+async function makeApproval(vault: Address, agent: { id: string; label?: string }, tokenIn: string, tokenOut: string, amountIn: number, est: number, remUsd: number) {
+  const sold = await soldLast24h(vault);
+  const q = await svc.quote_swap(tokenIn, tokenOut, amountIn);
+  const id = "apr_" + randomBytes(6).toString("hex"), ph = paramsHash({ vault, ticker: tokenIn, amountIn, tokenOut });
+  const reasonText = `Daily agent sell limit reached: $${sold.toFixed(2)} sold in the last 24h, $${remUsd.toFixed(2)} left, this sell is ~$${est.toFixed(2)}`;
+  const a: Approval = { id, vault, agentKeyId: agent.id, agentName: agentName(agent), ticker: tokenIn, amountIn, estUsd: +est.toFixed(2), estUsdgOut: q.amountOut, estUsdgOutMin: q.minOut,
+    reason: reasonText, reasonCode: "SELL_CAP_EXCEEDED", reasonText, status: "pending", createdAt: nowIso(), expiresAt: new Date(Date.now() + TTL_SEC * 1000).toISOString(), paramsHash: ph, challenge: challengeFor(id, ph) };
+  put(a);
+  return a;
+}
+/** Dev fixture (local anvil only, owner): a pending over-cap agent sell approval for the dashboard demo. Nothing is submitted. */
+export async function seedApproval(p: { ticker?: string; usd?: number } = {}) {
+  const vault = svc._vault(), agent = svc._agent();
+  if (!vault || !agent) throw new svc.ApiError(409, "Needs a vault and an agent key first (create_smart_account, create_session_key)");
+  const ticker = String(p.ticker ?? "AMD").toUpperCase(), rem = await exitRemaining(vault);
+  const px = await usd(ticker, 1), est = Math.max(rem.totalUsd + 1, Number(p.usd) || rem.totalUsd + 50);
+  const a = await makeApproval(vault, agent, ticker, "mUSDG", +(est / px).toFixed(6), est, rem.totalUsd);
+  log.info("dev: seeded pending sell approval", { approvalId: a.id, ticker, estUsd: a.estUsd });
+  return { seeded: true, approval: pub(a) };
+}
 
 /** execute_swap guard: returns a pending approval instead of submitting a sell that would exceed the sell cap. */
 svc.setSellGuard(async ({ tokenIn, tokenOut, amountIn }) => {
   const vault = svc._vault()!, agent = svc._agent()!;
   const est = await usd(tokenIn, amountIn), rem = await exitRemaining(vault);
   if (est <= rem.totalUsd - 0.01) return { hold: false, estUsd: est }; // 1 cent margin for oracle rounding
-  const sold = await soldLast24h(vault);
-  const q = await svc.quote_swap(tokenIn, tokenOut, amountIn);
-  const id = "apr_" + randomBytes(6).toString("hex"), ph = paramsHash({ vault, ticker: tokenIn, amountIn, tokenOut });
-  const a: Approval = { id, vault, agentKeyId: agent.id, agentName: `Agent key ${agent.id}`, ticker: tokenIn, amountIn, estUsd: +est.toFixed(2), estUsdgOut: q.amountOut, estUsdgOutMin: q.minOut,
-    reason: `Daily agent sell limit reached: $${sold.toFixed(2)} sold in the last 24h, $${rem.totalUsd.toFixed(2)} left, this sell is ~$${est.toFixed(2)}`, status: "pending", createdAt: nowIso(), expiresAt: new Date(Date.now() + TTL_SEC * 1000).toISOString(), paramsHash: ph, challenge: challengeFor(id, ph) };
-  put(a);
-  log.info("sell held for owner approval", { approvalId: id, ticker: tokenIn, estUsd: a.estUsd, soldLast24h: sold });
-  return { hold: true, estUsd: est, result: { status: "pending_owner_approval", approvalId: id, message: `Sell is pending owner approval: agent sells over $${SELL_CAP_USD} per rolling 24h need the owner's passkey approval in the StockClaw dashboard. Nothing was submitted.`, approval: pub(a) } };
+  const a = await makeApproval(vault, agent, tokenIn, tokenOut, amountIn, est, rem.totalUsd);
+  log.info("sell held for owner approval", { approvalId: a.id, ticker: tokenIn, estUsd: a.estUsd });
+  return { hold: true, estUsd: est, result: { status: "pending_owner_approval", approvalId: a.id, message: `Sell is pending owner approval: agent sells over $${SELL_CAP_USD} per rolling 24h need the owner's passkey approval in the StockClaw dashboard. Nothing was submitted.`, approval: pub(a) } };
 });
 
 export function list_approvals(status?: string) {

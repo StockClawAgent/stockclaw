@@ -32,6 +32,8 @@
     "ownerSignatureSimulated",
     "paramsHash",
     "reason",
+    "reasonCode",
+    "reasonText",
     "status",
     "ticker"
   ]
