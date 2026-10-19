@@ -105,7 +105,7 @@ ${k?`<a class="dx-primary" href="#/onboarding/passkey">Continue</a>${!S.funded&&
 async function fund(){kbusy="f";render();try{await api.faucet_testnet();if(S.dev.ratelimit)throw {status:429};S.funded=true;S.err=null}catch(e){if(e&&e.status==429)S.err="rate";else{kbusy=null;return fail("faucet_testnet",e)}}kbusy=null;save();render();say(S.funded?"Test tokens added":"Faucet limit reached")}
 function Kbind(){if(editLimits){O3bind();const f=$("#kf");f&&f.addEventListener("submit",()=>setTimeout(()=>{if(S.key){editLimits=false;render();if(!S.funded)fund()}},50));return}
  const e=$("#kedit");e&&(e.onclick=()=>{editLimits=true;draft=defaults();render()});const f=$("#fgo");f&&(f.onclick=fund);
- const b=$("#kgo");b&&(b.onclick=async()=>{kbusy="k";render();try{S.key=await issueKey(defaults());save()}catch(err){kbusy=null;render();const x=$("#kerr");x.hidden=false;x.textContent="Couldn't create the key: "+err.message;return}kbusy=null;render();say("Agent key created");if(!S.funded)await fund();$(".dx-primary")?.focus()})}
+ const b=$("#kgo");b&&(b.onclick=async()=>{kbusy="k";render();try{S.key=await issueKey(defaults());save()}catch(err){kbusy=null;render();const x=$("#kerr");x.hidden=false;x.innerHTML=SCErr.html(SCErr.of(err));SCErr.act(SCErr.of(err));return}kbusy=null;render();say("Agent key created");if(!S.funded)await fund();$(".dx-primary")?.focus()})}
 R["/onboarding/key"]=[K,Kbind];
 R["/onboarding/faucet"]=[reskin(2,O4),O4bind];
 R["/onboarding/client"]=[reskin(3,O5),O5bind];
@@ -127,9 +127,9 @@ ${ok?`<p class="dx-amt"><label>Amount <input id="bkAmt" type="number" min="10" m
 <button class="dx-link dx-bkgo" id="bkGo" ${bkBusy?"disabled":""}>${bkKey?"Try again":"Buy "+esc(bname(b))+" basket"}</button>`:`<p class="dx-mut dx-small">${esc(b.notExecutableReason||"Not available on this chain.")}</p>`}<p id="bkErr" class="st err" role="alert" hidden></p></section>`}
 function bkEntryBind(){const rr=document.getElementById("bkRetry");rr&&(rr.onclick=()=>{window.__bkErr=false;render()});document.querySelectorAll("[data-bksel]").forEach(x=>x.onclick=()=>{bkSel=x.dataset.bksel;bkKey=null;render()});
  const a=$("#bkAmt");a&&(a.oninput=()=>{bkAmt=Math.max(10,Math.min(500,+a.value||0));bkKey=null});
- const g=$("#bkGo");g&&(g.onclick=async()=>{const b=BKS().find(x=>x.id==bkSel);bkKey=bkKey||BasketFill.adapter.newKey();bkBusy=true;g.disabled=true;
+ const g=$("#bkGo");g&&(g.onclick=async()=>{const b=BKS().find(x=>x.id==bkSel);bkKey=bkKey||BasketFill.adapter.newKey();bkBusy=true;g.dataset.l=g.dataset.l||g.textContent;g.disabled=true;
   try{const x=await BasketFill.adapter.start(b.id,bkAmt,bkKey);S.lastBasket={id:x.id,basketId:b.id,name:bname(b)};save();bkKey=null}
-  catch(err){bkBusy=false;g.disabled=false;g.textContent="Try again";const e=$("#bkErr");e.hidden=false;e.textContent="Couldn't start the basket: "+err.message;return}
+  catch(err){bkBusy=false;g.disabled=false;const i=SCErr.of(err);SCErr.act(i);g.textContent=i.retryable?"Try again":g.dataset.l;if(!i.retryable)bkKey=null;const e=$("#bkErr");e.hidden=false;e.className="";e.innerHTML=SCErr.html(i);return}
   bkBusy=false;location.hash="#/dashboard/basket"})}
 function BuyBasket(){const lb=S.lastBasket;if(!lb)return dash("overview",`<p class="dx-quiet">No basket order yet. <a href="#/dashboard/overview">Buy one from Home</a></p>`);
  return dash("overview",`<section class="dx-ob"><p class="dx-k">Basket order</p><h1>Buying ${esc(lb.name||lb.basketId)}</h1><div id="bfBuy" class="bf-card" tabindex="-1"></div>

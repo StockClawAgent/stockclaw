@@ -104,7 +104,21 @@ const isVaultCap=(t)=>/shared by all agent keys|rolling-24h cap|rolling 24-hour 
 const capMsg=()=>`Blocked: this vault's $500 rolling 24-hour buy cap is shared by all agent keys (sells have their own $500 limit). $${vaultLeft().toFixed(2)} left.`;
 const blockedText=(t,side)=>isVaultCap(t)?(side=="sell"?"Blocked: "+String(t||"sell failed").replace(/[^.]*(rolling|24h|24-hour|cap)[^.]*\.?/ig,"").trim()||"Blocked: sell failed":capMsg()):String(t||"Blocked");
 // Visible API error (live server messages, e.g. 400/409/429/451), cleared on route change.
-let apiErr=null;const fail=(where,e)=>{const m=(e&&e.message)||e;apiErr=isVaultCap(m)?capMsg():/pair not supported/i.test(String(m))?"That pair isn't supported. Swap stocks to or from mUSDG (e.g. TSLA → mUSDG, then mUSDG → AMZN).":(e&&e.status===401)?"Your session ended. Reload the page to sign in again.":(e&&e.status===429)?"Too many requests. Wait a moment and try again.":(e&&e.status>=500)?"StockClaw hit a snag on our side. Try again in a moment.":/fetch|network|unreach/i.test(String(m))?"Can't reach StockClaw right now. Check your connection and try again.":"That didn't go through. Try again.";console.warn("["+where+"]",e&&e.status,String(m).slice(0,200));render();say(apiErr)};
+/* Server error contract (Lucius 9686bd5): {error, code, message, retryable, hint?}. SCErr is the ONE place that reads it. */
+const SCErr={
+ // api.js (f81dd7a): err.message = plain user sentence, err.code/.retryable/.hint; err.detail is technical (never shown).
+ of(e){let code=(e&&e.code)||"";if(!code&&e&&/Unreachable|Failed to fetch|NetworkError/i.test(String(e.name)+String(e.message)))code="NETWORK";if(code=="OWNER_TOKEN_REQUIRED")code="AUTH_REQUIRED";
+  const plain=e&&e.code&&e.message&&!/^HTTP \d/.test(e.message)?e.message:"";const msg=plain||SCErr.FALLBACK[code]||"That didn't go through. Try again.";
+  const retry=e&&e.retryable!=null?!!e.retryable:/^(NETWORK|TIMEOUT|RATE_LIMITED|PENDING)$/.test(code);if(e&&e.detail&&/[?&]dev=1/.test(location.search))console.debug("[detail]",code,String(e.detail).slice(0,200));
+  return {code,message:msg,hint:(e&&e.hint)||"",retryable:retry}},
+ FALLBACK:{NETWORK:"Can't reach StockClaw right now.",TIMEOUT:"That took too long.",AUTH_REQUIRED:"Sign in with your owner token to continue.",FORBIDDEN:"This key isn't allowed to do that."},
+ // side effects for codes that have their own UI elsewhere
+ act(i){if(i.code=="AUTH_REQUIRED"&&window.__requestOwnerToken)window.__requestOwnerToken();if(i.code=="KEY_PAUSED"&&window.SCActivity)SCActivity.refreshBreaker&&SCActivity.refreshBreaker();if(i.code=="SELL_CAP_EXCEEDED"&&window.SCApprovals)SCApprovals.refresh&&SCApprovals.refresh()},
+ extra:{MARKET_CLOSED:"Stock tokens trade when the market is open. Weekend Edge plans its orders for the next open.",SELL_CAP_EXCEEDED:"It's waiting for your approval on Home.",KEY_PAUSED:"Resume the agent from the banner on Home."},
+ html(e,retryId){const i=e&&e.code!==undefined&&e.message!==undefined&&"retryable" in e?e:SCErr.of(e);const off=/^(NETWORK|TIMEOUT)$/.test(i.code);
+  return `<div class="st err sc-err${off?" sc-off":""}" role="alert" data-code="${esc(i.code)}"><p>${off?'<span class="lv lv-off"></span>':""}${esc(i.message)}</p>${i.hint?`<p class="sc-hint">${esc(i.hint)}</p>`:""}${SCErr.extra[i.code]?`<p class="sc-hint">${esc(SCErr.extra[i.code])}</p>`:""}${i.retryable&&retryId?`<button class="dx-link" id="${esc(retryId)}">Try again</button>`:""}</div>`}};
+window.SCErr=SCErr;
+let apiErr=null;const fail=(where,e)=>{const i=SCErr.of(e);SCErr.act(i);apiErr=(i.code=="PAIR_NOT_SUPPORTED"||(!i.code&&/pair not supported/i.test(String(e&&e.detail||""))))?"That pair isn't supported. Swap stocks to or from mUSDG (e.g. TSLA → mUSDG, then mUSDG → AMZN).":i.message+(i.hint?" "+i.hint:"")+(SCErr.extra[i.code]?" "+SCErr.extra[i.code]:"");console.warn("["+where+"]",i.code);render();say(apiErr)};
 // Allowlist choices come only from list_assets (stock tickers; the quote token mUSDG is excluded).
 let TICKERS=null;async function loadTickers(){if(TICKERS)return;try{const a=await api.list_assets();TICKERS=(a||[]).map(x=>x.symbol).filter(t=>!/^m?USDG$/i.test(t));render()}catch(e){fail("list_assets",e)}}
 const defaults=()=>({perTradeCap:100,dailyCap:500,days:7,allowlist:TICKERS?[...TICKERS]:[...api_allow]});let api_allow=["TSLA","AMZN","PLTR","NFLX","AMD"];
@@ -380,7 +394,7 @@ function paintBar(){const b=document.querySelector(".tnbar");if(!b)return;let t=
  o.innerHTML=getTok()?`· Owner token set <button type="button" class="linkbtn" id="forgetTok">Forget token</button>`:`· <button type="button" class="linkbtn" id="setTok">Set owner token</button>`}
 document.addEventListener("click",e=>{if(e.target.id=="forgetTok"){forgetTok();say&&say("Owner token forgotten")}else if(e.target.id=="setTok"){askTok()}});
 const owned=(fn)=>async(...a)=>{if(!await needOwner())throw new Error("Owner token needed: action cancelled.");
- try{return await fn(...a)}catch(e){if(e&&(e.status==401||e.status==403||/owner token required/i.test(e.message||""))){forgetTok();throw new Error("Owner token missing or wrong. Try the action again and enter the token.")}throw e}};
+ try{return await fn(...a)}catch(e){if(e&&(e.status==401||e.code=="AUTH_REQUIRED"||e.code=="OWNER_TOKEN_REQUIRED")){forgetTok();throw Object.assign(new Error("Owner token missing or wrong. Try the action again and enter the token."),{code:"AUTH_REQUIRED",retryable:true})}throw e}};
 ["submit_attestation","create_smart_account","create_session_key","revoke_session_key","cancel_order"].forEach(n=>{if(api[n])api[n]=owned(api[n])});
 ["choose_strategy","resume_strategy","pause_strategy","stop_strategy"].forEach(n=>{if(SREST[n])SREST[n]=owned(SREST[n])});
 applyTok();
