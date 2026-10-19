@@ -41,6 +41,7 @@ export function toUserError(detail: string, status = 500): UserError {
   if (status === 429) return BY_STATUS[429];
   if (status === 451) return BY_STATUS[451];
   const r = RULES.find((x) => x.re.test(detail ?? ""));
+  if (r && r.code === "AUTH_REQUIRED" && status === 403) return BY_STATUS[403]; // valid token, wrong role
   if (r) return { code: r.code, message: r.message, retryable: r.retryable, ...(r.hint ? { hint: r.hint } : {}) };
   return BY_STATUS[status] ?? { code: "INTERNAL", message: "Something went wrong on our side.", retryable: true, hint: "Try again. If it keeps happening, check /healthz." };
 }
