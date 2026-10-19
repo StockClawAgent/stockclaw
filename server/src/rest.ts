@@ -155,7 +155,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   // sell approvals + passkeys (owner only)
   r.get("/approvals", ownerOnly, h((q) => apr.list_approvals(q.query.status as string | undefined)));
   r.get("/approvals/:id/options", ownerOnly, h((q) => apr.approval_options(String(q.params.id))));
-  r.post("/approvals/:id/approve", ownerOnly, h((q) => apr.approve(String(q.params.id), q.body?.webauthnAssertion)));
+  r.post("/approvals/:id/approve", ownerOnly, h((q) => apr.approve(String(q.params.id), q.body?.webauthnAssertion, idem(q))));
   r.post("/approvals/:id/reject", ownerOnly, h((q) => apr.reject(String(q.params.id))));
   // activity feed (owner): polling + SSE; anomaly breaker
   r.get("/activity", ownerOnly, h((q) => act.list(q.query.since ? Number(q.query.since) : undefined, q.query.limit ? Number(q.query.limit) : undefined)));

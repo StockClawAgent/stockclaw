@@ -569,7 +569,20 @@ try {
     await new Promise((res) => setTimeout(res, 300));
     assert.equal((await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 5 })).status, 200);
     for (let i = 0; i < 50 && !got.length; i++) await new Promise((res) => setTimeout(res, 100));
-    hs.close(); assert.equal(got.length, 1); assert.equal(got[0].kind, "trade"); assert.equal(got[0].actions[0].type, "revoke_key");
+    hs.close(); assert.equal(got.length, 1);
+    // onState: connecting -> live; a bad token gives 'error' (no reconnect loop); reconnect after the server drops the stream
+    const states: string[] = []; const h2 = A.openActivityStream(() => {}, { since: top, onState: (st: string) => states.push(st) });
+    for (let i = 0; i < 30 && !states.includes("live"); i++) await new Promise((res) => setTimeout(res, 100));
+    h2.close(); assert.deepEqual(states.slice(0, 2), ["connecting", "live"]);
+    const bad: string[] = []; mkApi(memStore({ "stockclaw-owner-token": "bogus" })).openActivityStream(() => {}, { onState: (st: string) => bad.push(st) });
+    for (let i = 0; i < 30 && !bad.includes("error"); i++) await new Promise((res) => setTimeout(res, 100));
+    assert.deepEqual(bad, ["connecting", "error"]);
+    let n = 0; const flaky = (u: any, o: any) => (/activity\/stream/.test(String(u)) && n++ === 0 ? Promise.reject(new TypeError("network down")) : fetch(u, o));
+    const cf: any = { fetch: flaky, URLSearchParams, console, setTimeout, setInterval, clearInterval, TextDecoder, AbortController, crypto, localStorage: { getItem: () => null }, sessionStorage: memStore({ "stockclaw-owner-token": OWNER }), window: { STOCKCLAW_API: `http://127.0.0.1:${PORT_API}` } };
+    vm.createContext(cf); vm.runInContext(fs.readFileSync(path.resolve("../prototype/api.js"), "utf8"), cf);
+    const st3: string[] = []; const h3 = cf.window.api.openActivityStream(() => {}, { onState: (st: string) => st3.push(st) });
+    for (let i = 0; i < 40 && !st3.includes("live"); i++) await new Promise((res) => setTimeout(res, 100));
+    h3.close(); assert.deepEqual(st3, ["connecting", "reconnecting", "live"]); assert.equal(got[0].kind, "trade"); assert.equal(got[0].actions[0].type, "revoke_key");
     for (const k of ["type", "label", "method", "href"]) assert.ok(k in got[0].actions[0], k);
     const hist = (await call("GET", "get_history")).body; assert.equal(hist[0].explorerUrl, null, "local chain: hash shown as plain text");
   });
@@ -693,11 +706,24 @@ try {
 
   await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
     await freshUser();
-    assert.equal((await call("POST", "create_session_key", { allowlist: ["AMD", "TSLA"], label: "E2E seller" })).status, 200);
+    assert.equal((await call("POST", "create_session_key", { allowlist: ["AMD", "TSLA"], label: "E2E seller", name: "Research bot" })).status, 200);
     assert.equal((await callH("POST", "dev/seed-approval", {}, MCPT)).status, 403, "owner only");
     const r = await callH("POST", "dev/seed-approval", { ticker: "AMD" }); assert.equal(r.status, 200, JSON.stringify(r.body));
-    const a = r.body.approval; assert.equal(a.status, "pending"); assert.equal(a.reasonCode, "SELL_CAP_EXCEEDED"); assert.equal(a.agentName, "E2E seller"); assert.ok(a.ownerSignatureSimulated);
+    const a = r.body.approval; assert.equal(a.status, "pending"); assert.equal(a.reasonCode, "SELL_CAP_EXCEEDED"); assert.equal(a.agentName, "Research bot"); assert.equal(a.keyLabel, "E2E seller"); assert.ok(a.ownerSignatureSimulated);
+    assert.ok(r.body.headroomSells >= 5, "real sells used up the headroom"); assert.ok(r.body.sellHeadroomLeftUsd < 60); assert.ok(a.estUsdgOut <= 100 && a.estUsdgOut > 50, String(a.estUsdgOut));
     assert.ok((await callH("GET", "approvals", { status: "pending" })).body.some((x: any) => x.id === a.id));
+    // approving it succeeds onchain; the same Idempotency-Key repeated (concurrently and after) returns the same result with ONE relay
+    const { virtualAuthenticator } = await import("./virtualAuthenticator.js");
+    const va = virtualAuthenticator("localhost", `http://localhost:${PORT_API}`);
+    assert.equal((await callH("POST", "passkey/register/verify", { response: va.register((await callH("POST", "passkey/register/options")).body) })).status, 200);
+    const relays0 = txCount(`sell-approval:${a.id}`);
+    const hdr = { "idempotency-key": "e2e-approve-1" }, body = { webauthnAssertion: va.assert(a.challenge) };
+    const [p1, p2] = await Promise.all([callH("POST", `approvals/${a.id}/approve`, body, OWNER, hdr), callH("POST", `approvals/${a.id}/approve`, body, OWNER, hdr)]);
+    assert.equal(p1.status, 200, JSON.stringify(p1.body)); assert.equal(p2.status, 200, JSON.stringify(p2.body));
+    assert.equal(p1.body.status, "executed"); assert.equal(p2.body.txHash, p1.body.txHash);
+    const p3 = await callH("POST", `approvals/${a.id}/approve`, body, OWNER, hdr); assert.equal(p3.body.txHash, p1.body.txHash);
+    assert.equal(txCount(`sell-approval:${a.id}`) - relays0, 1, "relayed exactly once");
+    assert.equal((await callH("POST", `approvals/${a.id}/approve`, { webauthnAssertion: va.assert(a.challenge) })).status, 409, "no key: one approval per sell");
   });
 
   await step("R6-1: breaker ON: Steady Stacker 3 periods (9 fills) + Dip Hunter rungs run with no trip (a strategy period = one trade)", async () => {

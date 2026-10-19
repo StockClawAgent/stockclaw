@@ -37,7 +37,7 @@ type HistoryRow = { txHash: string | null; explorerUrl?: string | null; type: st
 type State = {
   country?: string; attestation?: { sig: string; ts: string; expiresAt: string; signer: Address; txHash: string };
   vault?: Address; nextAgentIdx: number;
-  agent?: { idx: number; address: Address; id: string; perTradeCap: number; dailyCap: number; days: number; allowlist: string[]; expiresAt: string; status: "active" | "revoked" | "expired"; label?: string };
+  agent?: { idx: number; address: Address; id: string; perTradeCap: number; dailyCap: number; days: number; allowlist: string[]; expiresAt: string; status: "active" | "revoked" | "expired"; label?: string; name?: string };
   orders: Record<string, Order>; history: HistoryRow[]; usage: { day: string; calls: number }; epoch?: number;
   activations?: Record<string, any>;
 };
@@ -240,7 +240,7 @@ export async function get_wallet() {
     sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h, per vault (shared by all keys); buys only: exits to mUSDG don't use the daily limit", allowlist: S.agent.allowlist } : null,
   };
 }
-export type Caps = { perTradeCap?: number; dailyCap?: number; days?: number; allowlist?: string[]; label?: string };
+export type Caps = { perTradeCap?: number; dailyCap?: number; days?: number; allowlist?: string[]; label?: string; name?: string };
 export async function create_session_key(caps: Caps = {}) {
   if (!S.vault) throw new ApiError(409, "Create the smart account first");
   const perTradeCap = caps.perTradeCap ?? cfg.MAX_PER_TRADE_USD, dailyCap = caps.dailyCap ?? cfg.MAX_PER_DAY_USD, days = caps.days ?? cfg.MAX_KEY_DAYS;
@@ -266,9 +266,9 @@ export async function create_session_key(caps: Caps = {}) {
   const expiry = (await chainNow()) + Math.round(days * 86400);
   await o.write(v, C.vault.abi, "setCaps", [agent, BigInt(perTradeCap * 1e6), BigInt(dailyCap * 1e6)]);
   const { hash } = await o.write(v, C.vault.abi, "grantAgent", [agent, expiry]);
-  S.agent = { idx, address: agent, id: "sk_" + agent.slice(2, 8).toLowerCase(), perTradeCap, dailyCap, days, allowlist, expiresAt: new Date(expiry * 1000).toISOString(), status: "active", label: String(caps.label ?? "").trim().slice(0, 64) || `Agent key ${"sk_" + agent.slice(2, 8).toLowerCase()}` };
+  S.agent = { idx, address: agent, id: "sk_" + agent.slice(2, 8).toLowerCase(), perTradeCap, dailyCap, days, allowlist, expiresAt: new Date(expiry * 1000).toISOString(), status: "active", label: String(caps.label ?? "").trim().slice(0, 64) || `Agent key ${"sk_" + agent.slice(2, 8).toLowerCase()}`, ...(caps.name ? { name: String(caps.name).trim().slice(0, 64) } : {}) };
   save();
-  const created = { ...txOut(hash), status: "active", id: S.agent.id, agent, expiresAt: S.agent.expiresAt, perTradeCap, dailyCap, days, spentToday: 0, allowlist, label: S.agent.label };
+  const created = { ...txOut(hash), status: "active", id: S.agent.id, agent, expiresAt: S.agent.expiresAt, perTradeCap, dailyCap, days, spentToday: 0, allowlist, label: S.agent.label, name: S.agent.name ?? null };
   return { ...created, revoked, created }; // top-level fields kept for app.js
 }
 /** The user-facing pause: one tx, revokes the agent key; the agent's swaps and all its signed intents stop. */

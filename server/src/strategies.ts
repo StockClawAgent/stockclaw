@@ -258,3 +258,5 @@ export function refreshAll() { Object.values(A()).forEach(refresh); }
 export function onRevoke() { for (const a of Object.values(A())) if (a.status === "active") a.status = "paused"; }
 
 if (import.meta.url === `file://${process.argv[1]}` && process.argv[2] === "lock") console.log(writeLock());
+/** Display name of the vault's active (or paused) strategy, e.g. "Dip Hunter"; null if none. */
+export function activeStrategyName(): string | null { const a = vaultActive(); return a ? (reg().find((d) => d.id === a.strategyId)?.name ?? null) : null; }

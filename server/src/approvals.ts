@@ -15,6 +15,7 @@ import { generateRegistrationOptions, verifyRegistrationResponse, verifyAuthenti
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 import { C, read } from "./chain.js";
 import * as svc from "./service.js";
+import { activeStrategyName } from "./strategies.js";
 import * as cfg from "./config.js";
 import { getDb, tx, nowIso } from "./db.js";
 import { log } from "./log.js";
@@ -38,36 +39,57 @@ const perVault = <T>(vault: string, fn: () => Promise<T>) => { const prev = lock
 async function usd(sym: string, amt: number) { return (amt * Number((await svc.priceE8(sym)).p)) / 1e8; }
 
 type Approval = { id: string; vault: Address; agentKeyId: string; agentName: string; ticker: string; amountIn: number; estUsd: number; estUsdgOut: number; estUsdgOutMin: number;
-  reason: string; reasonCode: string; reasonText: string; status: "pending" | "executing" | "executed" | "rejected" | "expired" | "failed"; createdAt: string; expiresAt: string; paramsHash: string; challenge: string;
+  keyLabel?: string; reason: string; reasonCode: string; reasonText: string; status: "pending" | "executing" | "executed" | "rejected" | "expired" | "failed"; createdAt: string; expiresAt: string; paramsHash: string; challenge: string;
   txHash?: string; error?: string; exitApproval?: Record<string, unknown>; decidedAt?: string };
 const put = (a: Approval) => getDb().prepare("INSERT INTO approvals(id, vault, status, created_at, expires_at, json) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, json=excluded.json").run(a.id, a.vault, a.status, a.createdAt, a.expiresAt, JSON.stringify(a));
 const get = (id: string): Approval | null => { const r = getDb().prepare("SELECT json FROM approvals WHERE id=?").get(id) as { json: string } | undefined; return r ? JSON.parse(r.json) : null; };
-const pub = (a: Approval) => ({ id: a.id, agentKeyId: a.agentKeyId, agentName: a.agentName, ticker: a.ticker, amountIn: a.amountIn, estUsdgOut: a.estUsdgOut, estUsdgOutMin: a.estUsdgOutMin, reason: a.reason, reasonCode: a.reasonCode ?? "SELL_CAP_EXCEEDED", reasonText: a.reasonText ?? a.reason, status: a.status, createdAt: a.createdAt, expiresAt: a.expiresAt,
+const pub = (a: Approval) => ({ id: a.id, agentKeyId: a.agentKeyId, agentName: a.agentName, keyLabel: a.keyLabel ?? a.agentName, ticker: a.ticker, amountIn: a.amountIn, estUsdgOut: a.estUsdgOut, estUsdgOutMin: a.estUsdgOutMin, reason: a.reason, reasonCode: a.reasonCode ?? "SELL_CAP_EXCEEDED", reasonText: a.reasonText ?? a.reason, status: a.status, createdAt: a.createdAt, expiresAt: a.expiresAt,
   challenge: a.challenge, paramsHash: a.paramsHash, ...(a.txHash ? { txHash: a.txHash } : {}), ...(a.error ? { error: a.error } : {}), ...(a.exitApproval ? { exitApproval: a.exitApproval } : {}), ownerSignatureSimulated: true as const, mode: approvalMode() });
 function expire(a: Approval) { if (a.status === "pending" && Date.parse(a.expiresAt) < Date.now()) { a.status = "expired"; put(a); } return a; }
 export const paramsHash = (p: { vault: string; ticker: string; amountIn: number; tokenOut: string }) => "0x" + createHash("sha256").update(JSON.stringify([p.vault.toLowerCase(), p.ticker, p.amountIn.toFixed(8), p.tokenOut])).digest("hex");
 export const challengeFor = (id: string, ph: string) => isoBase64URL.fromUTF8String(`${id}:${ph}`);
 
-const agentName = (agent: { id: string; label?: string }) => agent.label || `Agent key ${agent.id}`;
-async function makeApproval(vault: Address, agent: { id: string; label?: string }, tokenIn: string, tokenOut: string, amountIn: number, est: number, remUsd: number) {
+const keyLabel = (agent: { id: string; label?: string }) => agent.label || `Agent key ${agent.id}`;
+/** Who is selling, for the owner: the active strategy ("Dip Hunter"), else the agent's configured name, else the key label. */
+const agentName = (agent: { id: string; label?: string; name?: string }) => activeStrategyName() ?? agent.name ?? keyLabel(agent);
+async function makeApproval(vault: Address, agent: { id: string; label?: string; name?: string }, tokenIn: string, tokenOut: string, amountIn: number, est: number, remUsd: number) {
   const sold = await soldLast24h(vault);
   const q = await svc.quote_swap(tokenIn, tokenOut, amountIn);
   const id = "apr_" + randomBytes(6).toString("hex"), ph = paramsHash({ vault, ticker: tokenIn, amountIn, tokenOut });
   const reasonText = `Daily agent sell limit reached: $${sold.toFixed(2)} sold in the last 24h, $${remUsd.toFixed(2)} left, this sell is ~$${est.toFixed(2)}`;
-  const a: Approval = { id, vault, agentKeyId: agent.id, agentName: agentName(agent), ticker: tokenIn, amountIn, estUsd: +est.toFixed(2), estUsdgOut: q.amountOut, estUsdgOutMin: q.minOut,
+  const a: Approval = { id, vault, agentKeyId: agent.id, agentName: agentName(agent), keyLabel: keyLabel(agent), ticker: tokenIn, amountIn, estUsd: +est.toFixed(2), estUsdgOut: q.amountOut, estUsdgOutMin: q.minOut,
     reason: reasonText, reasonCode: "SELL_CAP_EXCEEDED", reasonText, status: "pending", createdAt: nowIso(), expiresAt: new Date(Date.now() + TTL_SEC * 1000).toISOString(), paramsHash: ph, challenge: challengeFor(id, ph) };
   put(a);
   return a;
 }
-/** Dev fixture (local anvil only, owner): a pending over-cap agent sell approval for the dashboard demo. Nothing is submitted. */
+/** Dev fixture (local anvil only, owner). Uses up the vault's 24h sell headroom with REAL agent sells (<= $98 each,
+ * direct vault calls tagged dev-seed, not counted by the breaker), then holds a pending sell of `usd` (default $60, max $100)
+ * so approving it succeeds onchain. */
 export async function seedApproval(p: { ticker?: string; usd?: number } = {}) {
   const vault = svc._vault(), agent = svc._agent();
-  if (!vault || !agent) throw new svc.ApiError(409, "Needs a vault and an agent key first (create_smart_account, create_session_key)");
-  const ticker = String(p.ticker ?? "AMD").toUpperCase(), rem = await exitRemaining(vault);
-  const px = await usd(ticker, 1), est = Math.max(rem.totalUsd + 1, Number(p.usd) || rem.totalUsd + 50);
-  const a = await makeApproval(vault, agent, ticker, "mUSDG", +(est / px).toFixed(6), est, rem.totalUsd);
-  log.info("dev: seeded pending sell approval", { approvalId: a.id, ticker, estUsd: a.estUsd });
-  return { seeded: true, approval: pub(a) };
+  if (!vault || !agent || agent.status !== "active") throw new svc.ApiError(409, "Needs a vault and an active agent key first (create_smart_account, create_session_key)");
+  const ticker = String(p.ticker ?? "AMD").toUpperCase(), want = Math.min(100, Math.max(5, Number(p.usd) || 60));
+  if (!agent.allowlist.map((x) => x.toUpperCase()).includes(ticker)) throw new svc.ApiError(409, `${ticker} is not on the agent key's allowlist`);
+  const ti = svc._token(ticker), usdg = svc._token("mUSDG"), px = await usd(ticker, 1);
+  const bal = async () => Number(await read<bigint>(ti.address, C.usdg.abi, "balanceOf", [vault])) / 10 ** ti.decimals;
+  const sold: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const rem = (await exitRemaining(vault)).totalUsd;
+    if (rem < want - 1) break; // the pending sell will be over the remaining headroom
+    const chunkUsd = Math.min(98, rem - (want - 2) > 98 ? 98 : Math.max(5, rem - want + 5));
+    const amt = +(chunkUsd / px).toFixed(6);
+    if ((await bal()) < amt + want / px) throw new svc.ApiError(409, `Not enough ${ticker} in the vault to use up the sell headroom (call faucet_testnet or buy first)`);
+    const q = await svc.quote_swap(ticker, "mUSDG", amt);
+    const pool = await svc._poolFor(ticker, "mUSDG"), deadline = BigInt((await svc.chainNow()) + 300);
+    const { hash } = await svc._agentWallet().write(vault, C.vault.abi, "agentSwap", [pool, ti.address, usdg.address, svc._units(amt, ti.decimals), svc._units(q.minOut, 6), deadline], { label: "dev-seed:sell" });
+    sold.push(hash);
+  }
+  const rem = (await exitRemaining(vault)).totalUsd;
+  const amountIn = +(want / px).toFixed(6), est = await usd(ticker, amountIn);
+  if (est <= rem) throw new svc.ApiError(409, "Could not use up the sell headroom");
+  const a = await makeApproval(vault, agent, ticker, "mUSDG", amountIn, est, rem);
+  log.info("dev: seeded pending sell approval", { approvalId: a.id, ticker, estUsd: a.estUsd, headroomSells: sold.length });
+  return { seeded: true, headroomSells: sold.length, sellHeadroomLeftUsd: +rem.toFixed(2), approval: pub(a) };
 }
 
 /** execute_swap guard: returns a pending approval instead of submitting a sell that would exceed the sell cap. */
@@ -138,7 +160,25 @@ async function verifyAssertion(a: Approval, assertion: any) {
 }
 
 // ---------------------------------------------------------------- approve / reject
-export async function approve(id: string, assertion: any) {
+/** Idempotency-Key: a repeat with the same key returns the same result (waits for an in-flight run); never relays twice. */
+export async function approve(id: string, assertion: any, idemKey?: string) {
+  if (idemKey) {
+    const k = `approve:${idemKey}`;
+    const ins = getDb().prepare("INSERT OR IGNORE INTO idempotency(key, scope, ref, created_at) VALUES(?,?,?,?)").run(k, "approval", id, nowIso());
+    if (!ins.changes) {
+      const ref = (getDb().prepare("SELECT ref FROM idempotency WHERE key=?").get(k) as { ref: string }).ref;
+      if (ref !== id) throw new ApiError(409, "Idempotency-Key already used for a different approval");
+      for (let i = 0; i < 300 && ["pending", "executing"].includes(get(id)?.status ?? ""); i++) await new Promise((r) => setTimeout(r, 100));
+      const cur = get(id)!; if (cur.status === "pending") { getDb().prepare("DELETE FROM idempotency WHERE key=?").run(k); return approve(id, assertion, idemKey); } // first attempt never got past verification
+      if (cur.status === "failed") throw new ApiError(409, cur.error ?? "Approval failed");
+      return pub(cur);
+    }
+    try { return await approveOnce(id, assertion); }
+    catch (e) { if (get(id)?.status === "pending") getDb().prepare("DELETE FROM idempotency WHERE key=?").run(k); throw e; } // failed before executing: key reusable
+  }
+  return approveOnce(id, assertion);
+}
+async function approveOnce(id: string, assertion: any) {
   const a0 = get(id); if (!a0) throw new ApiError(404, "Unknown approval");
   expire(a0);
   if (a0.status === "expired") throw new ApiError(410, "Approval expired (1h): the sell was not executed; ask the agent to sell again");

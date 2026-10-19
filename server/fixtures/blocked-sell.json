@@ -28,6 +28,7 @@
     "estUsdgOutMin",
     "expiresAt",
     "id",
+    "keyLabel",
     "mode",
     "ownerSignatureSimulated",
     "paramsHash",

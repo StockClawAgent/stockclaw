@@ -71,7 +71,7 @@ const mockApi = {
   subscribeExecution: (id, onEvent) => pollExecution((x) => Promise.resolve(mockExecution(x)), id, onEvent),
   resumeKey: (keyId) => mockApi.resume_key(keyId),
   // mock stream: replays entries after `since`, then a fake trade every 15s. Returns {close()}.
-  openActivityStream: (onEvent, since) => { let n = 0; const seen = MOCK_ACTIVITY.filter((a) => !since || a.id > Number(since)).reverse(); setTimeout(() => seen.forEach(onEvent), 0);
+  openActivityStream: (onEvent, opts) => { const since = typeof opts === "object" && opts ? opts.since : opts; const onState = (opts && opts.onState) || (() => {}); onState("connecting", {}); setTimeout(() => onState("live", {}), 0); let n = 0; const seen = MOCK_ACTIVITY.filter((a) => !since || a.id > Number(since)).reverse(); setTimeout(() => seen.forEach(onEvent), 0);
     const t = setInterval(() => { const e = { id: 100 + ++n, ts: new Date().toISOString(), kind: "trade", keyId: "sk_mock", title: `Agent bought $${(10 + n).toFixed(2)} of AMD`, side: "buy", usd: 10 + n, txHash: "0xMOCKTX" + n, explorerUrl: null, actions: [{ type: "revoke_key", label: "Revoke agent key", method: "POST", href: "/api/revoke_session_key" }] }; MOCK_ACTIVITY.unshift(e); onEvent(e); }, 15000);
     return { close: () => clearInterval(t) }; },
   // get_usage omitted from UI: tiers/subscriptions out of scope.
@@ -103,7 +103,7 @@ function mockRetryLeg(id, legId) { const e = MOCK_EXEC[id], l = e && e.legs.find
   if (cur.status !== "failed") throw Object.assign(new Error(`Only failed legs can be retried (leg is ${cur.status})`), { status: 409 });
   l.retryStart = Date.now(); return mockExecution(id); }
 const inH = (h) => new Date(Date.now() + h * 3600e3).toISOString();
-const MOCK_APPROVALS = [{ id: "apr_mock1", agentKeyId: "sk_mock", agentName: "Research agent", ticker: "AMD", amountIn: 0.6, estUsdgOut: 89.73, estUsdgOutMin: 88.83, reason: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", reasonCode: "SELL_CAP_EXCEEDED", reasonText: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", status: "pending", createdAt: inH(-0.1), expiresAt: inH(0.9), challenge: "YXByX21vY2sxOjB4bW9jaw", ownerSignatureSimulated: true }];
+const MOCK_APPROVALS = [{ id: "apr_mock1", agentKeyId: "sk_mock", agentName: "Dip Hunter", keyLabel: "Agent key sk_mock", ticker: "AMD", amountIn: 0.6, estUsdgOut: 89.73, estUsdgOutMin: 88.83, reason: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", reasonCode: "SELL_CAP_EXCEEDED", reasonText: "Daily agent sell limit reached: $450.00 sold in the last 24h, $50.00 left, this sell is ~$90.00", status: "pending", createdAt: inH(-0.1), expiresAt: inH(0.9), challenge: "YXByX21vY2sxOjB4bW9jaw", ownerSignatureSimulated: true }];
 function mockApprove(id) { const a = MOCK_APPROVALS.find((x) => x.id === id); if (!a) throw Object.assign(new Error("Unknown approval"), { status: 404 });
   if (a.status !== "pending") throw Object.assign(new Error(`Approval is ${a.status} (one approval per sell)`), { status: 409 });
   if (MOCK_FAIL) { a.status = "failed"; a.error = "Price moved 3.40% since the request (> 3%); not executed. Ask the agent to sell again."; throw Object.assign(new Error(a.error), { status: 409 }); }
@@ -144,22 +144,34 @@ async function call(method, name, body, headers = {}) {
 const newIdemKey = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : "idk-" + Date.now().toString(36) + Math.random().toString(36).slice(2));
 const idem = (k) => ({ "idempotency-key": String(k || newIdemKey()) });
 // SSE over fetch (EventSource can't send the owner-token header). Calls onEvent(entry) per activity; returns {close()}.
-function openStream(onEvent, since) {
-  const ctl = typeof AbortController !== "undefined" ? new AbortController() : null; let closed = false, last = since || 0;
+// opts: {since?, onState?(state, info)} with state in connecting | live | reconnecting | error. A number is accepted as `since`.
+// Auto-reconnects with backoff (1s, 2s, 4s ... 30s, reset once live) and resumes from the last activity id.
+// 'error' is final (owner token missing/rejected); call openActivityStream again after signing in.
+function openStream(onEvent, opts) {
+  const o = typeof opts === "object" && opts ? opts : { since: opts };
+  const ctl = typeof AbortController !== "undefined" ? new AbortController() : null; let closed = false, last = o.since || 0, backoff = 1000;
+  const state = (st, info) => { try { o.onState && o.onState(st, info || {}); } catch {} };
   const run = async () => {
+    state("connecting");
     while (!closed) {
       try {
         const tok = await ownerToken();
         const r = await fetch(`${API_BASE}/api/activity/stream${last ? "?since=" + encodeURIComponent(last) : ""}`, { headers: { authorization: `Bearer ${tok}`, "x-owner-token": tok, accept: "text/event-stream" }, signal: ctl && ctl.signal });
-        if (r.status === 401) { StockClawAuth.clear(); throw Object.assign(new Error("owner token required"), { status: 401 }); }
+        if (r.status === 401 || r.status === 403) { if (r.status === 401) StockClawAuth.clear(); throw Object.assign(new Error("owner token required"), { status: r.status, fatal: true }); }
         if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+        state("live"); backoff = 1000;
         const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
         for (;;) { const { value, done } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true });
           let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
             const data = chunk.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
             if (data) { try { const e = JSON.parse(data); if (e.id) last = e.id; onEvent(e); } catch {} } } }
-      } catch (e) { if (closed) return; if (e && e.status === 401) { onEvent({ kind: "error", error: "owner token required" }); return; } }
-      if (!closed) await new Promise((res) => setTimeout(res, 3000)); // reconnect, resuming from the last id
+      } catch (e) {
+        if (closed) return;
+        if (e && (e.fatal || e.code === "OWNER_TOKEN_REQUIRED")) { state("error", { message: "owner token required", status: e.status || 401 }); return; }
+      }
+      if (closed) return;
+      state("reconnecting", { inMs: backoff });
+      await new Promise((res) => setTimeout(res, backoff)); backoff = Math.min(backoff * 2, 30000);
     }
   };
   run();
@@ -232,7 +244,7 @@ const liveApi = {
   list_basket_executions: () => call("GET", "baskets/executions"),
   retry_basket_leg: (id, legId) => call("POST", `baskets/executions/${encodeURIComponent(id)}/legs/${encodeURIComponent(legId)}/retry`, undefined, idem(`retry:${id}:${legId}`)),
   list_approvals: (status) => call("GET", "approvals", { status }),
-  approve_sell: (id, webauthnAssertion) => call("POST", `approvals/${encodeURIComponent(id)}/approve`, { webauthnAssertion }),
+  approve_sell: (id, webauthnAssertion, idempotencyKey) => call("POST", `approvals/${encodeURIComponent(id)}/approve`, { webauthnAssertion }, idem(idempotencyKey || `approve:${id}`)), // repeat-safe
   reject_sell: (id) => call("POST", `approvals/${encodeURIComponent(id)}/reject`),
   passkey_register_options: (webauthnAssertion) => call("POST", "passkey/register/options", webauthnAssertion ? { webauthnAssertion } : {}),
   passkey_register_verify: (response) => call("POST", "passkey/register/verify", { response }),
@@ -241,7 +253,7 @@ const liveApi = {
   getActivity: (since) => call("GET", "activity", { since }),
   getBreaker: () => call("GET", "keys/breaker"),                         // {tripped:[{keyId, reason, trippedAt}]}
   resumeKey: (keyId) => call("POST", `keys/${encodeURIComponent(keyId)}/resume`),
-  openActivityStream: (onEvent, since) => openStream(onEvent, since),     // {close()}
+  openActivityStream: (onEvent, opts) => openStream(onEvent, opts),       // opts {since, onState}; returns {close()}
   subscribeExecution: (id, onEvent) => subscribeExec(id, onEvent),        // {close()}
   faucet_testnet: () => call("POST", "faucet_testnet"),
 };
