@@ -13,7 +13,7 @@ __pycache__/
 
 # Private: kept locally, not for the public repo (copies in /workspace/stockclaw-private)
 threat-model.md
-audit/
+/audit/
 docs/MAINNET_HARDENING.md
 blobs/
 consumer-positioning.md
