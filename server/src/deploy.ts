@@ -14,7 +14,7 @@ export const BASE_PRICES: Record<string, number> = { TSLA: 250, AMZN: 190, PLTR:
 const POOL_USD = 250_000; // per side
 
 export async function deployAndSeed(): Promise<Deployment> {
-  if (!IS_LOCAL) throw new Error(`REFUSING to deploy to ${RPC_URL}: this flow is local-anvil only. Testnet deploys need approval.`);
+  if (!IS_LOCAL) throw new Error(`REFUSING to deploy to ${RPC_URL}: this flow is local-anvil only. Robinhood Chain deploys need approval.`);
   await assertChain();
   const dep = wallet(keys.deployer()), kp = wallet(keys.keeper()), tr = wallet(keys.treasury()), up = wallet(keys.updater());
   const head = path.join(ROOT, "artifacts", "head");

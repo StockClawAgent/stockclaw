@@ -1,13 +1,13 @@
 # StockClaw — Backend Plan (routing, wallets, reliability)
-Owner: Lucius (CTO) · 2026-10-18 · **Local sim and testnet (46630) only. Nothing on mainnet.** Friday stage demo: public testnet 46630, pending Julius's go-ahead to deploy (local anvil fallback).
+Owner: Lucius (CTO) · 2026-10-18 · **Local sim and Robinhood Chain 46630 only. Nothing on mainnet.** Friday stage demo: public Robinhood Chain 46630, pending Julius's go-ahead to deploy (local anvil fallback).
 Owners: **Lucius** = server/keeper/routing · **Quintus** = contracts · **Gaius** = security · **Flavius** = wallet UX.
 Current state (checked in repo): Node/TS server with viem; state lives in `server/data/state.json` (`service.ts` `save()` rewrites it); per-account in-memory tx queue in `chain.ts`; keeper is a `setInterval` loop; AgentVault (not 4337) is the wallet; `FeeRouter.isRouteSupported(adapter, tokenIn, tokenOut)` exists; exit exemption landed in 5491737.
 
 ## Friday stage demo target (updated 2026-10-19)
-- **Target: public Robinhood Chain testnet 46630, not the local sim.** This is pending Julius's final go-ahead for the deploy. No deploy or faucet claim happens before that.
-- **Fallback: local anvil (chain id 46630, MOCK_TOKENS=1)** stays fully working and rehearsed. It's the same build, switched with `RPC_URL`. If the testnet deploy isn't approved, funded and smoke-tested by **Thu 22, 6 pm ET**, or if testnet RPC/faucet/sequencer problems appear on Friday, the demo runs locally.
-- Prep done (no txs): dry run of Quintus's HEAD contracts against a 46630 fork (44 txs, ~0.0004 ETH). Fresh testnet-only role keys are kept outside the repo. Blockscout tx links are in place. Runbook and funding table: `docs/TESTNET_DEPLOY.md`.
-- Testnet adds: real testnet stock tokens (faucet), Blockscout links in the activity feed and history, keeper-pushed NYSE sessions (fail-closed: market closed until pushed), and a separate KEEPER and FEED_UPDATER (S-4).
+- **Target: public Robinhood Chain 46630, not the local sim.** This is pending Julius's final go-ahead for the deploy. No deploy or faucet claim happens before that.
+- **Fallback: local anvil (chain id 46630, MOCK_TOKENS=1)** stays fully working and rehearsed. It's the same build, switched with `RPC_URL`. If the 46630 deploy isn't approved, funded and smoke-tested by **Thu 22, 6 pm ET**, or if RPC/faucet/sequencer problems appear on Friday, the demo runs locally.
+- Prep done (no txs): dry run of Quintus's HEAD contracts against a 46630 fork (44 txs, ~0.0004 ETH). Fresh demo-only role keys are kept outside the repo. Blockscout tx links are in place. Runbook and funding table: `docs/TESTNET_DEPLOY.md`.
+- Public chain adds: real Robinhood Chain stock tokens (faucet), Blockscout links in the activity feed and history, keeper-pushed NYSE sessions (fail-closed: market closed until pushed), and a separate KEEPER and FEED_UPDATER (S-4).
 
 ## Friday scope
 | Area | Friday (demo) | After |
@@ -26,8 +26,8 @@ Current state (checked in repo): Node/TS server with viem; state lives in `serve
 - *AC:* e2e: full fill; forced revert in leg 3 → `partial`, legs 1–2 kept, no retry; replaying the same key → no new txs.
 
 ## 2. Wallet infra (Flavius UX; Quintus contracts; Lucius infra; Gaius review)
-- **Target:** ERC-4337 smart account per user (Safe + Safe4337Module, or an ERC-7579 account with a session-key validator), owner = passkey (WebAuthn), email (embedded-wallet vendor, TBD) or an existing wallet; agent gets a session key scoped to router + allowlist + caps + ≤ 7-day expiry; one-click revoke; paymaster sponsors testnet gas.
-- **What exists on 46630** (DESIGN_NOTES, code checked by Quintus): EntryPoint v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032` and v0.6, Safe v1.4.1 singletons and factory. **No public bundler or paymaster is known** for 46630 (unverified; Alchemy markets smart wallets for Robinhood Chain, not confirmed for testnet).
+- **Target:** ERC-4337 smart account per user (Safe + Safe4337Module, or an ERC-7579 account with a session-key validator), owner = passkey (WebAuthn), email (embedded-wallet vendor, TBD) or an existing wallet; agent gets a session key scoped to router + allowlist + caps + ≤ 7-day expiry; one-click revoke; paymaster sponsors demo gas.
+- **What exists on 46630** (DESIGN_NOTES, code checked by Quintus): EntryPoint v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032` and v0.6, Safe v1.4.1 singletons and factory. **No public bundler or paymaster is known** for 46630 (unverified; Alchemy markets smart wallets for Robinhood Chain, not confirmed for 46630).
 - **Sim plan (spike):** anvil fork of 46630 + a local bundler container (Pimlico **Alto** or Alchemy **Rundler**; image names/versions to be pinned when spiked), a test `VerifyingPaymaster` we deploy locally, one session-key UserOp swap through the router. Not wired into the demo.
 - Caps stay enforced onchain (by AgentVault today, by the session-key module later); a wallet migration must not weaken them (Gaius gate).
 - *AC (spike, if time):* a UserOp from a passkey-owned account executes one capped swap on the local fork; a write-up of gaps.
@@ -45,5 +45,5 @@ Current state (checked in repo): Node/TS server with viem; state lives in `serve
 - **Mon 19:** SQLite + jobs + nonce manager (Lucius); Gaius reviews 5491737.
 - **Tue 20:** routing via `isRouteSupported`, basket preflight/legs/idempotency (Lucius); Flavius basket progress UI.
 - **Wed 21:** restart-recovery and partial-state e2e; `/healthz`; Gaius review of execution paths.
-- **Thu 22:** after Julius's go-ahead, fund roles → deploy to 46630 → Safe accepts ownership → seed pools → smoke test with Blockscout links; 4337 local spike only if everything is green; freeze 6 pm ET (go/no-go: testnet or local).
-- **Fri 23:** stage demo on **public testnet 46630**; local anvil is the fallback.
+- **Thu 22:** after Julius's go-ahead, fund roles → deploy to 46630 → Safe accepts ownership → seed pools → smoke test with Blockscout links; 4337 local spike only if everything is green; freeze 6 pm ET (go/no-go: public chain or local).
+- **Fri 23:** stage demo on **public Robinhood Chain 46630**; local anvil is the fallback.

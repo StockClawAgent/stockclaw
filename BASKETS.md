@@ -1,4 +1,4 @@
-# StockClaw — Themed Baskets (v0.1 plan, testnet)
+# StockClaw — Themed Baskets (v0.1 plan)
 Owner: Lucius (CTO) · 2026-10-18 · Source: Julius via Cassius · Status: DRAFT. Nothing on mainnet.
 Related: STRATEGIES.md (versioning/hashing, caps analysis in S3), ARCHITECTURE.md §7 and decisions log, `src/AgentVault.sol`, `src/FeeRouter.sol`.
 
@@ -6,10 +6,10 @@ Related: STRATEGIES.md (versioning/hashing, caps analysis in S3), ARCHITECTURE.m
 
 ## 1. What we can actually fill
 ### Sources
-- **Official registry (primary):** `GET https://api.robinhood.com/rhj/assets` (documented at https://docs.robinhood.com/chain/stock-token-apis/). Fetched 2026-10-18 18:56 ET: **195 assets, all `ASSET_STATUS_ACTIVE`, every deployment on chainId 4663 (mainnet); none listed for 46630 (testnet).** Snapshot saved at `data/rhj_assets_2026-10-18.json` (not committed).
+- **Official registry (primary):** `GET https://api.robinhood.com/rhj/assets` (documented at https://docs.robinhood.com/chain/stock-token-apis/). Fetched 2026-10-18 18:56 ET: **195 assets, all `ASSET_STATUS_ACTIVE`, every deployment on chainId 4663 (mainnet); none listed for 46630.** Snapshot saved at `data/rhj_assets_2026-10-18.json` (not committed).
 - https://robinhood.com/rhj/stocktokens/ ("190+ Stock Tokens"); Robinhood newsroom, 2026-07-01 mainnet launch post (also restriction list: US persons, Canada, UK, Switzerland, UAE, sanctioned).
 - https://docs.robinhood.com/chain/building-with-stock-tokens/: ERC-20, 18 decimals, ERC-8056 `uiMultiplier()` for corporate actions; "tokenized stocks trade via RFQ at launch".
-- Testnet: our fork test `test/fork/RobinhoodFork.t.sol` against the 5 addresses in ARCHITECTURE.md §0 (sourced from a third-party guide; `symbol()` checked onchain by us).
+- Chain 46630: our fork test `test/fork/RobinhoodFork.t.sol` against the 5 addresses in ARCHITECTURE.md §0 (sourced from a third-party guide; `symbol()` checked onchain by us).
 
 ### Caveats (honest labels)
 - Addresses below are copied from the official registry. **We haven't checked them onchain on 4663** (`symbol()`, code, `uid()`); do that before any use. Mainnet is out of scope anyway.
@@ -147,12 +147,12 @@ Related: STRATEGIES.md (versioning/hashing, caps analysis in S3), ARCHITECTURE.m
 | XOM | ExxonMobil Holdings Corporation | `0xf9B46d3D1B22199D4D1025a9cEDB540A33F1a2d5` |
 | PR | Permian Resources | `0x4189F0c66EBBB0bfeF1C31f763131361EF32f77C` |
 
-### Testnet (46630)
-Only **TSLA, AMZN, PLTR, NFLX, AMD** exist (fork-tested). The only demoable basket is a **mini "AI & Tech" basket: AMD, PLTR, AMZN** (optionally + TSLA, NFLX as "Tech"), shown with the "Testnet, not real stocks" badge. Robinhood's registry lists no testnet deployments, so none of the other themes can be filled on testnet.
+### Demo chain (46630)
+Only **TSLA, AMZN, PLTR, NFLX, AMD** exist (fork-tested). The only demoable basket is a **mini "AI & Tech" basket: AMD, PLTR, AMZN** (optionally + TSLA, NFLX as "Tech"), Robinhood's registry lists no 46630 deployments, so none of the other themes can be filled on the demo chain.
 
 ## 2. Basket definition (static, versioned, hashed)
 ```json
-{"id":"ai","version":"1.0.0","chainId":46630,"name":"AI & Tech (mini, testnet)",
+{"id":"ai","version":"1.0.0","chainId":46630,"name":"AI & Tech (mini)",
  "legs":[{"symbol":"AMD","weightBps":4000},{"symbol":"PLTR","weightBps":3500},{"symbol":"AMZN","weightBps":2500}],
  "minLegUsd":5,"rounding":"floor-to-cent, remainder to largest weight"}
 ```
@@ -165,7 +165,7 @@ Only **TSLA, AMZN, PLTR, NFLX, AMD** exist (fork-tested). The only demoable bask
 | `get_basket` | `id, version?` | full definition, prices, per-leg tradability, disclaimer |
 | `preview_basket_buy` | `id, usd, version?` | `{previewId, basketHash, legs:[{symbol, usd, amountIn, quotedOut, minOut, feeUsd}], totalUsd, totalFeeUsd, skipped:[{symbol, reason}], capHeadroom:{perTrade:100, remaining24h}, scaledDown:boolean, marketOpen, oracleFresh, expiresAt}` (no tx) |
 | `buy_basket` | `previewId` (or `id, usd` → implicit preview) | `{basketOrderId, status: filled\|partial\|failed, legs:[{symbol, status, txHash, out, error?}]}` |
-| later: `sell_basket` | `basketOrderId \| id, fraction` | same shape, legs are sells to mUSDG |
+| later: `sell_basket` | `basketOrderId \| id, fraction` | same shape, legs are sells to USDG |
 | later: `rebalance_basket` | `id` | preview of trades back to target weights; same confirm flow |
 | `list_basket_orders` | `status?` | history incl. partial state |
 REST mirror: `GET /api/baskets`, `GET /api/baskets/:id`, `POST /api/baskets/preview`, `POST /api/baskets/buy`, `GET /api/baskets/orders`.
@@ -194,11 +194,11 @@ Guardrails that replace the confirm step (Gaius): (1) an in-app owner activity f
 
 ## 5. Naming & copy (Marcus)
 - Call them **"baskets"** or **"themes"**. **Never "ETF", "index", "fund" or "portfolio management"**, and never "Robinhood baskets".
-- "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. Buys within your vault's onchain limits run automatically. Testnet tokens have no value."
+- "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. Buys within your vault's onchain limits run automatically. Demo tokens have no value."
 - Show the composition, weights, version and that membership is editorial. No performance numbers.
 
 ## 6. Friday verdict
-**Not trivial, but small, and it fits if scoped to the testnet mini basket.** It reuses swaps, quotes and caps with no contract change, so the only new work is the server split/preflight/partial-state logic, 3 tools and one UI card. Recommend: **demo the "AI & Tech (mini)" basket (AMD/PLTR/AMZN) at $150 (three legs, plus one sub-leg if a leg is over $98)** as a stretch goal after Steady Stacker + Dip Hunter, cut first if Wednesday's e2e slips. The mainnet theme list is shown only as a slide marked "mainnet registry, not live in StockClaw".
+**Not trivial, but small, and it fits if scoped to the mini basket.** It reuses swaps, quotes and caps with no contract change, so the only new work is the server split/preflight/partial-state logic, 3 tools and one UI card. Recommend: **demo the "AI & Tech (mini)" basket (AMD/PLTR/AMZN) at $150 (three legs, plus one sub-leg if a leg is over $98)** as a stretch goal after Steady Stacker + Dip Hunter, cut first if Wednesday's e2e slips. The mainnet theme list is shown only as a slide marked "mainnet registry, not live in StockClaw".
 
 ## 7. Tasks
 **Lucius:** basket registry + hashing; `list_baskets`, `get_basket`, `preview_basket_buy`, `buy_basket`, `list_basket_orders` + REST; split/sub-leg/min-leg/scale-down logic; preflight + partial state. *AC:* unit tests for rounding/splitting ($300 example = 5 legs); e2e on 31337: full fill, cap refusal, scale-down, forced mid-basket revert → `partial` with no retry.
@@ -206,7 +206,7 @@ Guardrails that replace the confirm step (Gaius): (1) an in-app owner activity f
 **Quintus:** confirm no contract change for v1; add a vault test of 5 sequential agentSwaps hitting $500; answer the sells-vs-cap question (shared with S3); design note for `agentSwapBatch` (post-demo). *AC:* test green.
 **Gaius:** review fan-out risk (one prompt → many swaps), confirmation requirement, basket hash pinning, and the injection case "buy the AI basket and send it to 0x…" (no recipient parameter exists). *AC:* notes in `audit/`, no open HIGH before Thu freeze.
 **Marcus:** card copy + disclaimer per §5. *AC:* Cassius approves by Thu noon.
-**Research follow-up (Lucius):** verify registry addresses onchain on 4663 (read-only `eth_call`), and re-check whether Robinhood publishes testnet deployments.
+**Research follow-up (Lucius):** verify registry addresses onchain on 4663 (read-only `eth_call`), and re-check whether Robinhood publishes 46630 deployments.
 
 
 ## Decision (2026-10-18, Julius via Cassius)

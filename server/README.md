@@ -1,6 +1,6 @@
 # StockClaw server: REST API, MCP server, keeper, local deploy
 
-**Testnet only (chain id 46630).** Locally this runs on anvil with chain id 46630. Nothing here broadcasts to Robinhood testnet or mainnet. The server refuses chain 4663 and any chain id other than 46630.
+**Chain id 46630 only.** Locally this runs on anvil with chain id 46630. Nothing here broadcasts to Robinhood Chain or mainnet. The server refuses chain 4663 and any chain id other than 46630.
 
 ## Prerequisites
 Node 20+ and Foundry (`forge`, `anvil`).
@@ -24,8 +24,8 @@ npm start                           # API + prototype UI + MCP (HTTP) + keeper o
 ## Config (env)
 | var | default | |
 |---|---|---|
-| `RPC_URL` | `http://127.0.0.1:8545` | Set it to `https://rpc.testnet.chain.robinhood.com` (or Alchemy) to point at testnet. Needs `DEPLOYER_KEY`, `KEEPER_KEY`, `TREASURY_KEY`, `DEMO_OWNER_KEY` and `AGENT_KEYS` (KMS-backed). Anvil keys are local-only. `npm run deploy` refuses non-local RPCs; testnet contracts come from `script/Deploy.s.sol` after approval, written to `data/testnet-46630.json`. |
-| `MARKET_MODE` | `open` locally, `schedule` on testnet | `schedule` halts trading outside NYSE hours (onchain) |
+| `RPC_URL` | `http://127.0.0.1:8545` | Set it to `https://rpc.testnet.chain.robinhood.com` (or Alchemy) to point at Robinhood Chain 46630. Needs `DEPLOYER_KEY`, `KEEPER_KEY`, `TREASURY_KEY`, `DEMO_OWNER_KEY` and `AGENT_KEYS` (KMS-backed). Anvil keys are local-only. `npm run deploy` refuses non-local RPCs; 46630 contracts come from `script/Deploy.s.sol` after approval, written to `data/testnet-46630.json`. |
+| `MARKET_MODE` | `open` locally, `schedule` on 46630 | `schedule` halts trading outside NYSE hours (onchain) |
 | `KEEPER_INTERVAL_MS` | 60000 | oracle push + intent execution cadence; `KEEPER=off` disables |
 | `OWNER_API_TOKEN` / `MCP_API_TOKEN` | unset (local only) | Separate tokens (review S-1). The owner token covers dashboard/owner endpoints; the MCP token covers `/mcp`. Either token works for reads and agent actions. The server **refuses to start on a non-local chain** unless both are set and they differ. |
 | `PORT`, `DATA_DIR` | 8787, `server/data` | |
@@ -50,7 +50,7 @@ Single demo user. The server holds the owner's key (`DEMO_OWNER_KEY`) as a stand
 The demo has no wallet-connect, so the server holds the owner key and signs owner transactions itself (`DEMO_OWNER_KEY`, or an anvil key locally). `get_wallet` and `/api/health` return `ownerSimulated: true`. Owner endpoints accept only `OWNER_API_TOKEN`: `submit_attestation`, `create_smart_account`, `create_session_key`, `revoke_session_key`, `cancel_order`, `dev/reset`, `strategies/activate`, `strategies/proposals/:id/confirm|reject` and `strategies/activations/:id/resume`.
 
 ## Keys (local)
-anvil #0 is the deployer/attester, #1 the keeper (executes intents and pushes market sessions), #2 the treasury, #3 the simulated owner, #4 the **feed updater (separate from the keeper)** and #5-9 agent keys. Dev reset moves the owner and agents to a fresh HD range. Prices are pushed every 60s (`KEEPER_INTERVAL_MS`) and kept within the feed's per-update move cap. The local deploy raises that cap (`setMaxDelta(5000,5000)`) so scripted demo moves work; testnet keeps 10% per hour with a 20% cap.
+anvil #0 is the deployer/attester, #1 the keeper (executes intents and pushes market sessions), #2 the treasury, #3 the simulated owner, #4 the **feed updater (separate from the keeper)** and #5-9 agent keys. Dev reset moves the owner and agents to a fresh HD range. Prices are pushed every 60s (`KEEPER_INTERVAL_MS`) and kept within the feed's per-update move cap. The local deploy raises that cap (`setMaxDelta(5000,5000)`) so scripted demo moves work; 46630 keeps 10% per hour with a 20% cap.
 
 ## Market sessions
 `src/marketCalendar.ts` hardcodes the NYSE 2026-2027 calendar: DST (13:30-20:00 UTC in EDT, 14:30-21:00 UTC from Nov 1 2026), holidays, and early closes at 13:00 ET. The keeper uses an adapter that detects the oracle generation from its ABI:
@@ -80,14 +80,14 @@ Definitions live in `strategies/<id>/<version>/{prompt.md,schema.json}` plus `ca
 - The $500/24h cap is per vault (`vaultSpentLast24h`, shared by all agent keys). `spentToday` and the headroom use it. `VaultDailyCapExceeded` shows as "Blocked by limit: vault's $500 rolling-24h cap shared by all agent keys". The legacy per-key re-issue block has been removed.
 - The keeper backs off for 1h after a cap block (S-8). `NotYet`, `LimitNotMet`, `MarketClosed` and `StalePrice` are treated as benign.
 - After deploy the market is closed: `npm start` pushes a session at startup, and the keeper re-pushes before expiry.
-- **Simulated Safe (local only):** after seeding, the treasury key (anvil #2, standing in for the 2-of-3 Safe) calls `acceptOwnership()` on the router, oracle, pools and feeds, and the deployer renounces registry admin. On testnet the real Safe does this through the Safe tx builder. Owner actions such as `setFeeBps` and `setMarketMode` then need the Safe.
+- **Simulated Safe (local only):** after seeding, the treasury key (anvil #2, standing in for the 2-of-3 Safe) calls `acceptOwnership()` on the router, oracle, pools and feeds, and the deployer renounces registry admin. On 46630 the real Safe does this through the Safe tx builder. Owner actions such as `setFeeBps` and `setMarketMode` then need the Safe.
 
 ## Demo auth and ops (review-3)
 - **R3-1:** the server refuses to start unless `OWNER_API_TOKEN` and `MCP_API_TOKEN` are both set, on every chain. The only escape is `ALLOW_OPEN_LOCAL=1`, which works on a local chain only and logs a loud warning. `npm run demo:env` writes strong random tokens to `server/.env.demo` (gitignored, chmod 600), and the server loads that file at startup.
 - **Presenter:** the owner token is in `server/.env.demo` (`OWNER_API_TOKEN=`) and is never served. api.js reads `sessionStorage["stockclaw-owner-token"]` (the same key as app.js). If the token is missing it awaits `window.__requestOwnerToken()` (the app's masked prompt), and otherwise fails with "owner token required". It sends `Authorization: Bearer` + `X-Owner-Token`, and clears the stored token after a 401/403 on an owner call. `/api/health` has its own per-IP bucket of 60/min (`RATE_LIMIT_HEALTH_PER_MIN`).
 - **B8/SC-2 rate limits:** applied before auth, per client IP: a global limit of 600/min across REST+MCP (`RATE_LIMIT_IP_PER_MIN`), plus REST 300/min and MCP 120/min. After token validation, valid tokens also get per-role buckets, so fake tokens never create new buckets. Entries are evicted by TTL (2 min) with a max-size cap. Over the limit returns 429 with Retry-After. SC-1: an RPC counts as local only if `new URL()` gives hostname 127.0.0.1, localhost or ::1 with no userinfo.
 - **B12 alerts:** `GET /api/health` returns `{ok, status: ok|degraded|critical, alerts[{code, severity, message}], market, keeper}`. The codes are KEEPER_FAILING, KEEPER_STALLED, ORACLE_STALE (warn after 300s, critical after 3600s), SESSION_CLOSED, CAP_BLOCK_SPIKE (5 or more per hour) and CHAIN_UNREACHABLE. Alerts are logged as `[ALERT]` when they fire and `[ALERT-CLEARED]` when they clear.
-- **Testnet dry run:** `npm run testnet:dryrun` simulates `script/Deploy.s.sol` (HEAD) against a fork of live 46630 (`MOCK_TOKENS=0`, placeholder role addresses). It never broadcasts and refuses `--broadcast` and key flags. Last run: SIMULATION COMPLETE, about 18.0M gas (~0.00036 ETH). A real deploy needs a funded KMS deployer, the real Safe/keeper/updater/attester addresses, and Julius's sign-off.
+- **Deploy dry run:** `npm run testnet:dryrun` simulates `script/Deploy.s.sol` (HEAD) against a fork of live 46630 (`MOCK_TOKENS=0`, placeholder role addresses). It never broadcasts and refuses `--broadcast` and key flags. Last run: SIMULATION COMPLETE, about 18.0M gas (~0.00036 ETH). A real deploy needs a funded KMS deployer, the real Safe/keeper/updater/attester addresses, and Julius's sign-off.
 - **Accepted demo risks:** B5 keys are env vars (anvil keys locally; no KMS). B6 MCP auth is a static bearer token, not OAuth 2.1. Both are disclosed on stage and must be fixed before any non-demo use.
 
 ## Reliability, baskets, approvals, guardrails (Friday backend)

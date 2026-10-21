@@ -117,7 +117,7 @@ async function poolFor(a: string, b: string): Promise<Address> {
   const ti = token(a), to = token(b);
   for (const s of Object.values(dep().stocks))
     if (await read<boolean>(dep().router, C.router.abi, "isRouteSupported", [s.pool, ti.address, to.address])) return s.pool;
-  throw new ApiError(400, `Pair not supported: ${ti.symbol} -> ${to.symbol} (routes are mUSDG <-> stock)`);
+  throw new ApiError(400, `Pair not supported: ${ti.symbol} -> ${to.symbol} (routes are USDG <-> stock)`);
 }
 const units = (amt: number, dec: number) => {
   if (!(amt > 0) || !Number.isFinite(amt)) throw new ApiError(400, "amount must be > 0");
@@ -237,7 +237,7 @@ export async function get_wallet() {
   return {
     address: S.vault ?? null, chainId: cfg.TESTNET_CHAIN_ID, owner: owner().address,
     ownerSimulated: true, ownerNote: "DEMO: the owner wallet is SIMULATED by the server (no wallet-connect yet). Owner actions require the owner token.",
-    sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h, per vault (shared by all keys); buys only: exits to mUSDG don't use the daily limit", allowlist: S.agent.allowlist } : null,
+    sessionKey: S.agent ? { status, id: S.agent.id, agent: S.agent.address, expiresAt: S.agent.expiresAt, perTradeCap: S.agent.perTradeCap, dailyCap: S.agent.dailyCap, spentToday: await spentLast24h(), window: "rolling 24h, per vault (shared by all keys); buys only: exits to USDG don't use the daily limit", allowlist: S.agent.allowlist } : null,
   };
 }
 export type Caps = { perTradeCap?: number; dailyCap?: number; days?: number; allowlist?: string[]; label?: string; name?: string };
@@ -464,10 +464,10 @@ export async function faucet_testnet() {
   if (!S.vault) throw new ApiError(409, "Create the smart account first");
   const o = owner(), txs: string[] = [];
   try { txs.push((await o.write(dep().usdg, C.usdg.abi, "faucet")).hash); }
-  catch (e) { const r = revertReason(e); if (r.name === "FaucetCooldown") throw new ApiError(429, "Faucet rate limit: 1,000 mUSDG per 24h"); throw e; }
+  catch (e) { const r = revertReason(e); if (r.name === "FaucetCooldown") throw new ApiError(429, "Faucet rate limit: 1,000 USDG per 24h"); throw e; }
   txs.push((await o.write(dep().usdg, C.usdg.abi, "transfer", [S.vault, 1000_000000n])).hash);
   if (cfg.IS_LOCAL) for (const s of Object.values(dep().stocks)) txs.push((await deployer().write(s.token, C.stock.abi, "mint", [S.vault, parseUnits("5", 18)])).hash); // mirrors the official faucet's 5 each
-  return { ethFaucet: "https://faucet.testnet.chain.robinhood.com", musdgFaucet: `MockUSDG.faucet() at ${dep().usdg}: 1,000 mUSDG / 24h, sent to your smart wallet`, stocks: cfg.IS_LOCAL ? "5 each mock TSLA/AMZN/PLTR/NFLX/AMD minted to your smart wallet" : "Use the official faucet", txHashes: txs, status: "confirmed" };
+  return { ethFaucet: "https://faucet.testnet.chain.robinhood.com", musdgFaucet: `MockUSDG.faucet() at ${dep().usdg}: 1,000 USDG / 24h, sent to your smart wallet`, stocks: cfg.IS_LOCAL ? "5 each TSLA/AMZN/PLTR/NFLX/AMD added to your smart wallet" : "Use the official faucet", txHashes: txs, status: "confirmed" };
 }
 
 export function get_usage() {

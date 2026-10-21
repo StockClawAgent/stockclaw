@@ -15,7 +15,7 @@ import { log, withCtx } from "./log.js";
 
 const ApiError = svc.ApiError;
 const RULES = { minLegUsd: 5, maxLegUsd: 98, maxBasketUsd: cfg.MAX_PER_DAY_USD, previewTtlSec: 60, proposalTtlSec: 600 };
-export const DISCLAIMER = "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. Buys within your vault's onchain limits run automatically. Testnet tokens have no value. Legs execute one by one (no atomicity across legs).";
+export const DISCLAIMER = "Themes are groupings we picked for convenience. Weights are fixed and published. Not investment advice. Buys within your vault's onchain limits run automatically. Demo tokens have no value. Legs execute one by one (no atomicity across legs).";
 
 // ---------------------------------------------------------------- registry
 /** Python json.dumps(sort_keys=True, separators=(',',':')) compatible; weightPct is a float in the source files. */
@@ -53,7 +53,7 @@ function findBasket(id: string, version?: string) {
   return b;
 }
 function executability(b: Basket): { executable: boolean; reason: string | null } {
-  if (!b.executableLocally) return { executable: false, reason: `Not executable locally: ${b.theme} uses mainnet registry tickers (${b.tickers.map((t) => t.ticker).join(", ")}) that have no StockClaw pool on the local/testnet chain. Listed for information only.` };  // chain-guard: allow
+  if (!b.executableLocally) return { executable: false, reason: `Not executable locally: ${b.theme} uses mainnet registry tickers (${b.tickers.map((t) => t.ticker).join(", ")}) that have no StockClaw pool on this chain. Listed for information only.` };  // chain-guard: allow
   const missing = b.tickers.filter((t) => !svc.dep().stocks[t.ticker]).map((t) => t.ticker);
   return missing.length ? { executable: false, reason: `No local pool for ${missing.join(", ")}` } : { executable: true, reason: null };
 }

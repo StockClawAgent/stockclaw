@@ -35,10 +35,10 @@ const viaJob = (fn: trades.TradeFn) => async (args: unknown) => {
 };
 const RO = { readOnlyHint: true, openWorldHint: false };
 const W = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
-const sym = z.string().describe("Token symbol: mUSDG, TSLA, AMZN, PLTR, NFLX, AMD");
+const sym = z.string().describe("Token symbol: USDG, TSLA, AMZN, PLTR, NFLX, AMD");
 
 export function buildMcpServer() {
-  const s = new McpServer({ name: "stockclaw", version: "0.1.0-testnet" }, { instructions: "StockClaw (TESTNET 46630, mock tokens). Trades run from the user's AgentVault under onchain caps ($100/trade, $500 rolling 24h, allowlist). Over-limit trades are hard-blocked. Not available to US persons or blocked regions." });
+  const s = new McpServer({ name: "stockclaw", version: "0.1.0" }, { instructions: "StockClaw on Robinhood Chain (46630). Demo tokens have no value. Trades run from the user's AgentVault under onchain caps ($100/trade, $500 rolling 24h, allowlist). Over-limit trades are hard-blocked. Not available to US persons or blocked regions." });
   const reg = s.registerTool.bind(s) as any;
   (s as any).registerTool = (name: string, cfg: any, handler: any) => reg(name, cfg, TRADE_TOOLS.has(name) ? async (a: any) => { const key = svc._agent()?.id ?? "no-key", w = tradeLimiter.hit(key); if (w) return err(`Rate limit: ${tradeLimiter.perMin} trade calls/min per agent key (${key}); retry in ${w}s`, 429, { retryAfterSec: w }); return handler(a); } : handler);
   // S-5: read-only; the agent cannot declare the user's country.
@@ -53,11 +53,11 @@ export function buildMcpServer() {
   s.registerTool("get_job", { description: "Status/result of a queued trade job (from a trade tool that was still running). Optionally waits up to waitSec (max 30).", inputSchema: { jobId: z.number().int().positive(), waitSec: z.number().min(0).max(30).optional() }, annotations: RO },
     wrap(async (a: { jobId: number; waitSec?: number }) => { const v = await trades.waitView(a.jobId, (a.waitSec ?? 0) * 1000); if (!v) throw new svc.ApiError(404, "Unknown job"); return v; }));
   s.registerTool("create_dca", { description: "Create a signed DCA intent executed by the keeper. No catch-up for missed runs.", inputSchema: { tokenIn: sym, tokenOut: sym, amountPerExec: z.number().positive(), interval: z.union([z.enum(["hourly", "daily", "weekly"]), z.number().int().min(60)]), maxExecs: z.number().int().min(1).max(365), slippageBps: z.number().int().min(0).max(300).optional() }, annotations: W }, wrap(viaJob("create_dca")));
-  s.registerTool("create_limit_order", { description: "Create a limit order. Buy (tokenIn=mUSDG) fires when price <= limitPrice; sell fires when price >= limitPrice.", inputSchema: { tokenIn: sym, tokenOut: sym, amountIn: z.number().positive(), limitPrice: z.number().positive(), expiry: z.string().optional().describe("ISO time; default 7 days") }, annotations: W }, wrap(viaJob("create_limit_order")));
+  s.registerTool("create_limit_order", { description: "Create a limit order. Buy (tokenIn=USDG) fires when price <= limitPrice; sell fires when price >= limitPrice.", inputSchema: { tokenIn: sym, tokenOut: sym, amountIn: z.number().positive(), limitPrice: z.number().positive(), expiry: z.string().optional().describe("ISO time; default 7 days") }, annotations: W }, wrap(viaJob("create_limit_order")));
   s.registerTool("list_orders", { description: "List DCA and limit orders.", inputSchema: { status: z.string().optional() }, annotations: RO }, wrap((a: { status?: string }) => svc.list_orders(a.status)));
   s.registerTool("cancel_order", { description: "Cancel an order onchain (cancels its nonce).", inputSchema: { intentId: z.string() }, annotations: W }, wrap((a: { intentId: string }) => svc.cancel_order(a.intentId, "agent")));
   s.registerTool("get_history", { description: "Trade history incl. blocked attempts.", inputSchema: { limit: z.number().int().min(1).max(500).optional() }, annotations: RO }, wrap((a: { limit?: number }) => svc.get_history(a.limit)));
-  s.registerTool("faucet_testnet", { description: "Fund the smart wallet with testnet mUSDG (1,000 / 24h) and mock stocks. Testnet only.", annotations: { ...W, destructiveHint: false } }, wrap(() => svc.faucet_testnet()));
+  s.registerTool("faucet_testnet", { description: "Fund the smart wallet with demo USDG (1,000 / 24h) and stock tokens.", annotations: { ...W, destructiveHint: false } }, wrap(() => svc.faucet_testnet()));
   s.registerTool("get_usage", { description: "API usage for today (tiers are placeholders).", annotations: RO }, wrap(() => svc.get_usage()));
   // ---- strategies (STRATEGIES.md §4). The agent can propose, pause and stop; it can NOT activate, switch or resume (S-3).
   const sid = z.enum(["steady-stacker", "dip-hunter", "momentum-rider", "ai-thematic", "monday-planner"]);

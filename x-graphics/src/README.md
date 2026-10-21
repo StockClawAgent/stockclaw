@@ -28,5 +28,5 @@ Quote JSON (`templates/quote.example.json`):
 Announcement JSON (`templates/announcement.example.json`): `kicker`, `headline` (auto-sizes), `body`, `bullets`
 (rendered as lime ">" changelog lines), `avatar` (as above, optional), `size`.
 
-Rules baked into the copy: no performance claims, no "24/7", no TSLA in examples, no ETF/fund framing. No Testnet badges anywhere (Julius, 10/18).
+Rules baked into the copy: no performance claims, no "24/7", no TSLA in examples, no ETF/fund framing. No chain badges anywhere (Julius, 10/18).
 Label any example numbers as illustrative.

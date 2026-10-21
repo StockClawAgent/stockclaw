@@ -31,7 +31,7 @@ const APRAdapter={
  reasonCode:a=>a.reasonCode||"",
  reasonText:a=>a.reasonText||(a.reasonCode==="SELL_CAP_EXCEEDED"?"Over the $500 agent sell limit, needs your approval":"Needs your approval"), // supplied by the server/mock (approval id + params hash); we don't invent crypto
  // Card copy and actions live here (per-sell is final).
- copy:{title:a=>`${a.agentName||a.keyLabel||"Your agent"} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} mUSDG`,primary:"Approve sell",secondary:"Decline",
+ copy:{title:a=>`${a.agentName||a.keyLabel||"Your agent"} wants to sell ${a.amountIn} ${a.ticker} for ~$${(+a.estUsdgOut).toFixed(2)} USDG`,primary:"Approve sell",secondary:"Decline",
   note:"",expired:"Approval expired or invalid. Ask your agent to re-propose.",declined:"Declined. Your agent won't sell this.",approved:"Approved. The sell is going through."}};
 
 // ---------- passkey ----------

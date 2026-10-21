@@ -1,5 +1,5 @@
 # StockClaw contracts: design notes (Quintus)
-This is an implementation companion to Lucius's ARCHITECTURE.md (authoritative; not modified). Testnet 46630 only. Nothing has been deployed.
+This is an implementation companion to Lucius's ARCHITECTURE.md (authoritative; not modified). Robinhood Chain 46630 only. Nothing has been deployed.
 
 ## Contracts
 | File | Role |
@@ -8,11 +8,11 @@ This is an implementation companion to Lucius's ARCHITECTURE.md (authoritative; 
 | `src/StockClawPool.sol` | **Oracle-anchored** USDG/stock pool. Fills are at the oracle price minus an owner-set spread (10–30 bps, deploy uses 20), capped by reserves. `quote()` equals `swap()` output. Pool value at the oracle price never drops (invariant). Only the router can swap. |
 | `src/AgentVault.sol` | The per-user agent wallet (CTO decision: AgentVault only). Owner = user EOA. Agent caps default to **$100/trade and $500 per rolling 24h, both protocol hard maximums that owners can only lower. The $500 is shared per vault across all agent keys (S-2)**; the allowlist is **empty by default** and both tokens in a trade must be listed. Has expiry and revoke. **Every breach is a hard revert.** |
 | `src/EligibilityRegistry.sol` | Attester role sets `eligibleUntil[account]`. The router reverts for any non-eligible account. |
-| `src/oracle/PriceOracle.sol` | Token→USD over Chainlink-style feeds. A stale feed (>1h) halts trading. A **fail-closed market session**: the keeper pushes `setSession(openAt, closeAt)` (at most 8h, closing in the future) from the exchange calendar, and no session or an expired one means closed. The owner has emergency modes ForceClosed and ForceOpen (testnet only). USDG is pinned at $1. USD values use 6 dp. |
+| `src/oracle/PriceOracle.sol` | Token→USD over Chainlink-style feeds. A stale feed (>1h) halts trading. A **fail-closed market session**: the keeper pushes `setSession(openAt, closeAt)` (at most 8h, closing in the future) from the exchange calendar, and no session or an expired one means closed. The owner has emergency modes ForceClosed and ForceOpen (demo only). USDG is pinned at $1. USD values use 6 dp. |
 | `src/oracle/MockAggregatorV3.sol` | Chainlink interface. The **price updater** pushes every 60s. It is a separate key from the keeper (S-4). The move limit scales with time (N-1): `min(10%/h × elapsed, 20%)`, owner-set via `setMaxDelta`, so the price can't be compounded within one block. |
 | `src/mocks/MockUSDG.sol` | 6 dp, owner mint, public faucet of 1,000 per 24h. |
 | `src/mocks/MockStockToken.sol` | Pause / freeze / registry. Used to test issuer restrictions. |
-| `src/mocks/MockPermit2.sol` | Unit tests only (simplified signing). Real Permit2 is used on testnet. |
+| `src/mocks/MockPermit2.sol` | Unit tests only (simplified signing). Real Permit2 is used on 46630. |
 | `src/libraries/TokenTransfers.sol` | Any failing token transfer (freeze/pause/registry revert, false return, no code) becomes `TransferBlocked(token, from, to, issuerRevertData)`. Adapter failures become `AdapterSwapFailed(adapter, reason)`. The whole tx reverts, so funds are never stranded. |
 | `src/interfaces/ITokenComplianceAdapter.sol` | An optional pre-check per token (default: none). We'll implement it once Robinhood's real restriction function names are verified. `MockComplianceAdapter` is the example. |
 | `script/Deploy.s.sol` | Reverts with `WrongChain` unless `block.chainid == 46630`. It requires an explicit `MOCK_TOKENS=0|1` and reverts if the flag is unset or the real tokens are missing (N-5). Pools use a 20 bps spread (same as the tests). It sets the keeper and updater (different keys) and transfers ownership two-step to the Safe. Never run. |
@@ -37,7 +37,7 @@ This is an implementation companion to Lucius's ARCHITECTURE.md (authoritative; 
 | Safe L2 v1.3.0 / factory v1.3.0 | 0x3E5c…D36E / 0xa6B7…6AB2 | yes |
 | ERC-4337 EntryPoint v0.7 / v0.6 | 0x0000000071727De22E5E9d8BAf0edAc6f37da032 / 0x5FF1…2789 | yes |
 | Multicall3 | 0xcA11bde05977b3631167028862bE2a173976CA11 | yes |
-So **no Safe or Permit2 mocks are needed on testnet**. Create the 2-of-3 treasury with the canonical factory. Bundler availability is a separate question (EntryPoint presence ≠ bundler).
+So **no Safe or Permit2 mocks are needed on 46630**. Create the 2-of-3 treasury with the canonical factory. Bundler availability is a separate question (EntryPoint presence ≠ bundler).
 
 ## Changes after CTO decisions + review #1 (commits 5026818, fb76009)
 - **Single keeper** (`router.keeper`, `oracle.keeper`). The key lives in cloud KMS (AWS/GCP); it can only execute and has no custody. Rotate it with `setKeeper`. Vault intents may be triggered by the keeper or the vault owner.

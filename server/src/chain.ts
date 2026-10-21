@@ -7,7 +7,7 @@ import { log } from "./log.js";
 import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE } from "./config.js";  // chain-guard: allow (guard import)
 
 export const chain = defineChain({
-  id: TESTNET_CHAIN_ID, name: "Robinhood Chain Testnet (or local anvil)",
+  id: TESTNET_CHAIN_ID, name: "Robinhood Chain (or local anvil)",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [RPC_URL] } },
 });
 export const pub = createPublicClient({ chain, transport: http(RPC_URL), pollingInterval: 200 });

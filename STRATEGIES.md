@@ -1,4 +1,4 @@
-# StockClaw — Strategy Agents (v0.1 plan, testnet)
+# StockClaw — Strategy Agents (v0.1 plan)
 Owner: Lucius (CTO) · 2026-10-18 · Source: Julius via Cassius · Status: DRAFT, decisions marked **[DECISION]**
 Read with ARCHITECTURE.md (§5 intents, §7 MCP, decisions log), DESIGN_NOTES.md, `src/FeeRouter.sol`, `src/AgentVault.sol`, `server/src/*`.
 
@@ -20,7 +20,7 @@ Read with ARCHITECTURE.md (§5 intents, §7 MCP, decisions log), DESIGN_NOTES.md
 | Signing | Server (agent session key, KMS) | Same key as today; only signs intents that pass schema + caps check |
 
 ## 2. The lineup (refined)
-Testnet assets: TSLA, AMZN, PLTR, NFLX, AMD (+ mUSDG). There is no SPY or full mag-7 on testnet; baskets use what exists and say so in the UI.
+Demo assets: TSLA, AMZN, PLTR, NFLX, AMD (+ USDG). There is no SPY or full mag-7 on the demo chain; baskets use what exists and say so in the UI.
 
 ### S1 Steady Stacker — `steady-stacker@1.0.0` · fully deterministic · **Friday demo**
 Weekly (or daily) fixed-$ buys split across a basket. One DCA intent per basket token.
@@ -61,7 +61,7 @@ Avatar slot unchanged: teal goggles blob, `avatars/glossy-momentum-rider.png`.
 **Rules (1-min candles, one symbol, long-or-flat, USDG ↔ stock):**
 - EMA9 on 1-min closes (α = 2/10). Session VWAP = Σ(typical price × volume) / Σ volume, reset at session open (13:30 UTC; keeper calendar handles DST/holidays, same source as the contract market schedule). Signals start only after ≥ 9 closed candles in the session (EMA warm-up).
 - **Entry:** EMA9 crosses above VWAP and **holds for 2 closed candles** (whipsaw filter) → buy one slice.
-- **Exit:** EMA9 crosses below VWAP and holds 2 closed candles → sell the full position to mUSDG. Exits do not wait for cooldown.
+- **Exit:** EMA9 crosses below VWAP and holds 2 closed candles → sell the full position to USDG. Exits do not wait for cooldown.
 - **Cooldown:** no new entry for `cooldownMin` after any fill.
 - **Max trades/day:** cap on entries per session.
 - **Flat-before-close (option):** sell any position `flatBeforeCloseMin` before 20:00 UTC; no entries in that window.
@@ -91,14 +91,14 @@ Avatar slot unchanged: teal goggles blob, `avatars/glossy-momentum-rider.png`.
 | Slippage* | ~0 in pool | + oracle lag/latency, not yet measured |
 | **Round-trip cost** | **~0.80%** | **~1.20%** |
 | **Break-even move** = 1/((1−0.003)²(1−s)²) − 1 | **+0.80%** (s=10 bps) | **+1.21%** (s=30 bps) |
-*Pool has no price impact by design; the real "slippage" is the gap between the signal price and the next oracle push the fill uses. To be measured in the backtest/testnet.
+*Pool has no price impact by design; the real "slippage" is the gap between the signal price and the next oracle push the fill uses. To be measured in the backtest/demo.
 Implication: the EMA/VWAP move between entry and exit must average > ~0.8–1.2% just to break even. On 1-min bars that's a high bar; the backtest decides whether this ships, and copy must not imply profitability.
 
 **Caps (updated 2026-10-18, Julius; Quintus 5491737, Gaius reviewing):** the $500 rolling-24h cap counts **buys only**. Stock→USDG exits through a registered pool are exempt (the $100 per-trade cap, allowlist, oracle floor and market hours still apply). Fee remains 0.30% per swap. Entries are therefore limited by the buy budget: floor($500 / $98) = **max 5 round trips per 24h** ($490 of buys), and an exit can never get stuck behind the cap. `maxEntriesPerDay` now allows 1–5, default stays 2 (5 round trips ≈ 4–6% fee+spread drag per day at 0.8–1.2% each). The exit-reserve keeper rule is dropped for USDG exits; the keeper still checks `remainingToday` ≥ sliceUsd before entering. Same applies to Dip Hunter take-profits (no longer counted).
 **Decided:** sells to USDG are exempt from the $500/24h cap (option b), implemented in 5491737 and under Gaius's review.
 
-**Data source [DECISION]:** VWAP needs volume. The testnet mock oracle has **no volume**, and its 60 s pushes are a random walk, so any VWAP computed from it is synthetic.
-- Option 1 (testnet demo/dev): keeper builds 1-min candles from oracle pushes (at 60 s pushes each candle has ~1 tick; push every 5–10 s to get OHLC) with **proxy volume = constant 1** (VWAP degenerates to a session TWAP of typical price) or our own pool's swap volume (mostly zero on testnet). Label in UI: "Simulated data — VWAP is a time-weighted proxy, testnet only."
+**Data source [DECISION]:** VWAP needs volume. The demo mock oracle has **no volume**, and its 60 s pushes are a random walk, so any VWAP computed from it is synthetic.
+- Option 1 (demo/dev): keeper builds 1-min candles from oracle pushes (at 60 s pushes each candle has ~1 tick; push every 5–10 s to get OHLC) with **proxy volume = constant 1** (VWAP degenerates to a session TWAP of typical price) or our own pool's swap volume (mostly zero in the demo). Label in UI: "Simulated data — VWAP is a time-weighted proxy."
 - Option 2 (recommended before any real use): off-chain 1-min market data for the underlying US equities (licensed vendor, TBD; licensing/cost unverified) for candles + real volume, with the oracle still the execution price. Label "VWAP from [vendor] consolidated volume." Caveat: on mainnet the token price and the underlying's volume aren't the same market.
 - The keeper stores candles and signal state per activation so `get_strategy_status` can show EMA, VWAP, last cross, cooldown, entries today.
 
@@ -110,7 +110,7 @@ Implication: the EMA/VWAP move between entry and exit must average > ~0.8–1.2%
 5. Go/no-go: ship only if out-of-sample net of costs is reported honestly; even if positive, no performance claims in copy. Owner: Lucius (sim) + Gaius (review of assumptions).
 
 ### S4 AI Thematic — `ai-thematic@0.1.0` · LLM-in-client · **post-demo**
-MCP prompt instructs the user's model to review news/earnings (which it reads itself) and propose a target allocation across the AI/chip names that exist on testnet (AMD, PLTR; optionally TSLA/AMZN/NFLX tagged). Model must call `propose_strategy_trades` with structured weights; server clamps to rule set (max weight change per rebalance ≤ 25%, rebalance ≤ 1/day, each trade ≤ $100, total ≤ remaining 24h cap), returns a preview; user confirms in client (write tool, `destructiveHint`). News text is untrusted; it can only influence weights within bounds, never addresses, amounts beyond caps, or tools outside the allowlist.
+MCP prompt instructs the user's model to review news/earnings (which it reads itself) and propose a target allocation across the AI/chip names that exist on the demo chain (AMD, PLTR; optionally TSLA/AMZN/NFLX tagged). Model must call `propose_strategy_trades` with structured weights; server clamps to rule set (max weight change per rebalance ≤ 25%, rebalance ≤ 1/day, each trade ≤ $100, total ≤ remaining 24h cap), returns a preview; user confirms in client (write tool, `destructiveHint`). News text is untrusted; it can only influence weights within bounds, never addresses, amounts beyond caps, or tools outside the allowlist.
 
 ### S5 Weekend Edge → **[DECISION]** redefine as **Monday Open Planner** `monday-planner@0.1.0` · post-demo
 Conflict: contracts halt outside Mon–Fri 13:30–20:00 UTC, so weekend trading is impossible. Options:
@@ -149,7 +149,7 @@ Order statuses follow the enum agreed with Flavius: open/paused/filled/cancelled
 
 ## 7. Dashboard flow (Flavius)
 New tab **Strategies** (and onboarding step after "Limits": "Pick a strategy (optional)").
-1. Gallery of 5 cards: name, one-line description, "Runs on: our keeper / your AI", risk chips, version, **Testnet** badge; S3–S5 show "Coming soon" for Friday.
+1. Gallery of 5 cards: name, one-line description, "Runs on: our keeper / your AI", risk chips, version; S3–S5 show "Coming soon" for Friday.
 2. Configure: form generated from `paramsSchema` (bounds shown, defaults pre-filled), live "worst case $ per 24h vs your $500 cap" bar from `preview_strategy`.
 3. Review: planned intents list, strategy hash (short), "Tools, not advice" disclaimer checkbox. Confirm → `choose_strategy`.
 4. Active card: status, next run, fills, remaining 24h, Pause/Resume/Stop; "blocked by limit" rows shown plainly. Revoke key in the Wallet tab pauses everything.
@@ -169,7 +169,7 @@ Uses mock shapes first, same pattern as api.js with fallback.
 10. Data/privacy: we don't store the user's AI conversation, only proposals and rationale text.
 
 ## 9. Copy note (Marcus)
-Position strategies as **tools the user configures and controls**, not recommendations: "templates", "rules you set", never "best", "beat the market", "returns", or performance claims. No back-tests or projected returns on Friday. Each card: "Not investment advice. Testnet tokens have no value. You choose the parameters; StockClaw executes them within your limits." AI Thematic/Monday Planner: "Your AI reads news and suggests changes; you approve every trade." Mainnet copy needs legal review (adviser/broker questions already flagged in ARCHITECTURE §6).
+Position strategies as **tools the user configures and controls**, not recommendations: "templates", "rules you set", never "best", "beat the market", "returns", or performance claims. No back-tests or projected returns on Friday. Each card: "Not investment advice. Demo tokens have no value. You choose the parameters; StockClaw executes them within your limits." AI Thematic/Monday Planner: "Your AI reads news and suggests changes; you approve every trade." Mainnet copy needs legal review (adviser/broker questions already flagged in ARCHITECTURE §6).
 
 ## 10. Friday demo recommendation
 **Steady Stacker + Dip Hunter**, both keeper-only, no contract change, deterministic and replayable on the local chain with mock prices. Demo script: pick Steady Stacker (TSLA/AMD/PLTR, $30, demo interval 60 s) → two fills; pick Dip Hunter on AMD (−2% rung, +2% TP) → keeper pushes mock price down → buy fills → push up → take-profit fills; show a third rung blocked by the $500 cap; revoke key → everything pauses. Disclose mocks and demo intervals on stage. S3–S5 shown as "coming soon" cards.
@@ -196,7 +196,7 @@ Position strategies as **tools the user configures and controls**, not recommend
 1. **[DECISION]** Weekend Edge: redefine as Monday Open Planner (A, recommended), queue-at-open (B), or drop (C).
 2. **[DECISION]** One active strategy per vault for v1 (recommended) vs several sharing the $500 cap.
 3. **[DECISION]** S3 is now Trend Flip (9 EMA / VWAP) (decided). Name: Trend Flip (decided). Open: sells vs $500 cap (Quintus); candle/volume data source.
-4. Basket composition is limited to the 5 testnet tokens; "mag-7/SPY-style" naming should not appear in the UI until those assets exist.
+4. Basket composition is limited to the 5 demo-chain tokens; "mag-7/SPY-style" naming should not appear in the UI until those assets exist.
 
 ## 14. Update: exit exemption (2026-10-18)
 Superseded by Julius's decision (2026-10-18): $500/24h applies to buys only, stock→USDG exits exempt (5491737, Gaius reviewing), fee 0.30% per swap, $100 per-trade unchanged. Trend Flip: max 5 round trips/24h by buy budget, default 2 (see S3 Caps).

@@ -1,4 +1,4 @@
-# StockClaw contracts: test plan (testnet 46630 only)
+# StockClaw contracts: test plan (Robinhood Chain 46630 only)
 
 Run: `forge build && forge test` (Foundry 1.8.5, solc 0.8.24, via-IR). Coverage: `forge coverage --ir-minimum`.
 Current status (43f82c8): **138 passing + 1 fork test skipped without RPC (it passed when run against 46630)**; Slither --fail-high clean. Earlier: 100/100 passing (unit, fuzz at 512 runs, 9 invariants at 64x32, plus the flipped review-1 PoCs in `test/audit/`). Line coverage: FeeRouter 93%, AgentVault 91%, PriceOracle 100%, total 85%.
@@ -28,7 +28,7 @@ Slither (config `slither.config.json`): **0 high**. Remaining: medium strict-equ
 - Fees received by the treasury equal the sum of `amountIn * feeBps / 1e4`.
 Vault + intent invariants are now implemented (`VaultInvariant.t.sol`). **TODO:** multiple agents per vault, fee-bps changes mid-sequence.
 
-## 4. Integration on testnet (46630). Run only after deploy approval.
+## 4. Integration on Robinhood Chain (46630). Run only after deploy approval.
 1. Fork tests: `forge test --fork-url $RH_TESTNET_RPC` against the real faucet stock tokens (confirm `paused`/`isFrozen`/`canTransfer` ABI; TokenChecks degrades gracefully if they're absent) and the **real Permit2** at `0x0000…8BA3` (replace MockPermit2 encoding with real EIP-712 PermitTransferFrom signing).
 2. Deploy (guarded script), push feeds, seed 5 pools, allowlist test accounts via the attester.
 3. E2E: MCP `quote_swap` -> `execute_swap`; DCA intent signed by the agent through the vault -> keeper executes 3 slices; limit order triggers on a feed update; revoke the agent mid-DCA -> next slice reverts.

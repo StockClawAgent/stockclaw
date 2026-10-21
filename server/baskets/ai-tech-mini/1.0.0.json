@@ -1,6 +1,6 @@
 {
   "id": "ai-tech-mini",
-  "theme": "AI & Tech (mini, testnet)",
+  "theme": "AI & Tech (mini)",
   "version": "1.0.0",
   "chainId": 46630,
   "executableLocally": true,
@@ -29,5 +29,5 @@
   ],
   "rulesNote": "Same rules as baskets.json (mcap weight, 25% single-name cap, 5% min). With only 3 names the 25% cap is infeasible; compute_weights.py binds the cap at 1/n, so the basket is equal-weight. Remainder bp goes to the largest cap.",
   "asOf": "2026-10-16 close (companiesmarketcap.com export fetched 2026-10-18 19:02 ET)",
-  "hash": "sha256:af75c7b3ab84aff061d64ebe49d21b18bba12b602a2f2edfdb846bdb3c720f52"
+  "hash": "sha256:b275785d62e0966c5da8022a6ea9c8b49c48dee7ba1964af84d617f841c6f5e9"
 }

@@ -33,7 +33,7 @@ For `server/` (I haven't edited it). It covers every change from 7656854 through
 
 ## 4. PriceOracle: market sessions (fail-closed)
 - **Removed:** `setSchedule`, `openMinute`/`closeMinute`, and the `MarketMode.Schedule/Open/Closed` modes.
-- **`MarketMode` is now `{Session, ForceClosed, ForceOpen}`.** `setMarketMode` is **owner-only** (the Safe). `ForceOpen` is **testnet/demo only**.
+- **`MarketMode` is now `{Session, ForceClosed, ForceOpen}`.** `setMarketMode` is **owner-only** (the Safe). `ForceOpen` is **demo only**.
 - **The keeper must push each session** with `setSession(uint64 openAt, uint64 closeAt)`, using unix seconds in UTC from the exchange calendar. That calendar handles daylight saving (e.g. Nov 2 2026 is 14:30–21:00 UTC), holidays (don't push anything for Thanksgiving) and half-days.
   - Rules: `closeAt > openAt`, `closeAt − openAt ≤ 8h`, and `closeAt > now`. Otherwise it reverts with `BadSession`.
   - Trading is open only when `openAt ≤ now < closeAt`. **No session, or an expired one, means CLOSED.** Push the next session before it opens (e.g. pre-market).
