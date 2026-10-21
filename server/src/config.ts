@@ -22,7 +22,15 @@ export function isLocalRpc(url: string): boolean {
   if (u.username || u.password) return false;
   return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(u.hostname.toLowerCase());
 }
+/** Hostname check only (SC-1). On its own this is NOT proof of a local chain: a localhost tunnel or proxy can point at
+ * public 46630 (same chain id). Local-only relaxations must use isLocalChain() (R7-3). */
 export const IS_LOCAL = isLocalRpc(RPC_URL);
+// R7-3: local = localhost RPC hostname AND a node verified to really be anvil (web3_clientVersion ~ /anvil/ and
+// anvil_nodeInfo answers). Set by chain.assertChain() at startup; unverified => false (fail closed).
+let anvilVerified: boolean | null = null, nodeClient = "";
+export const setLocalNode = (anvil: boolean, client: string) => { anvilVerified = anvil; nodeClient = client; };
+export const isLocalChain = () => IS_LOCAL && anvilVerified === true;
+export const localNodeInfo = () => ({ hostnameLocal: IS_LOCAL, anvilVerified, client: nodeClient });
 export const PORT = Number(process.env.PORT ?? 8787);
 export const DATA_DIR = process.env.DATA_DIR ?? path.join(ROOT, "data");
 export const DEPLOYMENTS_FILE = process.env.DEPLOYMENTS_FILE ?? path.join(DATA_DIR, IS_LOCAL ? "local-46630.json" : "testnet-46630.json");
@@ -32,15 +40,15 @@ export const explorerTx = (hash: string) => (EXPLORER && hash ? `${EXPLORER}/tx/
 export const explorerAddress = (addr: string) => (EXPLORER && addr ? `${EXPLORER}/address/${addr}` : null);
 export const KEEPER_INTERVAL_MS = Number(process.env.KEEPER_INTERVAL_MS ?? 60_000);
 /** "open" forces market open (local demo only); "schedule" uses the onchain NYSE schedule (halts off-hours). */
-export const getMarketMode = () => (process.env.MARKET_MODE ?? (IS_LOCAL ? "open" : "schedule")) as "open" | "schedule";
-export const MARKET_MODE = getMarketMode();
+export const getMarketMode = () => (process.env.MARKET_MODE ?? (isLocalChain() ? "open" : "schedule")) as "open" | "schedule";
 // Review S-1: separate tokens. Owner token = dashboard/owner actions; MCP token = agent. Read at call time.
 export const ownerToken = () => process.env.OWNER_API_TOKEN;
 export const mcpToken = () => process.env.MCP_API_TOKEN;
 /** R3-1: both tokens required on EVERY chain. Escape hatch: ALLOW_OPEN_LOCAL=1, local chain only, loud warning. */
 export function assertTokensConfigured() {
   if (!ownerToken() || !mcpToken()) {
-    if (process.env.ALLOW_OPEN_LOCAL === "1" && IS_LOCAL) {
+    if (process.env.ALLOW_OPEN_LOCAL === "1" && !isLocalChain()) throw new Error(`REFUSING to start: ALLOW_OPEN_LOCAL=1 needs a verified local anvil node (RPC hostname local=${IS_LOCAL}, anvil verified=${anvilVerified}). Set OWNER_API_TOKEN and MCP_API_TOKEN.`);
+    if (process.env.ALLOW_OPEN_LOCAL === "1" && isLocalChain()) {
       console.warn("\n" + "!".repeat(78) + "\n!! WARNING: ALLOW_OPEN_LOCAL=1 -> owner and MCP endpoints are OPEN (no tokens). LOCAL DEV ONLY.\n!! Never use this for the demo. Run `npm run demo:env` and restart.\n" + "!".repeat(78) + "\n");
       return;
     }
@@ -73,7 +81,7 @@ type Hex = `0x${string}`;
 function key(envName: string, anvilIdx: number): Hex {
   const v = process.env[envName];
   if (v) return v as Hex;
-  if (!IS_LOCAL) throw new Error(`${envName} must be set (KMS-backed) when RPC_URL is not local; anvil keys are local-only`);
+  if (!IS_LOCAL || anvilVerified === false) throw new Error(`${envName} must be set (KMS-backed) when RPC_URL is not a verified local anvil; anvil keys are local-only`);
   return ANVIL_KEYS[anvilIdx] as Hex;
 }
 // Dev reset bumps the epoch: demo owner + agent pool move to a fresh HD range (local only).

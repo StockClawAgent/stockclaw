@@ -839,12 +839,59 @@ try {
     assert.match(run(`const s = await import(${svcP}); ${check}`, {}), /not registered/);
     assert.match(run(`const s = await import(${svcP}); await import(${brkP}); ${check}`, {}), /"breaker":"on"/);
     assert.match(run(`const s = await import(${svcP}); ${check}`, { BREAKER: "off" }), /only allowed on a local chain with ALLOW_OPEN_LOCAL=1/);
-    assert.match(run(`const s = await import(${svcP}); ${check}`, { BREAKER: "off", ALLOW_OPEN_LOCAL: "1" }), /local test mode/);
+    const chP = JSON.stringify(path.resolve("src/chain.ts"));
+    assert.match(run(`const s = await import(${svcP}); ${check}`, { BREAKER: "off", ALLOW_OPEN_LOCAL: "1" }), /verified anvil/, "R7-3: unverified node => refused");
+    assert.match(run(`const c = await import(${chP}); await c.assertChain(); const s = await import(${svcP}); ${check}`, { BREAKER: "off", ALLOW_OPEN_LOCAL: "1" }), /local test mode/);
     // testnet explorer links (Blockscout) when RPC_URL points at 46630; none on local anvil
     const cfgP = JSON.stringify(path.resolve("src/config.ts"));
     const ex = run(`const c = await import(${cfgP}); console.log("RESULT" + JSON.stringify([c.explorerTx("0xabc"), c.explorerAddress("0xdef")]));`, { RPC_URL: "https://rpc.testnet.chain.robinhood.com" });
     assert.equal(ex, JSON.stringify(["https://explorer.testnet.chain.robinhood.com/tx/0xabc", "https://explorer.testnet.chain.robinhood.com/address/0xdef"]));
     assert.equal(run(`const c = await import(${cfgP}); console.log("RESULT" + JSON.stringify(c.explorerTx("0xabc")));`, {}), "null");
+  });
+  await step("R7-3: local-only switches need a REAL anvil: a 127.0.0.1 proxy to a non-anvil node (chainId 46630) refuses startup, ALLOW_OPEN_LOCAL, BREAKER=off, dev/reset, seed route and fault injection; live re-check catches a node swapped after startup", async () => {
+    const PP = PORT_RPC + 10;
+    // tiny JSON-RPC proxy in its own process (spawnSync below blocks this one): forwards to anvil, can fake web3_clientVersion and hide anvil_*
+    const src = `const http=require("http");let fake=null;http.createServer((q,s)=>{let b="";q.on("data",c=>b+=c);q.on("end",async()=>{if(q.url.startsWith("/__set")){fake=new URL(q.url,"http://x").searchParams.get("v")||null;return s.end("ok")}
+      try{const j=JSON.parse(b);s.setHeader("content-type","application/json");if(fake&&j.method==="web3_clientVersion")return s.end(JSON.stringify({jsonrpc:"2.0",id:j.id,result:fake}));
+      if(fake&&String(j.method).startsWith("anvil_"))return s.end(JSON.stringify({jsonrpc:"2.0",id:j.id,error:{code:-32601,message:"method not found"}}));
+      const r=await fetch("http://127.0.0.1:${PORT_RPC}",{method:"POST",headers:{"content-type":"application/json"},body:b});s.end(await r.text())}catch(e){s.statusCode=500;s.end(String(e))}})}).listen(${PP});`;
+    const proxy = spawn(process.execPath, ["-e", src], { stdio: "inherit" });
+    try {
+      const setFake = async (v: string) => { for (let i = 0; i < 50; i++) { try { if ((await fetch(`http://127.0.0.1:${PP}/__set?v=${encodeURIComponent(v)}`)).ok) return; } catch {} await new Promise((r) => setTimeout(r, 100)); } throw new Error("proxy down"); };
+      await setFake("nitro/v3.6.4 (emulated public Robinhood Chain node)");
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-r73-"));
+      const { spawnSync } = await import("node:child_process");
+      const P = (f: string) => JSON.stringify(path.resolve(`src/${f}`));
+      const run = (code: string, env: Record<string, string | undefined> = {}) => {
+        const f = path.join(tmp, `r${Math.random().toString(36).slice(2)}.mts`); fs.writeFileSync(f, `const out = (x) => console.log("RESULT" + JSON.stringify(x)); try { ${code} } catch (e) { out({ error: e.message, status: e.status }); }`);
+        const r = spawnSync("npx", ["tsx", f], { env: { ...process.env, RPC_URL: `http://127.0.0.1:${PP}`, DATA_DIR: tmp, BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, ...env } as any, encoding: "utf8" });
+        return (/RESULT(.*)/.exec(r.stdout)?.[1]) ?? `NO RESULT: ${r.stderr.slice(-400)}`;
+      };
+      const boot = `const c = await import(${P("chain.ts")}); let bootErr = null; try { await c.assertChain(); } catch (e) { bootErr = e.message; }`;
+      // 1. startup fails closed (index.ts runs assertChain first)
+      assert.match(run(`${boot} out({ bootErr });`), /localhost address but the node is not anvil/);
+      // 2. ALLOW_OPEN_LOCAL=1 without tokens: refused
+      assert.match(run(`${boot} const cfg = await import(${P("config.ts")}); cfg.assertTokensConfigured(); out("open");`, { ALLOW_OPEN_LOCAL: "1", OWNER_API_TOKEN: "", MCP_API_TOKEN: "" }), /ALLOW_OPEN_LOCAL=1 needs a verified local anvil/);
+      // 3. BREAKER=off + ALLOW_OPEN_LOCAL=1: refused
+      assert.match(run(`${boot} const s = await import(${P("service.ts")}); await import(${P("breaker.ts")}); out(s.assertGuardrails());`, { BREAKER: "off", ALLOW_OPEN_LOCAL: "1" }), /REFUSING TO START: BREAKER=off/);
+      // 4. fault injection: refused
+      assert.match(run(`${boot} const b = await import(${P("baskets.ts")}); b._setFaults({ revertLeg: 0 }); out("faults set");`), /fault injection is local-anvil only/);
+      // 5. dev/reset + seed route over REST: 403 (live node check), and the clientVersion alone isn't enough (anvil_nodeInfo must answer too)
+      const rest = `${boot} const { buildApp } = await import(${P("rest.ts")}); const srv = buildApp().listen(0, "127.0.0.1"); await new Promise((r) => srv.once("listening", r));
+        const post = async (p) => { const r = await fetch("http://127.0.0.1:" + srv.address().port + "/api/" + p, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer ${OWNER}" }, body: "{}" }); return [r.status, (await r.json()).error]; };
+        out({ reset: await post("dev/reset"), demoReset: await post("demo/reset"), seed: await post("dev/seed-approval") }); srv.close();`;
+      const r5 = JSON.parse(run(rest)); assert.equal(r5.reset[0], 403, JSON.stringify(r5)); assert.equal(r5.demoReset[0], 403); assert.equal(r5.seed[0], 403); assert.match(r5.seed[1], /local-anvil only/);
+      await setFake("anvil/v1.8.5"); // spoofed clientVersion, but anvil_nodeInfo is missing
+      assert.match(run(`${boot} out({ bootErr });`), /node is not anvil.*anvil_nodeInfo missing/);
+      // 6. live re-check: verified at startup (pass-through), then the node behind the tunnel changes => dev/reset 403
+      await setFake("");
+      const live = JSON.parse(run(`${boot} const s = await import(${P("service.ts")}); const cfg = await import(${P("config.ts")}); const before = cfg.isLocalChain();
+        await fetch("http://127.0.0.1:${PP}/__set?v=" + encodeURIComponent("Geth/v1.14")); let after; try { await s.dev_reset(); after = "reset ran"; } catch (e) { after = [e.status, e.message]; }
+        out({ bootErr, before, after, local: cfg.isLocalChain() });`));
+      assert.equal(live.bootErr, null, JSON.stringify(live)); assert.equal(live.before, true); assert.equal(live.after[0], 403, JSON.stringify(live)); assert.equal(live.local, false);
+      // positive control: the real anvil passes
+      assert.match(run(`${boot} const s = await import(${P("service.ts")}); out({ bootErr, local: (await import(${P("config.ts")})).isLocalChain() });`, { RPC_URL: process.env.RPC_URL }), /"bootErr":null,"local":true/);
+    } finally { proxy.kill(); }
   });
   await step("MCP per-key trade limit: 10 trade-tool calls/min per agent key, then refused; read tools unaffected", async () => {
     const { _resetTradeLimiter } = await import("../src/mcp.js"); _resetTradeLimiter();

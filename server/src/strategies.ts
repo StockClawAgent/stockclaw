@@ -76,7 +76,7 @@ function validateSS(p: any, e: Err) {
   if (!["daily", "weekly"].includes(p.period)) e.push("period: daily|weekly");
   if (p.maxPeriods != null && (!int(p.maxPeriods) || p.maxPeriods < 1 || p.maxPeriods > 52)) e.push("maxPeriods: 1-52");
   if (p.oracleDevBps != null && (!int(p.oracleDevBps) || p.oracleDevBps < 10 || p.oracleDevBps > 300)) e.push("oracleDevBps: 10-300");
-  if (p.demoIntervalSec != null) { if (!cfg.IS_LOCAL) e.push("demoIntervalSec is local-chain only"); else if (!int(p.demoIntervalSec) || p.demoIntervalSec < 60 || p.demoIntervalSec > 120) e.push("demoIntervalSec: 60-120"); }
+  if (p.demoIntervalSec != null) { if (!cfg.isLocalChain()) e.push("demoIntervalSec is local-chain only"); else if (!int(p.demoIntervalSec) || p.demoIntervalSec < 60 || p.demoIntervalSec > 120) e.push("demoIntervalSec: 60-120"); }
 }
 function validateDH(p: any, e: Err) {
   if (!TICKERS.includes(p.symbol)) e.push(`symbol must be one of ${TICKERS.join(", ")}`);
@@ -100,7 +100,7 @@ async function plan(d: Def, params: any): Promise<{ errors: Err; params: any; pl
   let worst = 0;
   if (d.id === "steady-stacker") {
     const interval = p.demoIntervalSec ?? (p.period === "daily" ? 86400 : 604800);
-    const start = cfg.IS_LOCAL ? now : Math.floor(nextSessionStart(new Date(now * 1000), 90).getTime() / 1000);
+    const start = cfg.isLocalChain() ? now : Math.floor(nextSessionStart(new Date(now * 1000), 90).getTime() / 1000);
     for (const b of p.basket) {
       const amt = +((p.usdPerPeriod * b.weightBps) / 10000).toFixed(6);
       planned.push({ type: "DCA", role: "dca", tokenIn: "mUSDG", tokenOut: b.symbol, amountUsd: amt, trigger: `every ${p.demoIntervalSec ? interval + "s (demo)" : p.period}`, startTime: start, interval, intervalLabel: p.demoIntervalSec ? `${interval}s` : p.period, maxExecs: p.maxPeriods, expiry: start + interval * p.maxPeriods + 3600, devBps: p.oracleDevBps });

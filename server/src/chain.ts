@@ -4,7 +4,7 @@ import { createPublicClient, createWalletClient, http, defineChain, type Abi, ty
 import { privateKeyToAccount } from "viem/accounts";
 import { getDb, nowIso } from "./db.js";
 import { log } from "./log.js";
-import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE } from "./config.js";  // chain-guard: allow (guard import)
+import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE, IS_LOCAL, setLocalNode } from "./config.js";  // chain-guard: allow (guard import)
 
 export const chain = defineChain({
   id: TESTNET_CHAIN_ID, name: "Robinhood Chain (or local anvil)",
@@ -16,6 +16,25 @@ export async function assertChain() {
   const id = await pub.getChainId();
   if (id === MAINNET_CHAIN_ID) throw new Error("REFUSING: RPC_URL points at Robinhood Chain MAINNET (4663). Mainnet needs legal review + founder approval.");  // chain-guard: allow (refuses mainnet)
   if (id !== TESTNET_CHAIN_ID) throw new Error(`REFUSING: chainId ${id} != 46630`);
+  // R7-3: a localhost RPC must really be anvil; otherwise refuse to start (a tunnel/proxy to public 46630 would
+  // otherwise unlock anvil keys, ALLOW_OPEN_LOCAL, BREAKER=off, dev/reset and fault injection).
+  if (IS_LOCAL) {
+    const n = await detectAnvil(); setLocalNode(n.anvil, n.client);
+    if (!n.anvil) throw new Error(`REFUSING: RPC_URL ${RPC_URL} is a localhost address but the node is not anvil (web3_clientVersion "${n.client}", anvil_nodeInfo ${n.nodeInfo ? "ok" : "missing"}). Local-only switches need a real anvil; for Robinhood Chain testnet use the remote https RPC_URL.`);
+  } else setLocalNode(false, "");
+}
+/** R7-3: is the node behind RPC_URL really anvil? Both web3_clientVersion ~ /anvil/ and anvil_nodeInfo must answer. */
+export async function detectAnvil() {
+  const client = String(await pub.request({ method: "web3_clientVersion" } as any).catch(() => ""));
+  let nodeInfo = false;
+  try { const ni: any = await pub.request({ method: "anvil_nodeInfo" } as any); nodeInfo = !!ni && typeof ni === "object" && "environment" in ni; } catch { /* not anvil */ }
+  return { anvil: /anvil/i.test(client) && nodeInfo, client, nodeInfo };
+}
+/** R7-3: live check for local-only routes (dev/reset, seed): hostname local AND the node answers as anvil right now. */
+export async function requireLocalAnvil(what: string) {
+  const n = IS_LOCAL ? await detectAnvil() : { anvil: false, client: "" };
+  if (IS_LOCAL) setLocalNode(n.anvil, n.client);
+  if (!n.anvil) throw Object.assign(new Error(`${what} is local-anvil only (refused on this chain)`), { status: 403 });
 }
 
 const artifact = (file: string, name: string) => JSON.parse(fs.readFileSync(path.join(ROOT, "artifacts", "out", file, `${name}.json`), "utf8"));

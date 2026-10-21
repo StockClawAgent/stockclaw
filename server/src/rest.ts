@@ -28,7 +28,7 @@ import { Limiter } from "./limiter.js";
 import { toUserError } from "./errors.js";
 import * as lat from "./latency.js";
 import * as cfg from "./config.js";
-import { pub as chainPub } from "./chain.js";
+import { requireLocalAnvil } from "./chain.js";
 export { Limiter };
 const deny = (res: express.Response, wait: number) => { res.setHeader("Retry-After", String(wait)); res.status(429).json({ error: "Rate limit exceeded" }); };
 const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?";
@@ -110,8 +110,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.post("/cancel_order", ownerOnly, h((q) => svc.cancel_order(q.body.intentId, "owner")));
   r.post("/dev/reset", ownerOnly, h(() => svc.dev_reset()));
   r.post("/dev/seed-approval", ownerOnly, h(async (q) => {
-    const ver = cfg.IS_LOCAL ? String(await chainPub.request({ method: "web3_clientVersion" } as any).catch(() => "")) : "";
-    if (!/anvil/i.test(ver)) throw new svc.ApiError(403, "dev/seed-approval is local-anvil only (refused on this chain)");
+    await requireLocalAnvil("dev/seed-approval"); // R7-3: same check as dev/reset, faults and BREAKER=off
     return apr.seedApproval(q.body ?? {});
   }));
   r.post("/demo/reset", ownerOnly, h(() => svc.dev_reset()));

@@ -241,7 +241,7 @@ type Faults = { revertLeg?: number; transientOnceLeg?: number; crashAfterSubmitL
 const legTimeoutMs = () => Number(process.env.LEG_TIMEOUT_MS ?? 30_000);
 class LegTimeout extends Error {}
 let faults: Faults = {};
-export const _setFaults = (f: Faults) => { if (!cfg.IS_LOCAL) throw new Error("faults are local-only"); faults = { ...f }; };
+export const _setFaults = (f: Faults) => { if (!cfg.isLocalChain()) throw new Error("fault injection is local-anvil only (R7-3: node not verified as anvil)"); faults = { ...f }; };
 
 // ---------------------------------------------------------------- leg execution
 async function outFromReceipt(hash: Hex, tokenOut: Address, vault: Address, dec: number) {

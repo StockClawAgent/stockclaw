@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 import { formatUnits, parseUnits, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, type Deployment } from "./chain.js";
+import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, requireLocalAnvil, type Deployment } from "./chain.js";
 import * as cfg from "./config.js";
 import { getDb, migrateFromJson, tx, nowIso } from "./db.js";
 
@@ -79,6 +79,7 @@ export const onReset = (f: () => void) => { resetHooks.push(f); };
  * from the anvil mnemonic at a new HD offset and funded with ETH via anvil_setBalance. Contracts stay deployed. */
 export async function dev_reset() {
   if (!cfg.IS_LOCAL) throw new ApiError(403, "dev reset is only available on a local chain");
+  await requireLocalAnvil("dev reset"); // R7-3: the hostname alone isn't enough
   const epoch = (S.epoch ?? 0) + 1;
   cfg.setUserEpoch(epoch);
   const addrs = [owner().address, ...cfg.keys.agentPool().map((k) => privateKeyToAccount(k).address)];
@@ -466,8 +467,8 @@ export async function faucet_testnet() {
   try { txs.push((await o.write(dep().usdg, C.usdg.abi, "faucet")).hash); }
   catch (e) { const r = revertReason(e); if (r.name === "FaucetCooldown") throw new ApiError(429, "Faucet rate limit: 1,000 USDG per 24h"); throw e; }
   txs.push((await o.write(dep().usdg, C.usdg.abi, "transfer", [S.vault, 1000_000000n])).hash);
-  if (cfg.IS_LOCAL) for (const s of Object.values(dep().stocks)) txs.push((await deployer().write(s.token, C.stock.abi, "mint", [S.vault, parseUnits("5", 18)])).hash); // mirrors the official faucet's 5 each
-  return { ethFaucet: "https://faucet.testnet.chain.robinhood.com", musdgFaucet: `MockUSDG.faucet() at ${dep().usdg}: 1,000 USDG / 24h, sent to your smart wallet`, stocks: cfg.IS_LOCAL ? "5 each TSLA/AMZN/PLTR/NFLX/AMD added to your smart wallet" : "Use the official faucet", txHashes: txs, status: "confirmed" };
+  if (cfg.isLocalChain()) for (const s of Object.values(dep().stocks)) txs.push((await deployer().write(s.token, C.stock.abi, "mint", [S.vault, parseUnits("5", 18)])).hash); // mirrors the official faucet's 5 each
+  return { ethFaucet: "https://faucet.testnet.chain.robinhood.com", musdgFaucet: `MockUSDG.faucet() at ${dep().usdg}: 1,000 USDG / 24h, sent to your smart wallet`, stocks: cfg.isLocalChain() ? "5 each TSLA/AMZN/PLTR/NFLX/AMD added to your smart wallet" : "Use the official faucet", txHashes: txs, status: "confirmed" };
 }
 
 export function get_usage() {
@@ -483,7 +484,7 @@ export const _trade = () => tradeHooks;
 /** Startup (Gaius R6): fail closed if the anomaly breaker isn't registered. BREAKER=off only on a local chain with ALLOW_OPEN_LOCAL=1. */
 export function assertGuardrails(env = process.env) {
   if (env.BREAKER === "off") {
-    if (!(cfg.IS_LOCAL && env.ALLOW_OPEN_LOCAL === "1")) throw new Error("REFUSING TO START: BREAKER=off is only allowed on a local chain with ALLOW_OPEN_LOCAL=1 (test mode)");
+    if (!(cfg.isLocalChain() && env.ALLOW_OPEN_LOCAL === "1")) throw new Error(`REFUSING TO START: BREAKER=off is only allowed on a local chain with ALLOW_OPEN_LOCAL=1 (test mode); the node must be a verified anvil (R7-3: ${JSON.stringify(cfg.localNodeInfo())})`);
     return { breaker: "off (local test mode)" };
   }
   if (!tradeHooks || !activityHook) throw new Error("REFUSING TO START: anomaly breaker / activity hooks are not registered (breaker.ts not loaded)");
