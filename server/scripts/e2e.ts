@@ -746,6 +746,58 @@ try {
     }
   });
 
+  await step("R7-4: a leg timeout inside the send window waits for the send and records the hash (failed + txHash, never stuck 'filling'); a retry during the window is a no-op; a retry after it speeds up the SAME nonce; a tx that mines after the timeout fills the leg by itself; one tx, one fill, one breaker record each", async () => {
+    const { pub: P, txState } = await import("../src/chain.js");
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    Object.assign(process.env, { LEG_TIMEOUT_MS: "1200", SETTLE_TIMEOUT_MS: "30000" });
+    try {
+      // (a) automine OFF: the slow send lands after the timeout; tx pending
+      await freshUser();
+      const agentAddr = svc._agentWallet().address as `0x${string}`, keyId = svc._agent()!.id;
+      const n0 = await P.getTransactionCount({ address: agentAddr, blockTag: "latest" });
+      const pv = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+      await P.request({ method: "evm_setAutomine", params: [false] } as any);
+      bk._setFaults({ slowSendLeg: 0 });
+      const b = await callH("POST", "baskets/buy", { previewId: pv.previewId }); assert.equal(b.status, 202);
+      await sleep(1600); // timeout fired (1.2s); the send is still on the wire (lands at ~2.2s)
+      const mid = (await callH("GET", `baskets/executions/${b.body.id}`)).body.legs[0];
+      assert.equal(mid.status, "filling", "not marked failed while the send is unresolved");
+      assert.equal((await callH("POST", `baskets/executions/${b.body.id}/legs/${mid.legId}/retry`)).status, 202, "retry in the send window: no-op");
+      const e1 = await waitExec(b.body.id);
+      const l0 = e1.legs[0]; assert.equal(l0.status, "failed", JSON.stringify(e1)); assert.match(l0.error, /Timed out/); assert.ok(l0.txHash, "hash recorded from the late send");
+      assert.equal(await txState(l0.txHash), "pending"); assert.equal(txCount(`basket:${l0.legId}%`), 1, "one send");
+      await sleep(800); assert.equal((await callH("GET", `baskets/executions/${b.body.id}`)).body.legs[0].status, "failed", "the stale run can't flip it back to filling");
+      Object.assign(process.env, { LEG_TIMEOUT_MS: "20000", PENDING_WAIT_MS: "300" });
+      assert.equal((await callH("POST", `baskets/executions/${b.body.id}/legs/${l0.legId}/retry`)).status, 202);
+      let sp: any; for (let i = 0; i < 100 && !sp; i++) { sp = getDb().prepare("SELECT hash, nonce FROM tx_log WHERE label=?").get(`basket:${l0.legId}:speedup`); if (!sp) await sleep(100); }
+      assert.ok(sp, "speed-up sent"); assert.equal(sp.nonce, n0, "same nonce");
+      await P.request({ method: "evm_mine", params: [] } as any); await P.request({ method: "evm_setAutomine", params: [true] } as any);
+      const e2 = await waitExec(b.body.id, (e: any) => e.legs[0].status === "filled" || (e.legs[0].status === "failed" && e.status !== "running"));
+      assert.equal(e2.legs[0].status, "filled", JSON.stringify(e2.legs[0]));
+      assert.equal(await P.getTransactionCount({ address: agentAddr, blockTag: "latest" }), n0 + 1, "one nonce used");
+      await sleep(800);
+      assert.equal((await call("GET", "get_history", { limit: 50 })).body.filter((h: any) => h.executionId === b.body.id && h.status === "filled").length, 1, "one fill recorded");
+      assert.equal((getDb().prepare("SELECT COUNT(*) n FROM key_trades WHERE key_id=? AND ref=?").get(keyId, b.body.id) as any).n, 1, "one breaker record");
+      // (b) automine ON: the late tx mines right away; the leg reconciles to filled without any retry
+      Object.assign(process.env, { LEG_TIMEOUT_MS: "1200" }); delete process.env.PENDING_WAIT_MS;
+      await freshUser();
+      const keyB = svc._agent()!.id;
+      const pv2 = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+      bk._setFaults({ slowSendLeg: 0 });
+      const b2 = await callH("POST", "baskets/buy", { previewId: pv2.previewId }); assert.equal(b2.status, 202);
+      const f2 = await waitExec(b2.body.id, (e: any) => e.legs[0].status === "filled");
+      assert.ok(f2.legs[0].txHash); assert.equal(txCount(`basket:${f2.legs[0].legId}%`), 1);
+      await sleep(800);
+      assert.equal((await call("GET", "get_history", { limit: 50 })).body.filter((h: any) => h.executionId === b2.body.id && h.status === "filled").length, 1);
+      assert.equal((getDb().prepare("SELECT COUNT(*) n FROM key_trades WHERE key_id=? AND ref=?").get(keyB, b2.body.id) as any).n, 1);
+      assert.ok(["partial", "failed", "filled"].includes((await callH("GET", `baskets/executions/${b2.body.id}`)).body.status), "execution settled");
+    } finally {
+      await P.request({ method: "evm_setAutomine", params: [true] } as any).catch(() => {});
+      bk._setFaults({});
+      for (const k of ["LEG_TIMEOUT_MS", "SETTLE_TIMEOUT_MS", "PENDING_WAIT_MS"]) delete process.env[k];
+    }
+  });
+
   await step("trade writes: REST execute_swap/create_dca answer 202 + job fast; outcome via SSE job event and GET /jobs/:id; Idempotency-Key dedupes; MCP waits (or hands back a jobId) and MCP errors carry {code,message,retryable}", async () => {
     await freshUser();
     const H = { "content-type": "application/json", authorization: `Bearer ${OWNER}` };

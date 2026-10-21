@@ -236,7 +236,7 @@ function finalStatus(id: string) {
 }
 
 // ---------------------------------------------------------------- fault injection (e2e only; local chain only)
-type Faults = { revertLeg?: number; transientOnceLeg?: number; crashAfterSubmitLeg?: number; hangLeg?: number };
+type Faults = { revertLeg?: number; transientOnceLeg?: number; crashAfterSubmitLeg?: number; hangLeg?: number; slowSendLeg?: number };
 /** No stuck states: a leg that hasn't settled in LEG_TIMEOUT_MS (default 30s) is marked failed with a reason. */
 const legTimeoutMs = () => Number(process.env.LEG_TIMEOUT_MS ?? 30_000);
 class LegTimeout extends Error {}
@@ -253,6 +253,39 @@ async function outFromReceipt(hash: Hex, tokenOut: Address, vault: Address, dec:
 /** Run one leg. Returns false to stop the basket. Never resubmits a leg that has a tx hash (reconciles by receipt instead). */
 // Each run of a leg gets an epoch; a run that timed out is "stale": it may not send a tx or write state any more.
 const legEpoch = new Map<string, number>();
+// R7-4: a send that is on the wire (beforeSend passed, eth_sendRawTransaction not back yet). The leg timeout waits for it
+// (bounded) so the hash is always recorded, and a retry never sends while an earlier send of the same leg is unresolved.
+const sending = new Map<string, { p: Promise<Hex | null>; done: (h: Hex | null) => void }>();
+const sendWaitMs = () => Number(process.env.SEND_WAIT_MS ?? 15_000);
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Latest tx this leg ever sent (tx_log label), in case the hash never made it onto the leg row. */
+const loggedLegHash = (legId: string) => (getDb().prepare("SELECT hash FROM tx_log WHERE label=? OR label=? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(`basket:${legId}`, `basket:${legId}:speedup`) as { hash: Hex } | undefined)?.hash;
+/** Fill a leg exactly once (one SQLite transaction): history, activity and the breaker are written only by the winner. */
+function fillLeg(exId: string, l: LegRow, hash: string, out: number) {
+  const won = tx(() => { const cur = legsOf(exId).find((x) => x.legId === l.legId); if (!cur || cur.status === "filled") return false; setLeg(exId, { ...cur, status: "filled", filledUsd: l.targetUsd, amountOut: out, txHash: hash, error: undefined } as LegRow); return true; });
+  if (!won) return false;
+  svc._pushHistory({ txHash: hash, explorerUrl: svc._txOut(hash).explorerUrl, type: "basket", in: `${l.targetUsd.toFixed(2)} mUSDG`, out: `${out.toFixed(6)} ${l.ticker}`, fee: `${(l.targetUsd * 0.003).toFixed(4)} mUSDG`, ts: nowIso(), status: "filled", side: "buy", executionId: exId, keyId: svc._agent()?.id, usd: l.targetUsd });
+  const k = svc._agent()?.id; if (k) svc._trade()?.record(k, "buy", l.targetUsd, exId);
+  return true;
+}
+/** R7-4: a leg that timed out with a tx on the wire is failed (not stuck) but keeps being reconciled: if that tx mines
+ * the leg flips to filled (once); a retry (which takes over the leg) stops this watcher. */
+async function watchLeg(exId: string, legId: string, hash: Hex) {
+  const t0 = Date.now(), maxMs = Number(process.env.SETTLE_TIMEOUT_MS ?? 180_000);
+  while (Date.now() - t0 < maxMs) {
+    const cur = legsOf(exId).find((x) => x.legId === legId);
+    if (!cur || cur.status !== "failed" || cur.txHash !== hash) return;
+    const st = await txState(hash).catch(() => "unknown" as const);
+    if (st === "mined") {
+      const vault = svc._vault(); if (!vault) return; const t = svc._token(cur.ticker);
+      const r = await outFromReceipt(hash, t.address, vault, t.decimals);
+      if (r.ok && fillLeg(exId, cur, hash, r.out)) { log.info("timed-out leg mined later: filled from its receipt", { executionId: exId, legId, txHash: hash }); const st2 = (getDb().prepare("SELECT status FROM basket_executions WHERE id=?").get(exId) as any)?.status; if (st2 !== "running" && st2 !== "pending") finalStatus(exId); }
+      return;
+    }
+    if (st === "reverted") { setLeg(exId, { ...cur, error: "Transaction reverted" }); return; }
+    await sleepMs(500);
+  }
+}
 async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: number): Promise<boolean> {
   const epoch = (legEpoch.get(l.legId) ?? 0) + 1; legEpoch.set(l.legId, epoch);
   const alive = () => legEpoch.get(l.legId) === epoch;
@@ -263,9 +296,14 @@ async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: nu
   catch (e) {
     if (!(e instanceof LegTimeout)) throw e;
     legEpoch.set(l.legId, epoch + 1); // the timed-out run is now stale: it can't send or overwrite this leg
+    const inflight = sending.get(l.legId);
+    if (inflight) { log.warn("leg timed out mid-send: waiting for the send to resolve", { executionId: exId, legId: l.legId }); await Promise.race([inflight.p, sleepMs(sendWaitMs())]); }
     const cur = legsOf(exId).find((x) => x.legId === l.legId)!;
-    const reason = `Timed out after ${Math.round(ms / 1000)}s${cur.txHash ? " waiting for confirmation (retry checks the receipt first, so nothing is duplicated)" : " before submitting"}`;
-    setLeg(exId, { ...cur, status: "failed", error: reason }); log.warn("leg timed out", { executionId: exId, legId: l.legId, ms });
+    const hash = (cur.txHash ?? loggedLegHash(l.legId)) as Hex | undefined;
+    const unresolved = !hash && sending.has(l.legId);
+    const reason = `Timed out after ${Math.round(ms / 1000)}s${hash ? " waiting for confirmation (retry checks the receipt first, so nothing is duplicated)" : unresolved ? " while sending (retry waits for that send first, so nothing is duplicated)" : " before submitting"}`;
+    setLeg(exId, { ...cur, status: "failed", ...(hash ? { txHash: hash } : {}), error: reason }); log.warn("leg timed out", { executionId: exId, legId: l.legId, ms, txHash: hash ?? null });
+    if (hash) void watchLeg(exId, l.legId, hash);
     return false;
   } finally { clearTimeout(timer); }
 }
@@ -276,16 +314,17 @@ async function runLegInner(exId: string, l: LegRow & { idx: number }, slippageBp
   return withCtx({ executionId: exId, legId: l.legId }, async () => {
     const vault = svc._vault()!, t = svc._token(l.ticker);
     let fixedNonce: number | undefined;
+    // R7-4: an earlier (stale) run may still be sending this leg: wait for it and adopt its hash; never send alongside it
+    const prev = sending.get(l.legId);
+    if (prev) { const h = await Promise.race([prev.p, sleepMs(sendWaitMs()).then(() => undefined)]); if (h === undefined) { setLegIfAlive(exId, { ...l, status: "failed", error: "An earlier send of this leg is still unresolved; retry in a moment (nothing was sent twice)" }); return false; } }
+    if (!l.txHash) { const h = loggedLegHash(l.legId); if (h) { l.txHash = h; log.warn("leg has a sent tx that never reached its row: reconciling it", { txHash: h }); } }
     if (l.txHash) {
       // Settle the leg's existing tx before anything new is sent (never a second nonce for one leg):
       // mined -> filled; reverted -> failed (or re-run if this is a retry); pending -> wait, then speed up at the SAME
       // nonce; unknown/dropped -> re-send at the same nonce unless that nonce was already used.
       const settle = async (h: Hex) => { const r = await outFromReceipt(h, t.address, vault, t.decimals);
-        if (r.ok) { setLegIfAlive(exId, { ...l, status: "filled", filledUsd: l.targetUsd, amountOut: r.out, txHash: h, error: undefined }); recordFill(h, r.out); log.info("leg settled from receipt", { txHash: h }); return true; }
+        if (r.ok) { if (!alive()) throw new StaleRun(); fillLeg(exId, l, h, r.out); log.info("leg settled from receipt", { txHash: h }); return true; }
         return false; };
-      const recordFill = (h: string, out: number) => {
-        svc._pushHistory({ txHash: h, explorerUrl: svc._txOut(h).explorerUrl, type: "basket", in: `${l.targetUsd.toFixed(2)} mUSDG`, out: `${out.toFixed(6)} ${l.ticker}`, fee: `${(l.targetUsd * 0.003).toFixed(4)} mUSDG`, ts: nowIso(), status: "filled", side: "buy", executionId: exId, keyId: svc._agent()!.id, usd: l.targetUsd });
-        svc._trade()?.record(svc._agent()!.id, "buy", l.targetUsd, exId); };
       const h0 = l.txHash as Hex; let st = await txState(h0);
       if (st === "pending") { // give it a moment, then replace it at the same nonce
         const t0 = Date.now(); while (st === "pending" && Date.now() - t0 < pendingWaitMs()) { await new Promise((r) => setTimeout(r, 200)); st = await txState(h0); }
@@ -318,15 +357,25 @@ async function runLegInner(exId: string, l: LegRow & { idx: number }, slippageBp
         if (faults.revertLeg === l.idx) { faults.revertLeg = undefined; minOutRaw = minOutRaw * 1000n; } // forces InsufficientOutput onchain
         const pool = await svc._poolFor("mUSDG", l.ticker), usdg = svc._token("mUSDG");
         const deadline = BigInt((await svc.chainNow()) + 300);
+        let sent: { p: Promise<Hex | null>; done: (h: Hex | null) => void } | undefined;
         const { hash } = await svc._agentWallet().write(vault, C.vault.abi, "agentSwap", [pool, usdg.address, t.address, svc._units(l.targetUsd, 6), minOutRaw, deadline], {
-          label: `basket:${l.legId}`, nonce: fixedNonce, beforeSend: () => { if (!alive()) throw new StaleRun(); },
-          onSubmitted: (h) => { setLeg(exId, { ...l, status: "filling", txHash: h }); if (faults.crashAfterSubmitLeg === l.idx) { faults.crashAfterSubmitLeg = undefined; throw new jobs.SimulatedCrash(); } },
-        });
+          label: `basket:${l.legId}`, nonce: fixedNonce,
+          beforeSend: async () => {
+            if (!alive()) throw new StaleRun();
+            let done!: (h: Hex | null) => void; const p = new Promise<Hex | null>((r) => { done = r; }); sent = { p, done }; sending.set(l.legId, sent);
+            if (faults.slowSendLeg === l.idx) { faults.slowSendLeg = undefined; await sleepMs(legTimeoutMs() + 1000); } // e2e: the send outlives the leg timeout
+          },
+          onSubmitted: (h) => {
+            // a stale run (timed out mid-send) records the hash but never flips the leg back to "filling" (R7-4)
+            if (alive()) setLeg(exId, { ...l, status: "filling", txHash: h });
+            else { const cur = legsOf(exId).find((x) => x.legId === l.legId); if (cur && !cur.txHash) setLeg(exId, { ...cur, txHash: h }); }
+            sent?.done(h); if (sending.get(l.legId) === sent) sending.delete(l.legId);
+            if (faults.crashAfterSubmitLeg === l.idx) { faults.crashAfterSubmitLeg = undefined; throw new jobs.SimulatedCrash(); }
+          },
+        }).finally(() => { if (sent) { sent.done(null); if (sending.get(l.legId) === sent) sending.delete(l.legId); } });
         const r = await outFromReceipt(hash, t.address, vault, t.decimals);
-        if (!alive()) return false; // a newer run owns this leg now (it settles this tx by receipt)
-        setLeg(exId, { ...l, status: "filled", filledUsd: l.targetUsd, amountOut: r.out, txHash: hash });
-        svc._pushHistory({ txHash: hash, explorerUrl: svc._txOut(hash).explorerUrl, type: "basket", in: `${l.targetUsd.toFixed(2)} mUSDG`, out: `${r.out.toFixed(6)} ${l.ticker}`, fee: `${(l.targetUsd * 0.003).toFixed(4)} mUSDG`, ts: nowIso(), status: "filled", side: "buy", executionId: exId, keyId: svc._agent()!.id, usd: l.targetUsd });
-        svc._trade()?.record(svc._agent()!.id, "buy", l.targetUsd, exId);
+        if (!alive()) return false; // a newer run / the leg watcher owns this leg now (it settles this tx by receipt)
+        fillLeg(exId, l, hash, r.out);
         log.info("leg filled", { txHash: hash, usd: l.targetUsd, out: r.out });
         return true;
       } catch (e) {

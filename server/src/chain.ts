@@ -70,7 +70,7 @@ const txLog = (hash: string, f: Partial<{ signer: string; nonce: number; label: 
   if (f.signer) d.prepare("INSERT OR IGNORE INTO tx_log(hash, signer, nonce, label, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)").run(hash, f.signer, f.nonce ?? null, f.label ?? null, f.status ?? "submitted", nowIso(), nowIso());
   else d.prepare("UPDATE tx_log SET status=?, error=?, updated_at=? WHERE hash=?").run(f.status, f.error ?? null, nowIso(), hash);
 };
-export type WriteOpts = { label?: string; onSubmitted?: (hash: Hex) => void; beforeSend?: () => void; nonce?: number };
+export type WriteOpts = { label?: string; onSubmitted?: (hash: Hex) => void; beforeSend?: () => void | Promise<void>; nonce?: number };
 /** How long a write waits for its receipt before giving up (the tx may still mine: callers reconcile by hash). */
 export const settleTimeoutMs = () => Number(process.env.SETTLE_TIMEOUT_MS ?? 180_000);
 const SETTLE_TIMEOUT_MS = settleTimeoutMs;
@@ -132,7 +132,7 @@ export function wallet(pk: Hex) {
     write: (address: Address, abi: Abi, functionName: string, args: unknown[] = [], opts: WriteOpts = {}) => (opts.nonce != null ? (f: () => Promise<any>) => f() : run)(async () => {
       const { request } = await pub.simulateContract({ account, address, abi, functionName, args } as any);
       const label = opts.label ?? functionName;
-      opts.beforeSend?.();
+      await opts.beforeSend?.();
       const hash = await send(label, (nonce) => client.writeContract({ ...(request as any), nonce }), opts.nonce);
       opts.onSubmitted?.(hash);
       const receipt = await settle(hash, label);
