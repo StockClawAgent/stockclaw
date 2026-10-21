@@ -71,7 +71,9 @@ const txLog = (hash: string, f: Partial<{ signer: string; nonce: number; label: 
   else d.prepare("UPDATE tx_log SET status=?, error=?, updated_at=? WHERE hash=?").run(f.status, f.error ?? null, nowIso(), hash);
 };
 export type WriteOpts = { label?: string; onSubmitted?: (hash: Hex) => void; beforeSend?: () => void; nonce?: number };
-const SETTLE_TIMEOUT_MS = () => Number(process.env.SETTLE_TIMEOUT_MS ?? 180_000);
+/** How long a write waits for its receipt before giving up (the tx may still mine: callers reconcile by hash). */
+export const settleTimeoutMs = () => Number(process.env.SETTLE_TIMEOUT_MS ?? 180_000);
+const SETTLE_TIMEOUT_MS = settleTimeoutMs;
 /** Status of a tx by hash: mined | reverted | pending (known to the node, no receipt) | unknown (not found / dropped). */
 export async function txState(hash: Hex): Promise<"mined" | "reverted" | "pending" | "unknown"> {
   try { const r = await pub.getTransactionReceipt({ hash }); return r.status === "success" ? "mined" : "reverted"; } catch { /* no receipt */ }

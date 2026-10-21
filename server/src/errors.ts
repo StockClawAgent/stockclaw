@@ -21,7 +21,9 @@ const RULES: Rule[] = [
   { re: /step-up|stepUp/i, code: "STEP_UP_REQUIRED", message: "Confirm with an existing passkey first.", retryable: true },
   { re: /Passkey verification failed|passkey/i, code: "PASSKEY_FAILED", message: "The passkey check didn't go through.", retryable: true, hint: "Try again with your registered passkey." },
   { re: /FaucetCooldown|cooldown/i, code: "COOLDOWN", message: "Please wait a bit before trying that again.", retryable: true },
-  { re: /Timed out|timeout/i, code: "TIMEOUT", message: "This took too long and was stopped safely.", retryable: true, hint: "Retry it. Nothing will be duplicated." },
+  // R7-1: a trade that was sent but isn't confirmed yet. Never "retry": the server keeps reconciling the same tx (same nonce).
+  { re: /TX_PENDING|still pending onchain/i, code: "TX_PENDING", message: "Your trade was sent and is still waiting for network confirmation.", retryable: false, hint: "Don't retry it. It updates by itself when it confirms (activity feed, history or GET /api/jobs/:id)." },
+  { re: /Timed out|timeout/i, code: "TIMEOUT", message: "This took too long and was stopped safely.", retryable: true, hint: "Check your history before retrying." },
   { re: /Transport error|fetch failed|ECONNREFUSED|HTTP request failed|RPC/i, code: "NETWORK", message: "We couldn't reach the network.", retryable: true, hint: "Try again in a moment." },
   { re: /Owner token required|bearer token|token required/i, code: "AUTH_REQUIRED", message: "Sign in as the owner to do this.", retryable: false },
 ];

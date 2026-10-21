@@ -29,7 +29,7 @@ const err = (detail: string, status = 500, extra?: Record<string, unknown>) => {
 /** Trade writes run as jobs (same path as REST 202); the tool waits up to MCP_WAIT_MS so agents get a plain result. */
 const viaJob = (fn: trades.TradeFn) => async (args: unknown) => {
   const v = await trades.submitAndWait(fn, args);
-  if (v.status === "done") return v.result;
+  if (v.status === "done") return (v.result as any)?.status === "pending" ? { ...(v.result as any), jobId: v.jobId } : v.result;
   if (v.status === "failed") throw Object.assign(new Error(v.error!.error), { status: v.error!.status });
   return { status: v.status, jobId: v.jobId, message: `Still running after ${Math.round(Number(process.env.MCP_WAIT_MS ?? 25000) / 1000)}s. Call get_job with this jobId for the result.` };
 };
@@ -48,7 +48,7 @@ export function buildMcpServer() {
   s.registerTool("list_assets", { description: "Supported assets with oracle prices.", annotations: RO }, wrap(() => svc.list_assets()));
   s.registerTool("get_price", { description: "Oracle price of a token in USD.", inputSchema: { symbol: sym }, annotations: RO }, wrap((a: { symbol: string }) => svc.get_price(a.symbol)));
   s.registerTool("quote_swap", { description: "Quote a swap (0.30% fee on input).", inputSchema: { tokenIn: sym, tokenOut: sym, amountIn: z.number().positive(), slippageBps: z.number().int().min(0).max(300).optional() }, annotations: RO }, wrap((a: any) => svc.quote_swap(a.tokenIn, a.tokenOut, a.amountIn, a.slippageBps)));
-  s.registerTool("execute_swap", { description: "Execute a swap by quoteId, or by tokenIn/tokenOut/amountIn[/minOut]. Subject to onchain agent caps.", inputSchema: { quoteId: z.string().optional(), tokenIn: sym.optional(), tokenOut: sym.optional(), amountIn: z.number().positive().optional(), minOut: z.number().nonnegative().optional() }, annotations: W },
+  s.registerTool("execute_swap", { description: "Execute a swap by quoteId, or by tokenIn/tokenOut/amountIn[/minOut]. Subject to onchain agent caps. If the result has status \"pending\", the trade was sent and is confirming: do NOT retry it (a repeat returns the same pending trade); call get_job with the jobId to follow it.", inputSchema: { quoteId: z.string().optional(), tokenIn: sym.optional(), tokenOut: sym.optional(), amountIn: z.number().positive().optional(), minOut: z.number().nonnegative().optional() }, annotations: W },
     wrap((a: any) => viaJob("execute_swap")(a.quoteId ? { quoteId: a.quoteId } : { tokenIn: a.tokenIn, tokenOut: a.tokenOut, amountIn: a.amountIn, minOut: a.minOut })));
   s.registerTool("get_job", { description: "Status/result of a queued trade job (from a trade tool that was still running). Optionally waits up to waitSec (max 30).", inputSchema: { jobId: z.number().int().positive(), waitSec: z.number().min(0).max(30).optional() }, annotations: RO },
     wrap(async (a: { jobId: number; waitSec?: number }) => { const v = await trades.waitView(a.jobId, (a.waitSec ?? 0) * 1000); if (!v) throw new svc.ApiError(404, "Unknown job"); return v; }));

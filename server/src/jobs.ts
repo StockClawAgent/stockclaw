@@ -8,7 +8,9 @@ import { log, withCtx } from "./log.js";
 export type Job = { id: number; kind: string; payload: any; attempts: number; max_attempts: number };
 type Handler = (payload: any, job: Job) => Promise<unknown>;
 const handlers = new Map<string, Handler>();
-type Opts = { timeoutMs?: number; onTimeout?: (payload: any) => void };
+/** timeoutMs may be a function (read at run time). onTimeoutResult: if it returns a value, a timed-out job is completed
+ * with that result instead of failing (R7-1: a trade that was already sent returns "pending" + its tx hash). */
+type Opts = { timeoutMs?: number | (() => number); onTimeout?: (payload: any) => void; onTimeoutResult?: (payload: any, job: Job) => unknown };
 const opts = new Map<string, Opts>();
 /** Every job has a timeout (default JOB_TIMEOUT_MS or 120s): on expiry it is failed (final) with a reason and onTimeout settles its state. */
 export const register = (kind: string, h: Handler, o: Opts = {}) => { handlers.set(kind, h); opts.set(kind, o); };
@@ -40,10 +42,16 @@ async function runJob(j: Job) {
     try {
       if (!h) throw new Error(`no handler for ${j.kind}`);
       let out: unknown;
-      const o = opts.get(j.kind) ?? {}, ms = o.timeoutMs ?? Number(process.env.JOB_TIMEOUT_MS ?? 120_000);
+      const o = opts.get(j.kind) ?? {}, ms = (typeof o.timeoutMs === "function" ? o.timeoutMs() : o.timeoutMs) ?? Number(process.env.JOB_TIMEOUT_MS ?? 120_000);
       let t: NodeJS.Timeout | undefined;
       try { out = await Promise.race([h(j.payload, j), new Promise((_, rej) => { t = setTimeout(() => rej(new JobTimeout(`Timed out after ${Math.round(ms / 1000)}s`)), ms); })]); }
-      catch (e) { if (e instanceof JobTimeout) { try { o.onTimeout?.(j.payload); } catch { /* best effort */ } j.attempts = j.max_attempts; } throw e; }
+      catch (e) {
+        if (!(e instanceof JobTimeout)) throw e;
+        try { o.onTimeout?.(j.payload); } catch { /* best effort */ }
+        let r: unknown; try { r = o.onTimeoutResult?.(j.payload, j); } catch { r = undefined; }
+        if (r === undefined) { j.attempts = j.max_attempts; throw e; }
+        out = r;
+      }
       finally { clearTimeout(t); }
       d.prepare("UPDATE jobs SET status='done', locked_until=NULL, last_error=NULL, result=?, updated_at=? WHERE id=?").run(out === undefined ? null : JSON.stringify(out), Date.now(), j.id);
       notify(j.id);
@@ -98,6 +106,13 @@ export async function wait(id: number, timeoutMs: number) {
   if (fin()) return get(id);
   await new Promise<void>((res) => { const off = onJobSettled((x) => { if (x === id) { clearTimeout(t); off(); res(); } }); const t = setTimeout(() => { off(); res(); }, timeoutMs); });
   return get(id);
+}
+/** Settle a finished job again with its final outcome (R7-1: a "pending" trade that later confirms or fails). */
+export function settle(id: number, o: { result: unknown } | { error: string; status: number; extra?: unknown }) {
+  const d = getDb(), now = Date.now();
+  if ("result" in o) d.prepare("UPDATE jobs SET status='done', locked_until=NULL, last_error=NULL, result=?, updated_at=? WHERE id=?").run(JSON.stringify(o.result ?? null), now, id);
+  else d.prepare("UPDATE jobs SET status='failed', locked_until=NULL, last_error=?, result=?, updated_at=? WHERE id=?").run(o.error.slice(0, 300), JSON.stringify({ status: o.status, extra: o.extra ?? null }), now, id);
+  notify(id);
 }
 /** Run one specific queued job now, in this process (atomic claim; the worker can't run it twice). */
 export async function runNow(id: number) {

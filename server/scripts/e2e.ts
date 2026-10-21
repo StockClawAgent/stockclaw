@@ -781,6 +781,59 @@ try {
     await c.close();
   });
 
+  await step("R7-1: a single swap still unconfirmed at the confirm timeout returns pending + txHash (the job outlives the confirm wait: no retryable TIMEOUT); REST/MCP/quoteId retries return the SAME trade; the watcher speeds it up at the SAME nonce; one tx mines, $40 onchain = $40 in the breaker, one fill; the job then settles to confirmed", async () => {
+    await freshUser();
+    const { pub: P } = await import("../src/chain.js");
+    const trades = await import("../src/trades.js");
+    const { toUserError } = await import("../src/errors.js");
+    const H = { "content-type": "application/json", authorization: `Bearer ${OWNER}` };
+    const agentAddr = svc._agentWallet().address as `0x${string}`, vault = vaultAddr(), keyId = svc._agent()!.id;
+    const n0 = await P.getTransactionCount({ address: agentAddr, blockTag: "latest" });
+    const spent = async () => Number(await read<bigint>(vault, C.vault.abi, "vaultSpentLast24h")) / 1e6, spent0 = await spent();
+    const jobNow = async (id: number) => { for (let i = 0; i < 200; i++) { const v = await (await fetch(`${API}/jobs/${id}`, { headers: H })).json(); if (!["queued", "running"].includes(v.status)) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error("job did not finish"); };
+    const swapBody = JSON.stringify({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 40 });
+    Object.assign(process.env, { SETTLE_TIMEOUT_MS: "1500", TRADE_JOB_TIMEOUT_MS: "500", PENDING_WAIT_MS: "800", SWAP_POLL_MS: "100" });
+    assert.ok(trades.tradeJobTimeoutMs() >= 1500 + 30_000, "job timeout is floored at the confirm timeout + 30s");
+    try {
+      await P.request({ method: "evm_setAutomine", params: [false] } as any);
+      const j1 = await (await fetch(`${API}/execute_swap`, { method: "POST", headers: H, body: swapBody })).json();
+      const v1 = await jobNow(j1.jobId);
+      assert.equal(v1.status, "done", JSON.stringify(v1)); const p1 = v1.result;
+      assert.equal(p1.status, "pending"); assert.match(p1.txHash, /^0x/); assert.equal(p1.code, "TX_PENDING"); assert.equal(p1.retryable, false); assert.match(p1.hint, /Don't retry/); assert.ok(p1.swapId);
+      // retries of the same intent while in flight: same trade, no new tx
+      const v2 = await jobNow((await (await fetch(`${API}/execute_swap`, { method: "POST", headers: H, body: swapBody })).json()).jobId);
+      assert.equal(v2.result.status, "pending"); assert.equal(v2.result.swapId, p1.swapId); assert.equal(v2.result.duplicate, true);
+      const c = await mcpClient();
+      const m = mcpJson(await c.callTool({ name: "execute_swap", arguments: { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 40 } }));
+      assert.equal(m.status, "pending"); assert.equal(m.swapId, p1.swapId); assert.ok(m.jobId); await c.close();
+      assert.equal(await P.getTransactionCount({ address: agentAddr, blockTag: "pending" }), n0 + 1, "one nonce in flight");
+      // the watcher speeds it up at the same nonce (never a new nonce for the same intent)
+      let sp: any; for (let i = 0; i < 100 && !sp; i++) { sp = getDb().prepare("SELECT hash, nonce FROM tx_log WHERE label=?").get(`swap:${p1.swapId}:speedup`); if (!sp) await new Promise((r) => setTimeout(r, 100)); }
+      assert.ok(sp, "speed-up sent"); assert.equal(sp.nonce, n0, "same nonce");
+      await P.request({ method: "evm_mine", params: [] } as any);
+      await P.request({ method: "evm_setAutomine", params: [true] } as any);
+      const f1 = await (await fetch(`${API}/jobs/${j1.jobId}?wait=20000`, { headers: H })).json();
+      assert.equal(f1.status, "done"); assert.equal(f1.result.status, "confirmed", JSON.stringify(f1)); assert.ok(f1.result.amountOut > 0);
+      const sw = svc._swap(p1.swapId)!; assert.equal(sw.status, "filled"); assert.equal(f1.result.txHash, sw.tx_hash); assert.ok(sw.data.hashes.includes(f1.result.txHash));
+      assert.equal((await (await fetch(`${API}/jobs/${v2.jobId}?wait=5000`, { headers: H })).json()).result.status, "confirmed", "the retry's job settles too");
+      assert.equal(await P.getTransactionCount({ address: agentAddr, blockTag: "latest" }), n0 + 1, "exactly one tx mined");
+      assert.ok(Math.abs((await spent()) - spent0 - 40) < 0.01, `onchain spend +$${((await spent()) - spent0).toFixed(2)}`);
+      const kt = getDb().prepare("SELECT COUNT(*) n, COALESCE(SUM(usd),0) s FROM key_trades WHERE key_id=? AND ref=?").get(keyId, p1.swapId) as any;
+      assert.equal(kt.n, 1); assert.ok(Math.abs(kt.s - 40) < 0.5, `breaker saw $${kt.s}`);
+      assert.equal((await call("GET", "get_history", { limit: 50 })).body.filter((h: any) => h.status === "filled" && sw.data.hashes.includes(h.txHash)).length, 1, "one fill recorded");
+      // after it confirmed, the same swap again is a NEW trade
+      const again = await call("POST", "execute_swap", { tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 40 }); assert.equal(again.status, 200); assert.notEqual(again.body.txHash, f1.result.txHash);
+      // same quoteId twice: second call returns the first trade (was 404), no second tx
+      const q = (await call("GET", "quote_swap", { tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 6 })).body;
+      const x1 = await call("POST", "execute_swap", { quoteId: q.quoteId }), x2 = await call("POST", "execute_swap", { quoteId: q.quoteId });
+      assert.equal(x1.status, 200); assert.equal(x2.status, 200, JSON.stringify(x2.body)); assert.equal(x2.body.txHash, x1.body.txHash); assert.equal(x2.body.duplicate, true);
+      assert.doesNotMatch(String(toUserError("Timed out after 60s").hint), /Nothing will be duplicated/);
+    } finally {
+      await P.request({ method: "evm_setAutomine", params: [true] } as any).catch(() => {});
+      for (const k of ["SETTLE_TIMEOUT_MS", "TRADE_JOB_TIMEOUT_MS", "PENDING_WAIT_MS", "SWAP_POLL_MS"]) delete process.env[k];
+    }
+  });
+
   await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
     await freshUser();
     assert.equal((await call("POST", "create_session_key", { allowlist: ["AMD", "TSLA"], label: "E2E seller", name: "Research bot" })).status, 200);

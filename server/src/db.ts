@@ -1,5 +1,5 @@
 // SQLite persistence (BACKEND_PLAN §3): WAL, better-sqlite3 (synchronous => no interleaving inside a transaction).
-// Tables: accounts, intents, activations, history, basket_proposals, basket_executions, legs, idempotency, jobs, tx_log, nonces.
+// Tables: accounts, intents, activations, history, basket_proposals, basket_executions, legs, idempotency, jobs, tx_log, nonces, swaps (R7-1 single-swap ledger).
 // Migration: on first open, an existing data/state.json is imported and renamed to state.json.migrated.
 import Database from "better-sqlite3";
 import fs from "node:fs";
@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS key_trades(id INTEGER PRIMARY KEY AUTOINCREMENT, key_
 CREATE INDEX IF NOT EXISTS key_trades_k ON key_trades(key_id, ts);
 CREATE TABLE IF NOT EXISTS key_breaker(key_id TEXT PRIMARY KEY, tripped INTEGER, tripped_at INTEGER, resumed_at INTEGER, reason TEXT);
 CREATE TABLE IF NOT EXISTS nonces(signer TEXT PRIMARY KEY, next INTEGER NOT NULL, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS swaps(id TEXT PRIMARY KEY, fp TEXT NOT NULL, status TEXT NOT NULL, quote_id TEXT, key_id TEXT, tx_hash TEXT, created_at INTEGER, updated_at INTEGER, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS swaps_fp ON swaps(fp, status);
+CREATE INDEX IF NOT EXISTS swaps_quote ON swaps(quote_id);
 `;
 export function getDb() {
   if (db) return db;

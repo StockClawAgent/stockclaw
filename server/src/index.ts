@@ -13,6 +13,8 @@ import { assertGuardrails } from "./service.js";
 assertGuardrails(); // fail closed (Gaius R6)
 // Restart recovery: settle in-flight txs by hash, requeue jobs a dead process left running (baskets resume leg by leg).
 await jobs.recover();
+// R7-1: keep reconciling single swaps that were sent but not confirmed (by hash, same nonce only)
+(await import("./service.js")).resumeSwaps();
 const { host: HOST, warning: hostWarning } = listenHost(); // R7-6: 127.0.0.1 unless HOST is set
 if (hostWarning) console.warn("\n" + "!".repeat(78) + "\n!! WARNING: " + hostWarning + "\n" + "!".repeat(78) + "\n");
 log.info("network", { host: HOST, trustedProxy: trustedProxy() ?? "off (geo header ignored)" });

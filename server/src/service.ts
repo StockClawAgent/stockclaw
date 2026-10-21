@@ -2,9 +2,10 @@
 // Demo scope: single user. The user's wallet is simulated by DEMO_OWNER_KEY (no wallet-connect yet);
 // agent session keys are held server-side (stand-in for KMS) and are AgentVault delegates.
 import { randomBytes } from "node:crypto";
-import { formatUnits, parseUnits, type Address, type Hex } from "viem";
+import { formatUnits, parseUnits, parseEventLogs, erc20Abi, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, requireLocalAnvil, type Deployment } from "./chain.js";
+import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, requireLocalAnvil, txState, txLogRow, type Deployment } from "./chain.js";
+import { log } from "./log.js";
 import * as cfg from "./config.js";
 import { getDb, migrateFromJson, tx, nowIso } from "./db.js";
 
@@ -89,6 +90,7 @@ export async function dev_reset() {
   return { ok: true, epoch, owner: owner().address, agentKeys: addrs.length - 1 };
 }
 export function resetState() { S = empty(); save(); resetHooks.forEach((f) => f()); }
+onReset(() => { getDb().prepare("DELETE FROM swaps").run(); });
 
 let D: Deployment | undefined;
 export const dep = () => (D ??= loadDeployment());
@@ -318,11 +320,156 @@ export async function quote_swap(tokenIn: string, tokenOut: string, amountIn: nu
 }
 function pushHistory(h: HistoryRow) { S.history.unshift(h); S.history = S.history.slice(0, 500); save(); if (h.status === "filled") activityHook?.(h); }
 
-export async function execute_swap(arg: string | { tokenIn: string; tokenOut: string; amountIn: number; minOut?: number }) {
+// ---------------------------------------------------------------- single swaps: one intent = one tx (R7-1)
+// Every execute_swap is a row in `swaps` (preparing -> submitted -> filled | failed, or -> pending while unconfirmed).
+// * The tx hash + nonce are recorded on submit. If the receipt doesn't come within SETTLE_TIMEOUT_MS the call returns
+//   status "pending" + txHash (never "failed"/"retry"), and a watcher keeps reconciling it by hash and nonce: receipt
+//   first, then a speed-up at the SAME nonce, a dropped tx is re-sent at the same nonce; never a new nonce.
+// * Retries of the same intent are idempotent: the same quoteId, or an identical swap (key, tokens, amount) while the
+//   first is still in flight, returns that swap's state instead of sending again.
+// * History, the activity feed and the anomaly breaker are written exactly once, when (and only if) the tx mines.
+type SwapStatus = "preparing" | "submitted" | "pending" | "filled" | "failed" | "abandoned" | "held";
+type SwapData = { tokenIn: string; tokenOut: string; amountIn: number; side: "buy" | "sell"; estUsd: number; inStr: string; ts: string; vault: Address; agent: Address; agentIdx: number;
+  call?: { pool: Address; tokenIn: Address; tokenOut: Address; amountIn: string; minOut: string; deadline: string }; hashes: string[]; nonce?: number; lastSendAt?: number; speedUps?: number;
+  jobIds: number[]; error?: string; amountOut?: number; outDec: number; outSym: string };
+type SwapRow = { id: string; fp: string; status: SwapStatus; quote_id: string | null; key_id: string; tx_hash: string | null; created_at: number; updated_at: number; json: string };
+const INFLIGHT: SwapStatus[] = ["preparing", "submitted", "pending"];
+const swapGet = (id: string) => getDb().prepare("SELECT * FROM swaps WHERE id=?").get(id) as SwapRow | undefined;
+const swapData = (r: SwapRow) => JSON.parse(r.json) as SwapData;
+function swapPut(id: string, f: { status?: SwapStatus; tx_hash?: string | null; data?: Partial<SwapData> }) {
+  const r = swapGet(id); if (!r) return;
+  const data = { ...swapData(r), ...(f.data ?? {}) };
+  getDb().prepare("UPDATE swaps SET status=?, tx_hash=?, json=?, updated_at=? WHERE id=?").run(f.status ?? r.status, f.tx_hash !== undefined ? f.tx_hash : r.tx_hash, JSON.stringify(data), Date.now(), id);
+}
+/** Atomic: an identical swap still in flight (same agent key, tokens, amount) is the same intent; else claim a new row. */
+function claimSwap(id: string, fp: string, quoteId: string | null, keyId: string, data: SwapData): SwapRow | null {
+  return tx(() => {
+    const dup = getDb().prepare(`SELECT * FROM swaps WHERE fp=? AND status IN (${INFLIGHT.map(() => "?").join(",")}) ORDER BY created_at LIMIT 1`).get(fp, ...INFLIGHT) as SwapRow | undefined;
+    if (dup) { const jid = data.jobIds[0]; if (jid != null) swapPut(dup.id, { data: { jobIds: [...new Set([...swapData(dup).jobIds, jid])] } }); return swapGet(dup.id)!; }
+    const now = Date.now();
+    getDb().prepare("INSERT INTO swaps(id, fp, status, quote_id, key_id, tx_hash, created_at, updated_at, json) VALUES(?,?,?,?,?,?,?,?,?)").run(id, fp, "preparing", quoteId, keyId, null, now, now, JSON.stringify(data));
+    return null;
+  });
+}
+const PENDING_COPY = { code: "TX_PENDING", message: "Your trade was sent and is still waiting for network confirmation.", retryable: false, hint: "Don't retry it: it is still pending and will update here when it confirms. Repeating the same trade won't send it twice." };
+function swapResult(r: SwapRow, duplicate = false) {
+  const d = swapData(r);
+  if (r.status === "filled") return { ...txOut(r.tx_hash!), amountOut: d.amountOut ?? null, swapId: r.id, ...(duplicate ? { duplicate: true, note: "Same trade as an earlier request: already confirmed, not sent again." } : {}) };
+  if (INFLIGHT.includes(r.status)) return { status: "pending" as const, txHash: r.tx_hash, explorerUrl: r.tx_hash ? cfg.explorerTx(r.tx_hash) : null, swapId: r.id, ...PENDING_COPY, ...(duplicate ? { duplicate: true } : {}) };
+  throw new ApiError(409, `This trade already finished (${r.status}${d.error ? `: ${d.error}` : ""}); nothing was sent again. Get a fresh quote to trade again.`);
+}
+type SwapSettled = (jobIds: number[], o: { result: unknown } | { error: string; status: number }) => void;
+let swapSettledHook: SwapSettled | undefined;
+export const setSwapSettledHook = (f: SwapSettled) => { swapSettledHook = f; };
+function onSwapSubmitted(id: string, h: string, how: "send" | "speedup" | "resend" = "send") {
+  const r = swapGet(id); if (!r) return;
+  const d = swapData(r), row = txLogRow(h);
+  const status: SwapStatus = r.status === "preparing" ? "submitted" : r.status === "abandoned" ? "pending" : r.status;
+  swapPut(id, { status, tx_hash: h, data: { hashes: [...new Set([...d.hashes, h])], nonce: d.nonce ?? row?.nonce, lastSendAt: Date.now(), ...(how === "speedup" ? { speedUps: (d.speedUps ?? 0) + 1 } : {}) } });
+  if (r.status === "abandoned") { log.warn("swap was sent after its job timed out: reconciling it", { swapId: id, txHash: h }); void watchSwap(id); }
+}
+async function outFromReceipt(rc: { logs: any[] }, tokenOut: Address, vault: Address, dec: number) {
+  const logs = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: rc.logs as any }).filter((l: any) => l.address.toLowerCase() === tokenOut.toLowerCase() && l.args.to.toLowerCase() === vault.toLowerCase());
+  return fmt(logs.reduce((a: bigint, l: any) => a + (l.args.value as bigint), 0n), dec);
+}
+/** The swap mined: record it exactly once (status transition in one SQLite transaction). */
+async function finalizeSwap(id: string, hash: string) {
+  const rc = await pub.getTransactionReceipt({ hash: hash as Hex });
+  if (rc.status !== "success") return failSwap(id, hash, "Transaction reverted onchain");
+  const r0 = swapGet(id)!, d = swapData(r0), out = await outFromReceipt(rc, token(d.outSym).address, d.vault, d.outDec);
+  const prior = tx(() => { const r = swapGet(id)!; if (r.status === "filled" || r.status === "failed") return null; swapPut(id, { status: "filled", tx_hash: hash, data: { amountOut: out } }); return r.status; });
+  const r = swapGet(id)!;
+  if (prior) {
+    const feeBps = Number(await read(dep().router, C.router.abi, "feeBps").catch(() => 30));
+    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: d.inStr, out: `${out.toFixed(6)} ${d.outSym}`, fee: `${(d.amountIn * feeBps / 10_000).toFixed(4)} ${d.tokenIn}`, ts: d.ts, status: "filled", side: d.side, keyId: r.key_id, usd: +d.estUsd.toFixed(2) });
+    tradeHooks?.record(r.key_id, d.side, d.estUsd, id); // breaker: onchain reality, once per intent
+    if (prior === "pending" || prior === "abandoned") { swapSettledHook?.(d.jobIds, { result: swapResult(r) }); log.info("pending swap confirmed", { swapId: id, txHash: hash }); }
+  }
+  return swapResult(r);
+}
+function failSwap(id: string, hash: string | null, reason: string): never {
+  const prior = tx(() => { const r = swapGet(id)!; if (r.status === "filled" || r.status === "failed") return null; swapPut(id, { status: "failed", ...(hash ? { tx_hash: hash } : {}), data: { error: reason } }); return r.status; });
+  const r = swapGet(id)!, d = swapData(r);
+  if (prior && prior !== "preparing") {
+    pushHistory({ txHash: hash, type: "swap", in: d.inStr, out: "—", fee: "—", ts: d.ts, status: "blocked", reason, side: d.side });
+    if (prior === "pending" || prior === "abandoned") swapSettledHook?.(d.jobIds, { error: `Blocked: ${reason}`, status: 403 });
+  }
+  throw new ApiError(403, `Blocked: ${reason}`);
+}
+const watching = new Set<string>();
+const swapPendingWaitMs = () => Number(process.env.PENDING_WAIT_MS ?? 20_000);
+/** Reconcile a pending swap by hash and nonce until it mines or provably can't (watcher; survives restarts via resumeSwaps). */
+export async function watchSwap(id: string) {
+  if (watching.has(id)) return; watching.add(id);
+  const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+  try {
+    const t0 = Date.now(), maxMs = Number(process.env.SWAP_WATCH_MS ?? 3_600_000);
+    while (Date.now() - t0 < maxMs) {
+      const r = swapGet(id); if (!r || !INFLIGHT.includes(r.status) && r.status !== "abandoned") return;
+      const d = swapData(r);
+      let anyPending = false;
+      for (const h of d.hashes) {
+        const st = await txState(h as Hex);
+        if (st === "mined") { await finalizeSwap(id, h).catch(() => {}); return; }
+        if (st === "reverted") { try { failSwap(id, h, "Transaction reverted onchain"); } catch { /* recorded */ } return; }
+        if (st === "pending") anyPending = true;
+      }
+      const w = wallet(cfg.keys.agentPool()[d.agentIdx]);
+      const quiet = Date.now() - (d.lastSendAt ?? r.updated_at) > swapPendingWaitMs();
+      if (d.hashes.length && !anyPending && d.nonce != null && quiet) {
+        // dropped: none of our txs is known to the node. Same nonce only: if it was used by another tx, ours can never mine.
+        const used = await pub.getTransactionCount({ address: d.agent, blockTag: "latest" });
+        if (used > d.nonce) { try { failSwap(id, null, "Not executed: the transaction was dropped and its nonce was used by another transaction"); } catch { /* recorded */ } return; }
+        if (d.call) {
+          log.warn("swap tx dropped: re-sending the same call at the same nonce", { swapId: id, nonce: d.nonce });
+          try {
+            const c = d.call; swapPut(id, { data: { lastSendAt: Date.now() } });
+            const { hash } = await w.write(d.vault, C.vault.abi, "agentSwap", [c.pool, c.tokenIn, c.tokenOut, BigInt(c.amountIn), BigInt(c.minOut), BigInt(c.deadline)], { label: `swap:${id}:resend`, nonce: d.nonce, onSubmitted: (h) => onSwapSubmitted(id, h, "resend") });
+            await finalizeSwap(id, hash).catch(() => {}); return;
+          } catch (e) { if (isRevert(e)) { try { failSwap(id, null, `Not executed: ${humanReason(e)}`); } catch { /* recorded */ } return; } log.warn("swap re-send failed; will retry", { swapId: id, error: String((e as Error).message).slice(0, 200) }); }
+        }
+      } else if (anyPending && quiet && (d.speedUps ?? 0) < 3) {
+        try { const h1 = await w.speedUp(r.tx_hash as Hex, `swap:${id}`); onSwapSubmitted(id, h1, "speedup"); }
+        catch (e) { log.warn("swap speed-up failed; still watching", { swapId: id, error: String((e as Error).message).slice(0, 200) }); swapPut(id, { data: { lastSendAt: Date.now() } }); }
+      }
+      await sleep(Number(process.env.SWAP_POLL_MS ?? 1000));
+    }
+    log.warn("swap still pending after the watch window; resumes on restart", { swapId: id });
+  } catch (e) { log.error("swap watcher crashed", { swapId: id, error: String((e as Error).message).slice(0, 200) }); }
+  finally { watching.delete(id); }
+}
+/** Boot: resume every unresolved swap (hash from the row or, if the process died right after sending, from tx_log). */
+export function resumeSwaps() {
+  const rows = getDb().prepare(`SELECT * FROM swaps WHERE status IN ('preparing','submitted','pending','abandoned')`).all() as SwapRow[];
+  let resumed = 0;
+  for (const r of rows) {
+    const logged = getDb().prepare("SELECT hash, nonce FROM tx_log WHERE label LIKE ? ORDER BY created_at").all(`swap:${r.id}%`) as { hash: string; nonce: number }[];
+    const d = swapData(r), hashes = [...new Set([...d.hashes, ...logged.map((x) => x.hash)])];
+    if (!hashes.length) { swapPut(r.id, { status: "failed", data: { error: "Interrupted before it was sent (nothing sent)" } }); continue; }
+    swapPut(r.id, { status: "pending", tx_hash: r.tx_hash ?? hashes[hashes.length - 1], data: { hashes, nonce: d.nonce ?? logged[0]?.nonce } });
+    void watchSwap(r.id); resumed++;
+  }
+  if (rows.length) log.info("resumed in-flight swaps", { resumed, total: rows.length });
+  return { resumed, total: rows.length };
+}
+/** Trade job timed out (R7-1): if the swap was already sent, the job completes as "pending" + hash; else it can never send. */
+export function onSwapJobTimeout(jobId: number) {
+  const r = (getDb().prepare("SELECT * FROM swaps WHERE status IN ('preparing','submitted','pending') ORDER BY created_at DESC").all() as SwapRow[]).find((x) => swapData(x).jobIds.includes(jobId));
+  if (!r) return undefined;
+  if (r.status === "preparing" && !r.tx_hash) { swapPut(r.id, { status: "abandoned" }); return undefined; } // beforeSend refuses from now on
+  swapPut(r.id, { status: "pending" }); void watchSwap(r.id);
+  return swapResult(swapGet(r.id)!);
+}
+export const _swap = (id: string) => { const r = swapGet(id); return r ? { ...r, data: swapData(r) } : undefined; };
+
+export async function execute_swap(arg: string | { tokenIn: string; tokenOut: string; amountIn: number; minOut?: number }, ctx: { jobId?: number } = {}) {
   await requireEligible();
   if (!S.vault) throw new ApiError(409, "No smart account");
-  let p: { tokenIn: string; tokenOut: string; amountIn: number; minOutRaw: bigint };
+  let p: { tokenIn: string; tokenOut: string; amountIn: number; minOutRaw: bigint }, quoteId: string | null = null;
   if (typeof arg === "string") {
+    quoteId = arg;
+    const prior = getDb().prepare("SELECT * FROM swaps WHERE quote_id=? ORDER BY created_at DESC LIMIT 1").get(arg) as SwapRow | undefined;
+    if (prior) { if (ctx.jobId != null && INFLIGHT.includes(prior.status)) swapPut(prior.id, { data: { jobIds: [...new Set([...swapData(prior).jobIds, ctx.jobId])] } }); return swapResult(prior, true); } // retry of the same quote
     const q = quotes.get(arg);
     if (!q) throw new ApiError(404, "Unknown quoteId"); if (q.expiresAt < Date.now()) throw new ApiError(410, "Quote expired");
     quotes.delete(arg); p = q;
@@ -337,26 +484,47 @@ export async function execute_swap(arg: string | { tokenIn: string; tokenOut: st
     pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason: "Agent key revoked (paused)", side });
     throw new ApiError(403, "Agent key revoked (paused)");
   }
-  const ref = "swap_" + randomBytes(6).toString("hex"), estUsd = await usdOf(ti.symbol, p.amountIn);
-  tradeHooks?.guard(S.agent.id, ref);
-  let sellUsd = 0;
-  if (side === "sell" && to.symbol === "mUSDG" && sellGuard) { const g = await sellGuard({ tokenIn: ti.symbol, tokenOut: to.symbol, amountIn: p.amountIn }); if (g.hold) return g.result as any; sellUsd = g.estUsd; }
-  const a = agentWallet(), raw = units(p.amountIn, ti.decimals), deadline = BigInt((await chainNow()) + 300);
-  const before = await read<bigint>(to.address, C.usdg.abi, "balanceOf", [S.vault]);
+  const ref = "swap_" + randomBytes(6).toString("hex"), estUsd = await usdOf(ti.symbol, p.amountIn), keyId = S.agent.id;
+  const base: SwapData = { tokenIn: ti.symbol, tokenOut: to.symbol, amountIn: p.amountIn, side, estUsd, inStr, ts, vault: S.vault, agent: S.agent.address, agentIdx: S.agent.idx, hashes: [], jobIds: ctx.jobId != null ? [ctx.jobId] : [], outDec: to.decimals, outSym: to.symbol };
+  // R7-1: the same intent still in flight => its state, never a second tx
+  const dup = claimSwap(ref, `${keyId}|${ti.symbol}|${to.symbol}|${p.amountIn}`, quoteId, keyId, base);
+  if (dup) {
+    for (let i = 0; i < 300 && swapGet(dup.id)!.status === "preparing"; i++) await new Promise((res) => setTimeout(res, 100)); // let the first one get its hash
+    return swapResult(swapGet(dup.id)!, true);
+  }
   try {
+    tradeHooks?.guard(keyId, ref);
+    if (side === "sell" && to.symbol === "mUSDG" && sellGuard) { const g = await sellGuard({ tokenIn: ti.symbol, tokenOut: to.symbol, amountIn: p.amountIn }); if (g.hold) { swapPut(ref, { status: "held" }); return g.result as any; } }
+  } catch (e) { swapPut(ref, { status: "failed", data: { error: (e as Error).message } }); throw e; }
+  const a = agentWallet(), raw = units(p.amountIn, ti.decimals), deadline = BigInt((await chainNow()) + 300);
+  try {
+    const pool = await poolFor(p.tokenIn, p.tokenOut);
+    swapPut(ref, { data: { call: { pool, tokenIn: ti.address, tokenOut: to.address, amountIn: raw.toString(), minOut: p.minOutRaw.toString(), deadline: deadline.toString() } } });
     // The vault enforces caps/allowlist/expiry onchain; any breach reverts => hard block.
-    const { hash } = await a.write(S.vault, C.vault.abi, "agentSwap", [await poolFor(p.tokenIn, p.tokenOut), ti.address, to.address, raw, p.minOutRaw, deadline]);
-    const out = fmt((await read<bigint>(to.address, C.usdg.abi, "balanceOf", [S.vault])) - before, to.decimals);
-    const fee = p.amountIn * Number(await read(dep().router, C.router.abi, "feeBps")) / 10_000;
-    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: inStr, out: `${out.toFixed(6)} ${to.symbol}`, fee: `${fee.toFixed(4)} ${ti.symbol}`, ts, status: "filled", side, keyId: S.agent.id, usd: +estUsd.toFixed(2) });
-    tradeHooks?.record(S.agent.id, side, estUsd, ref);
-    return { ...txOut(hash), amountOut: out };
+    const { hash } = await a.write(S.vault, C.vault.abi, "agentSwap", [pool, ti.address, to.address, raw, p.minOutRaw, deadline], {
+      label: `swap:${ref}`,
+      beforeSend: () => { if (swapGet(ref)?.status !== "preparing") throw new ApiError(409, "This trade timed out before it was sent; nothing was sent. Check history, then try again."); },
+      onSubmitted: (h) => onSwapSubmitted(ref, h),
+    });
+    return await finalizeSwap(ref, hash);
   } catch (e) {
-    if (e instanceof ApiError || !isRevert(e)) throw e;
-    const reason = humanReason(e);
-    pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason, side });
-    if (/rolling-24h cap/.test(reason)) onCapBlock?.();
-    throw new ApiError(403, `Blocked: ${reason}`);
+    const row = swapGet(ref)!;
+    if (e instanceof ApiError) { if (row.status === "preparing") swapPut(ref, { status: "failed", data: { error: e.message } }); throw e; }
+    if (!row.tx_hash) { // never sent (simulation revert or transport error before the send)
+      if (!isRevert(e)) { swapPut(ref, { status: "failed", data: { error: String((e as Error).message).slice(0, 200) } }); throw e; }
+      const reason = humanReason(e);
+      swapPut(ref, { status: "failed", data: { error: reason } });
+      pushHistory({ txHash: null, type: "swap", in: inStr, out: "—", fee: "—", ts, status: "blocked", reason, side });
+      if (/rolling-24h cap/.test(reason)) onCapBlock?.();
+      throw new ApiError(403, `Blocked: ${reason}`);
+    }
+    // Sent. Mined-but-reverted => blocked; otherwise the receipt didn't come in time: PENDING (keep reconciling; never resend at a new nonce)
+    const st = await txState(row.tx_hash as Hex).catch(() => "unknown" as const);
+    if (st === "mined") return finalizeSwap(ref, row.tx_hash);
+    if (st === "reverted") failSwap(ref, row.tx_hash, "Transaction reverted onchain");
+    log.warn("swap sent but not confirmed in time: pending, reconciling by hash/nonce", { swapId: ref, txHash: row.tx_hash, error: String((e as Error).message).slice(0, 160) });
+    swapPut(ref, { status: "pending" }); void watchSwap(ref);
+    return swapResult(swapGet(ref)!);
   }
 }
 
