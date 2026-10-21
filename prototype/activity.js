@@ -1,6 +1,8 @@
 /* StockClaw live activity feed + key breaker banner (dashboard Home).
    Feed: api.getActivity(sinceId) then api.openActivityStream (fetch-SSE in api.js, owner header, resumes from last id).
-   Offline/connecting/live indicator. Breaker via api.getBreaker / api.resumeKey. No token handling here. */
+   Offline/connecting/live indicator. Breaker via api.getBreaker / api.resumeKey. No token handling here.
+   Trade jobs: running -> "Trade in progress"; execute_swap done + result.status "pending" -> "Sent, confirming…" (no retry, no timeout)
+   until the same job settles (confirmed | failed) in place. ?mock=1&mockPending=1|fail exercises it. */
 (function(){
 const MOCK=new URLSearchParams(location.search).get("mock")==="1";
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -13,10 +15,32 @@ function row(x){const side=x.side?`<span class="af-side af-${e(x.side)}">${e(x.s
  const tx=x.txHash?(okUrl(x.explorerUrl)?`<a class="af-tx" href="${e(x.explorerUrl)}" target="_blank" rel="noopener" title="${e(x.txHash)}">${e(short(x.txHash))} ↗</a>`:`<span class="af-tx" title="${e(x.txHash)}">${e(short(x.txHash))}</span>`):"";
  const acts=(x.actions||[]).filter(a=>a&&(a.type=="revoke_key"||a.type=="resume_key")).map(a=>a.type=="revoke_key"?`<button class="af-act af-danger" data-revoke="${e(x.keyId||"")}">${e(a.label||"Revoke key")}</button>`:`<button class="af-act" data-resume="${e(x.keyId||"")}">${e(a.label||"Resume key")}</button>`).join("");
  return `<li class="af-${e(x.kind||"trade")}${F.first?"":" af-new"}"><time class="af-t" datetime="${e(x.ts)}">${tm(x.ts)}</time><span class="af-title">${e(x.title||"")}</span>${side}${usd}${tx}${acts?`<span class="af-acts">${acts}</span>`:""}</li>`}
+// Trade jobs (SSE `job`). execute_swap can finish done + result.status "pending" (TX_PENDING, Lucius aeb1aea): sent, not confirmed.
+// It has no retry and no timeout; a later `job` event for the same jobId settles the card in place (confirmed | failed).
+const txA=(h,u)=>h?(okUrl(u)?`<a class="af-tx" href="${e(u)}" target="_blank" rel="noopener" title="${e(h)}">${e(short(h))} ↗</a>`:`<span class="af-tx" title="${e(h)}">${e(short(h))}</span>`):"";
+function jobState(j){const r=j.result||{};if(j.status=="done"&&r.status=="pending")return "pending";if(j.status=="done")return "confirmed";if(j.status=="failed")return "failed";return "running"}
+function jobRow(j){const r=j.result||{};
+ if(j._st=="pending")return `<li class="af-job af-pending" data-job="${e(j.jobId)}"><span class="lv lv-wait"></span><span class="af-title">Sent, confirming…</span>${txA(r.txHash,r.explorerUrl)}</li>`;
+ if(j._st=="confirmed")return `<li class="af-job af-confirmed" data-job="${e(j.jobId)}"><span class="lv lv-on"></span><span class="af-title">Confirmed</span>${txA(r.txHash||j._tx,r.explorerUrl||j._url)}</li>`;
+ if(j._st=="failed"){const i=SCErr.of(j.error||{});return `<li class="af-job af-failed" data-job="${e(j.jobId)}"><span class="lv lv-off"></span><span class="af-title">Didn't go through. ${e(i.message)}</span>${txA(j._tx,j._url)}</li>`}
+ return `<li class="af-job" data-job="${e(j.jobId)}"><span class="lv lv-wait"></span><span class="af-title">${e(/sell/i.test(j.jobKind||"")?"Sell in progress":/buy|swap|trade/i.test(j.jobKind||"")?"Trade in progress":"Working on it")}…</span></li>`}
+// queued/running: show; pending: keep until settled; settled after pending: update in place; other finished jobs: drop (as before)
+function onJob(j){if(!F.mounted||j==null||j.jobId==null)return;const st=jobState(j),prev=F.jobs.get(j.jobId);
+ if(st=="running")F.jobs.set(j.jobId,{...j,_st:st});
+ else if(st=="pending"){const r=j.result||{};F.jobs.set(j.jobId,{...j,_st:st,_tx:r.txHash,_url:r.explorerUrl})}
+ else if(prev&&prev._st=="pending")F.jobs.set(j.jobId,{...j,_st:st,_tx:prev._tx,_url:prev._url});
+ else F.jobs.delete(j.jobId);
+ draw();if(st=="pending"&&(!prev||prev._st!="pending"))say("Trade sent, confirming");else if(prev&&prev._st=="pending"&&st!="pending")say(st=="confirmed"?"Trade confirmed":"Trade didn't go through")}
+// ?mock=1&mockPending=1 (confirms) or =fail: replays a pending swap job, then settles it, like the live SSE does.
+function mockJobs(){const m=new URLSearchParams(location.search).get("mockPending");if(!MOCK||!m)return;const id=9001,tx="0x5e7d1c0ffee0a11ce0b0b5ca1ab1e0000000000000000000000000000000beef",url=EXPLORER+"/tx/"+tx,at=new Date().toISOString();
+ const base={jobId:id,kind:"job",jobKind:"trade.execute_swap",createdAt:at,statusUrl:"/api/jobs/"+id};const ms=+new URLSearchParams(location.search).get("mockPendingMs")||8000;
+ setTimeout(()=>onJob({...base,status:"running"}),300);
+ setTimeout(()=>onJob({...base,status:"done",result:{status:"pending",txHash:tx,explorerUrl:url,swapId:"sw_mock1",code:"TX_PENDING",message:"Sent. Waiting for the network to confirm it.",retryable:false,hint:"Don't retry it. It will confirm or fail on its own."}}),900);
+ setTimeout(()=>onJob(m=="fail"?{...base,status:"failed",error:{code:"TX_REVERTED",message:"The swap reverted onchain. Nothing was spent.",retryable:false,status:409}}:{...base,status:"done",result:{status:"confirmed",txHash:tx,explorerUrl:url,amountOut:0.0412,swapId:"sw_mock1"}}),900+ms)}
 const LIVE={live:["Live","on"],connecting:["Connecting…","wait"],reconnecting:["Reconnecting…","wait"],offline:["Offline. We'll reconnect when you're back online.","off"],error:["Sign in to see live activity.","off"]};
 function draw(){const el=document.getElementById("afSlot");if(!el)return;const list=[...F.items.values()].sort((a,b)=>String(b.ts).localeCompare(String(a.ts))||(+b.id-+a.id)).slice(0,25);
  if(F.loading&&!list.length){el.innerHTML=`<ul class="af-list sk-list" aria-hidden="true">${'<li><span class="sk sk-t"></span><span class="sk sk-l"></span></li>'.repeat(3)}</ul>`}
- else{const jb=[...F.jobs.values()].map(j=>`<li class="af-job"><span class="lv lv-wait"></span><span class="af-title">${e(/sell/i.test(j.jobKind||"")?"Sell in progress":/buy|swap|trade/i.test(j.jobKind||"")?"Trade in progress":"Working on it")}…</span></li>`).join("");el.innerHTML=(list.length||jb)?`<ul class="af-list">${jb}${list.map(row).join("")}</ul>`:`<div class="empty"><img src="logo3d/blob-3d-eyeless-256.webp" width="64" height="45" alt="" loading="lazy"><p>No agent trades yet. They'll show up here as they happen.</p></div>`}
+ else{const jb=[...F.jobs.values()].map(jobRow).join("");el.innerHTML=(list.length||jb)?`<ul class="af-list">${jb}${list.map(row).join("")}</ul>`:`<div class="empty"><img src="logo3d/blob-3d-eyeless-256.webp" width="64" height="45" alt="" loading="lazy"><p>No agent trades yet. They'll show up here as they happen.</p></div>`}
  F.first=false;
  const st=document.getElementById("afLive");if(st){const m=LIVE[F.mode];st.innerHTML=m?`<span class="lv lv-${m[1]}"></span>${m[0]}${F.mode=="error"?' <button class="dx-link" id="afSignin">Enter owner token</button>':""}`:"";const si=document.getElementById("afSignin");si&&(si.onclick=()=>{close();open()})}
  el.querySelectorAll("[data-revoke]").forEach(b=>b.onclick=()=>confirmDlg("Revoke agent key?","Your agent immediately loses the ability to trade. This signs one transaction. You can create a new key later.","Yes, revoke",()=>doRevoke("revoked")));
@@ -24,11 +48,11 @@ function draw(){const el=document.getElementById("afSlot");if(!el)return;const l
 function setMode(m){if(F.mode!==m){F.mode=m;draw()}}
 // api.js drives the indicator: connecting | live | reconnecting | error ('error' = owner token missing/rejected; re-opening prompts via the masked hook)
 function open(){if(!F.mounted||F.stream)return;if(navigator.onLine===false)return setMode("offline");
- F.stream=api.openActivityStream(ev=>{if(F.mounted)add([ev])},{since:F.lastId||undefined,onJob:j=>{if(!F.mounted||j.jobId==null)return;if(j.status=="queued"||j.status=="running")F.jobs.set(j.jobId,j);else F.jobs.delete(j.jobId);draw()},onState:(st)=>{if(!F.mounted)return;if(st=="error")F.stream=null;setMode(st)}})}
+ F.stream=api.openActivityStream(ev=>{if(F.mounted)add([ev])},{since:F.lastId||undefined,onJob,onState:(st)=>{if(!F.mounted)return;if(st=="error")F.stream=null;setMode(st)}})}
 function close(){F.stream&&F.stream.close();F.stream=null}
 addEventListener("offline",()=>{if(F.mounted){close();setMode("offline")}});
 addEventListener("online",()=>{if(F.mounted){open();api.getActivity(F.lastId||undefined).then(add,()=>{})}});
-async function start(){F.mounted=true;F.loading=true;draw();try{add(await api.getActivity(F.lastId||undefined))}catch(_){}F.loading=false;draw();open()}
+async function start(){F.mounted=true;F.loading=true;draw();try{add(await api.getActivity(F.lastId||undefined))}catch(_){}F.loading=false;draw();open();mockJobs()}
 function stop(){F.mounted=false;close()}
 // ---------- breaker ----------
 const BR={tripped:[],msg:""};
@@ -46,5 +70,5 @@ async function resume(keyId,btn){btn&&(btn.disabled=true);try{await api.resumeKe
  R["/dashboard/overview"]=[()=>V().replace('<div class="dx-body">','<div class="dx-body"><div id="brSlot"></div>').replace(/(<section class="dx-sec" aria-labelledby="dx-act"><h2 id="dx-act">Activity<\/h2>)[\s\S]*?(<\/section>)/,'$1<p class="dx-mut dx-small" id="afLive" aria-live="polite"></p><div id="afSlot" aria-live="polite"></div>$2'),
   ()=>{B();draw();drawBreaker();if(!F.mounted)start();loadBreaker()}]}
 addEventListener("hashchange",()=>{if(!/^#\/dashboard\/overview/.test(location.hash))stop()});
-window.SCActivity={feed:F,breaker:BR,stop,refreshBreaker};
+window.SCActivity={feed:F,breaker:BR,stop,refreshBreaker,onJob};
 })();

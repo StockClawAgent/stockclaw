@@ -3,7 +3,9 @@
    createdAt, updatedAt, legs:[{legId, ticker, weight, targetUsd, filledUsd, status:'pending'|'filling'|'filled'|'failed', txHash?, error?}]}
    A ticker over $98 is split into several legs: slices are keyed by TICKER and aggregate their legs.
    Usage: BasketFill.mount(el, executionId) — follows api.subscribeExecution (SSE, api.js falls back to polling) until a terminal status.
-   Data source: BFAdapter below, all through api.js (mock with ?mock=1, forced leg failure with ?mockFail=1). */
+   Data source: BFAdapter below, all through api.js (mock with ?mock=1, forced leg failure with ?mockFail=1).
+   A failed leg can later become filled (leg_filled after a late mine, R7-4): it renders as filled; after a terminal partial/failed
+   the stream is re-opened while a failed leg still has a tx out. ?mock=1&mockHeal=1 exercises the failed -> filled flow. */
 (function(){
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const usd=n=>"$"+(+n||0).toFixed(2);
@@ -23,8 +25,21 @@ const BFAdapter={
  start:async(basketId,usd,idempotencyKey)=>{const pre=async()=>{const pv=await api.preview_basket_buy(basketId,usd);if(pv&&pv.preflight&&pv.preflight.ok===false)throw Object.assign(new Error("preflight"),{data:{code:"PREFLIGHT",message:(pv.preflight.failures||[]).join(" ")||"This basket can't be bought right now.",retryable:false}});return pv};
   let pv=await pre();try{return await api.buy_basket({previewId:pv.previewId,idempotencyKey})}
   catch(err){if(SCErr.of(err).code!=="PREVIEW_EXPIRED")throw err;pv=await pre();return api.buy_basket({previewId:pv.previewId,idempotencyKey})}},
- subscribe:(id,on)=>api.subscribeExecution(id,on),
+ subscribe:(id,on)=>MOCK_HEAL?healSub(id,on):api.subscribeExecution(id,on),
  retry:(id,legId)=>api.retry_basket_leg(id,legId)};
+
+// ?mock=1&mockHeal=1: like the server after R7-4. Legs fill one by one; leg 2 times out (failed, tx already sent), the stream ends
+// "partial"; ~6s later that tx mines and the leg reconciles to filled. Re-subscribing returns the current snapshot, as the server does.
+const MOCK_HEAL=/[?&]mock=1/.test(location.search)&&/[?&]mockHeal=1/.test(location.search),HEAL={};
+function healState(id){const h=HEAL[id],t=Date.now()-h.t0,n=h.legs.length,end=(n+1)*1200,healAt=end+(+new URLSearchParams(location.search).get("mockHealMs")||6000);
+ const legs=h.legs.map((l,i)=>{let status=t>(i+1)*1200?"filled":t>i*1200?"filling":"pending";const tx="0xMOCKLEG"+i+"a11ce";
+  if(i==1&&status=="filled")status=t>healAt?"filled":"failed";
+  return {legId:l.legId,ticker:l.ticker,weight:l.weight,targetUsd:l.targetUsd,filledUsd:status=="filled"?l.targetUsd:0,status,...(status!="pending"?{txHash:tx}:{}),...(status=="failed"?{error:"Sent, still waiting for the network. Retry checks the receipt first."}:{})}});
+ const all=legs.every(l=>l.status=="filled"),busy=legs.some(l=>l.status=="pending"||l.status=="filling");
+ return {id,basketId:h.basketId,totalUsd:h.totalUsd,status:all?"filled":busy?(t<300?"pending":"running"):"partial",createdAt:new Date(h.t0).toISOString(),updatedAt:new Date().toISOString(),legs}}
+function healSub(id,on){let closed=false,prev=null;(async()=>{if(!HEAL[id]){const x=await api.get_basket_execution(id);HEAL[id]={t0:Date.now(),legs:x.legs,basketId:x.basketId,totalUsd:x.totalUsd}}
+  const tick=()=>{if(closed)return;const x=healState(id);if(!prev)on({type:"snapshot",executionId:id,execution:x});else{x.legs.forEach(l=>{const o=prev.legs.find(p=>p.legId==l.legId);if(o.status!=l.status)on({type:"leg_"+l.status,executionId:id,legId:l.legId,ticker:l.ticker,targetUsd:l.targetUsd,filledUsd:l.filledUsd,...(l.txHash?{txHash:l.txHash}:{}),...(l.error?{code:l.error}:{})})});if(prev.status!=x.status)on({type:"execution_status",executionId:id,status:x.status})}
+   prev=x;if(["filled","partial","failed"].includes(x.status))return;setTimeout(tick,250)};tick()})();return {close:()=>{closed=true}}}
 
 // ---------------- aggregation: slices by ticker ----------------
 function slices(x){const m=new Map();(x.legs||[]).forEach(l=>{let s=m.get(l.ticker);if(!s){s={ticker:l.ticker,weight:+l.weight||0,target:0,filled:0,legs:[]};m.set(l.ticker,s)}s.target+=+l.targetUsd||0;s.filled+=+l.filledUsd||0;s.legs.push(l)});
@@ -68,10 +83,15 @@ function mount(el,id,opts={}){if(!el)return;if(el._bf)el._bf.sub&&el._bf.sub.clo
   else if(!st.x)return;
   else if(/^leg_/.test(ev.type)){const k=ev.type.slice(4);let l=st.x.legs.find(l=>l.legId==ev.legId);if(!l){l={legId:ev.legId,ticker:ev.ticker,weight:0};st.x.legs.push(l)}
    Object.assign(l,{status:k,ticker:ev.ticker||l.ticker,targetUsd:ev.targetUsd!=null?ev.targetUsd:l.targetUsd,filledUsd:ev.filledUsd!=null?ev.filledUsd:l.filledUsd},ev.txHash?{txHash:ev.txHash}:{},ev.code?{error:ev.code}:{});
+   if(k=="filled"||k=="filling")delete l.error; // a failed leg whose tx mined late (R7-4) arrives as leg_filled: it replaces the failed state
    if(st.x.status=="pending")st.x.status="running"}
   else if(ev.type=="execution_status"){st.x.status=ev.status}
-  draw(st.x)};
+  draw(st.x);watch()};
  const follow=()=>{st.sub&&st.sub.close();st.sub=BFAdapter.subscribe(id,onEv)};
+ // The server stream ends at a terminal status, but a failed leg that has a txHash is still reconciled server-side and can
+ // become filled later. While one is out, re-open the stream every 5s (snapshot = current state) for up to 10 min.
+ const watch=()=>{clearTimeout(st.w);const x=st.x;if(!x||!["partial","failed"].includes(x.status)||!el.isConnected||el._bf!==st)return;
+  if(!(x.legs||[]).some(l=>l.status=="failed"&&l.txHash))return;st.w0=st.w0||Date.now();if(Date.now()-st.w0>6e5)return;st.w=setTimeout(()=>{if(el.isConnected&&el._bf===st)follow()},5000)};
  follow();return st}
 window.BasketFill={mount,slices,adapter:BFAdapter};
 })();
