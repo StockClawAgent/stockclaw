@@ -35,6 +35,9 @@ const ipOf = (req: express.Request) => req.ip ?? req.socket.remoteAddress ?? "?"
 
 export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerMin?: number; healthPerMin?: number } = {}) {
   const app = express();
+  // R7-6: geo + client IP come from proxy headers only behind a configured trusted proxy
+  const proxyTrust = cfg.trustedProxy();
+  if (proxyTrust != null) app.set("trust proxy", proxyTrust);
   app.use(express.json({ limit: "100kb" }));
   // UX: every error body gets {code, message, retryable, hint?} (central mapping in errors.ts); `error` keeps the detail
   app.use((_req, res, next) => { const j = res.json.bind(res); res.json = (b: any) => j(res.statusCode >= 400 && b && typeof b === "object" && b.error && !b.code ? { ...b, ...toUserError(String(b.error), res.statusCode) } : b); next(); });
@@ -70,7 +73,10 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
     const w = (req.baseUrl === "/mcp" ? tokMcp : tokRest).hit(role);
     return w ? deny(res, w) : next();
   });
-  const geo = (req: express.Request) => (req.headers["cf-ipcountry"] as string | undefined) ?? undefined;
+  // R7-6: CF-IPCountry is a client-settable header; it's only meaningful when a trusted edge (TRUSTED_PROXY) sets it.
+  // Without one it's ignored (the self-declared country + the onchain attestation still apply).
+  const geoHeader = (process.env.GEO_HEADER ?? "cf-ipcountry").toLowerCase();
+  const geo = (req: express.Request) => (proxyTrust != null ? ((req.headers[geoHeader] as string | undefined) ?? undefined) : undefined);
   const h = (fn: (req: express.Request) => unknown) => async (req: express.Request, res: express.Response) => {
     svc.countCall();
     try { res.json(await fn(req)); }

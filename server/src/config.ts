@@ -32,6 +32,21 @@ export const setLocalNode = (anvil: boolean, client: string) => { anvilVerified 
 export const isLocalChain = () => IS_LOCAL && anvilVerified === true;
 export const localNodeInfo = () => ({ hostnameLocal: IS_LOCAL, anvilVerified, client: nodeClient });
 export const PORT = Number(process.env.PORT ?? 8787);
+/** R7-6: bind loopback by default (venue Wi-Fi can't reach the API/MCP). HOST overrides it, with a loud warning when
+ * it isn't loopback. */
+export const isLoopbackHost = (h: string) => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(h.trim().toLowerCase()) || /^127\.\d+\.\d+\.\d+$/.test(h.trim());
+export function listenHost(env = process.env): { host: string; warning: string | null } {
+  const host = (env.HOST ?? "").trim() || "127.0.0.1";
+  return { host, warning: isLoopbackHost(host) ? null : `HOST=${host} is not loopback: the API, MCP and owner dashboard are reachable from the network (bearer tokens only). Use this only behind a reverse proxy / access control.` };
+}
+/** R7-6: client-supplied headers (CF-IPCountry geo, X-Forwarded-For) are only trusted when TRUSTED_PROXY is set:
+ * "1"/"true" = a proxy on loopback (e.g. cloudflared), otherwise an Express "trust proxy" value (IPs / CIDRs / hop count). */
+export function trustedProxy(env = process.env): string | number | null {
+  const v = (env.TRUSTED_PROXY ?? "").trim();
+  if (!v || v === "0" || v.toLowerCase() === "false") return null;
+  if (v === "1" || v.toLowerCase() === "true") return "loopback";
+  return /^\d+$/.test(v) ? Number(v) : v;
+}
 export const DATA_DIR = process.env.DATA_DIR ?? path.join(ROOT, "data");
 export const DEPLOYMENTS_FILE = process.env.DEPLOYMENTS_FILE ?? path.join(DATA_DIR, IS_LOCAL ? "local-46630.json" : "testnet-46630.json");
 // Block explorer (Blockscout). Testnet 46630: explorer.testnet.chain.robinhood.com. Local anvil: none (hash shown as text).

@@ -16,6 +16,7 @@ process.env.RATE_LIMIT_REST_PER_MIN = process.env.RATE_LIMIT_IP_PER_MIN = "10000
 process.env.MARKET_MODE = "open";
 process.env.WEBAUTHN_ORIGINS = `http://localhost:${PORT_API}`;
 process.env.LOG_LEVEL ??= "silent";
+process.env.TRUSTED_PROXY = "1"; // R7-6: the main test app plays "behind a trusted edge" (geo header honoured); the R7-6 step checks the default
 process.env.BREAKER = "off"; // legacy steps test the onchain caps directly; the breaker steps turn it on
 const OWNER = (process.env.OWNER_API_TOKEN = "owner-e2e-token"), MCPT = (process.env.MCP_API_TOKEN = "mcp-e2e-token");
 const ANVIL = process.env.ANVIL_BIN ?? (fs.existsSync(`${os.homedir()}/.foundry/bin/anvil`) ? `${os.homedir()}/.foundry/bin/anvil` : "anvil");
@@ -984,6 +985,42 @@ try {
     assert.equal(Number(await read(d.oracle, C.oracle.abi, "sessionCloseAt")), Math.floor(Date.parse("2026-11-02T21:00:00Z") / 1000));
     assert.equal(await read(d.oracle, C.oracle.abi, "isMarketOpen"), true);
     process.env.MARKET_MODE = "open";
+  });
+
+  await step("R7-6: server binds 127.0.0.1 by default (not reachable on a LAN address), HOST override warns when non-loopback; CF-IPCountry and X-Forwarded-For are ignored unless TRUSTED_PROXY is set", async () => {
+    // (a) listen address policy
+    assert.deepEqual(cfg.listenHost({} as any), { host: "127.0.0.1", warning: null });
+    assert.equal(cfg.listenHost({ HOST: "127.0.0.1" } as any).warning, null); assert.equal(cfg.listenHost({ HOST: "::1" } as any).warning, null);
+    assert.match(String(cfg.listenHost({ HOST: "0.0.0.0" } as any).warning), /not loopback/); assert.match(String(cfg.listenHost({ HOST: "192.168.1.20" } as any).warning), /not loopback/);
+    assert.equal(cfg.trustedProxy({} as any), null); assert.equal(cfg.trustedProxy({ TRUSTED_PROXY: "1" } as any), "loopback"); assert.equal(cfg.trustedProxy({ TRUSTED_PROXY: "10.0.0.0/8" } as any), "10.0.0.0/8");
+    // (b) the real server process (src/index.ts) on its default host: 127.0.0.1 answers, the box's LAN address doesn't
+    const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+    const dd = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-host-")); fs.copyFileSync(path.join(process.env.DATA_DIR!, "local-46630.json"), path.join(dd, "local-46630.json"));
+    const net = await import("node:net");
+    const PB = await new Promise<number>((res) => { const t = net.createServer().listen(0, "127.0.0.1", () => { const p = (t.address() as any).port; t.close(() => res(p)); }); });
+    // node --import tsx (no npx wrapper) in its own process group, so the kill really stops the server
+    const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, PORT: String(PB), DATA_DIR: dd, HOST: undefined, TRUSTED_PROXY: undefined, KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, LOG_LEVEL: "info" } as any, stdio: ["ignore", "pipe", "pipe"] });
+    const killChild = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch {} }; process.on("exit", killChild);
+    let out = ""; child.stdout!.on("data", (b) => (out += b)); child.stderr!.on("data", (b) => (out += b));
+    try {
+      let ok = false; for (let i = 0; i < 100 && !ok; i++) { try { ok = [200, 503].includes((await fetch(`http://127.0.0.1:${PB}/healthz`)).status); } catch {} /* 503 = stale feeds after the e2e time warps: still "up" */ if (!ok) await new Promise((r) => setTimeout(r, 200)); }
+      assert.ok(ok, `server did not come up on 127.0.0.1:${PB}\n${out.slice(-1500)}`);
+      assert.match(out, /"host":"127\.0\.0\.1"/); assert.match(out, /geo header ignored/);
+      if (lan) await assert.rejects(fetch(`http://${lan}:${PB}/healthz`, { signal: AbortSignal.timeout(3000) }), `must not be reachable on ${lan}`);
+    } finally { killChild(); }
+    // (c) geo header + client IP: ignored without TRUSTED_PROXY, honoured with it
+    const mk = async (trusted: boolean) => { const prev = process.env.TRUSTED_PROXY; if (trusted) process.env.TRUSTED_PROXY = "1"; else delete process.env.TRUSTED_PROXY;
+      try { const srv = buildApp({ ipPerMin: 2 }).listen(0, "127.0.0.1"); await new Promise((r) => srv.once("listening", r)); return srv; } finally { if (prev === undefined) delete process.env.TRUSTED_PROXY; else process.env.TRUSTED_PROXY = prev; } };
+    const get = (srv: any, hdr: Record<string, string>) => fetch(`http://127.0.0.1:${srv.address().port}/api/get_price?symbol=AMD`, { headers: { authorization: `Bearer ${OWNER}`, ...hdr } }).then((r) => r.status);
+    const plain = await mk(false), trusted = await mk(true);
+    try {
+      assert.equal(await get(plain, { "cf-ipcountry": "US" }), 200, "spoofed geo header ignored without a trusted proxy");
+      assert.equal(await get(trusted, { "cf-ipcountry": "US" }), 451, "behind a trusted proxy the edge's geo header blocks");
+      // X-Forwarded-For can't mint fresh per-IP buckets on the plain app (limit 2/min)
+      assert.equal(await get(plain, { "x-forwarded-for": "203.0.113.8" }), 200);
+      assert.equal(await get(plain, { "x-forwarded-for": "203.0.113.9" }), 429, "same socket IP => same bucket");
+      assert.equal(await get(trusted, { "x-forwarded-for": "203.0.113.10" }), 200); assert.equal(await get(trusted, { "x-forwarded-for": "203.0.113.11" }), 200);
+    } finally { plain.close(); trusted.close(); }
   });
 
   await step("healthz is red (503, CHAIN_UNREACHABLE) when anvil is down", async () => {
