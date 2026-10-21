@@ -20,15 +20,18 @@ export async function assertChain() {
   // otherwise unlock anvil keys, ALLOW_OPEN_LOCAL, BREAKER=off, dev/reset and fault injection).
   if (IS_LOCAL) {
     const n = await detectAnvil(); setLocalNode(n.anvil, n.client);
+    if (n.anvil && !reverify) { reverify = setInterval(() => { void detectAnvil().then((x) => { if (!x.reachable) return; /* RPC down: keep the last verdict (the chain is unusable anyway) */ if (!x.anvil) log.error("ALERT", { code: "LOCAL_NODE_NOT_ANVIL", severity: "critical", message: `node behind ${RPC_URL} no longer answers as anvil (${x.client}): local-only switches are off` }); setLocalNode(x.anvil, x.client); }).catch(() => {}); }, Number(process.env.ANVIL_RECHECK_MS ?? 30_000)); reverify.unref(); }
     if (!n.anvil) throw new Error(`REFUSING: RPC_URL ${RPC_URL} is a localhost address but the node is not anvil (web3_clientVersion "${n.client}", anvil_nodeInfo ${n.nodeInfo ? "ok" : "missing"}). Local-only switches need a real anvil; for Robinhood Chain testnet use the remote https RPC_URL.`);
   } else setLocalNode(false, "");
 }
+let reverify: NodeJS.Timeout | undefined; // R7-3: periodic re-check keeps isLocalChain() honest if the node behind a localhost URL changes
 /** R7-3: is the node behind RPC_URL really anvil? Both web3_clientVersion ~ /anvil/ and anvil_nodeInfo must answer. */
 export async function detectAnvil() {
-  const client = String(await pub.request({ method: "web3_clientVersion" } as any).catch(() => ""));
+  let reachable = true;
+  const client = String(await pub.request({ method: "web3_clientVersion" } as any).catch(() => { reachable = false; return ""; }));
   let nodeInfo = false;
   try { const ni: any = await pub.request({ method: "anvil_nodeInfo" } as any); nodeInfo = !!ni && typeof ni === "object" && "environment" in ni; } catch { /* not anvil */ }
-  return { anvil: /anvil/i.test(client) && nodeInfo, client, nodeInfo };
+  return { anvil: /anvil/i.test(client) && nodeInfo, client, nodeInfo, reachable };
 }
 /** R7-3: live check for local-only routes (dev/reset, seed): hostname local AND the node answers as anvil right now. */
 export async function requireLocalAnvil(what: string) {

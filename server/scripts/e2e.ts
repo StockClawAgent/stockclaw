@@ -995,6 +995,12 @@ try {
         await fetch("http://127.0.0.1:${PP}/__set?v=" + encodeURIComponent("Geth/v1.14")); let after; try { await s.dev_reset(); after = "reset ran"; } catch (e) { after = [e.status, e.message]; }
         out({ bootErr, before, after, local: cfg.isLocalChain() });`));
       assert.equal(live.bootErr, null, JSON.stringify(live)); assert.equal(live.before, true); assert.equal(live.after[0], 403, JSON.stringify(live)); assert.equal(live.local, false);
+      // 7. periodic re-check (no request needed): the cached verdict flips within ANVIL_RECHECK_MS, so BREAKER=off stops applying at run time too
+      await setFake("");
+      const per = JSON.parse(run(`${boot} const cfg = await import(${P("config.ts")}); const before = cfg.isLocalChain();
+        await fetch("http://127.0.0.1:${PP}/__set?v=" + encodeURIComponent("nitro/v3")); await new Promise((r) => setTimeout(r, 900));
+        out({ bootErr, before, after: cfg.isLocalChain() }); process.exit(0);`, { ANVIL_RECHECK_MS: "200" }));
+      assert.deepEqual(per, { bootErr: null, before: true, after: false });
       // positive control: the real anvil passes
       assert.match(run(`${boot} const s = await import(${P("service.ts")}); out({ bootErr, local: (await import(${P("config.ts")})).isLocalChain() });`, { RPC_URL: process.env.RPC_URL }), /"bootErr":null,"local":true/);
     } finally { proxy.kill(); }

@@ -9,7 +9,8 @@ import * as cfg from "./config.js";
 import { getDb } from "./db.js";
 import { log } from "./log.js";
 
-const enabled = () => process.env.BREAKER !== "off";
+// R7-3: BREAKER=off only takes effect on a verified local anvil (re-checked at run time, not just at startup)
+const enabled = () => !(process.env.BREAKER === "off" && cfg.isLocalChain());
 const MAX_TRADES_10M = 5, PCT = 0.8, SELL_CAP = 500;
 type State = { tripped: boolean; trippedAt: number | null; resumedAt: number | null; reason: string | null };
 export function state(keyId: string): State {
