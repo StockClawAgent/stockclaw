@@ -210,7 +210,11 @@ function pollExecution(get, id, onEvent) {
       else { for (const l of ex.legs) { const o = prev.legs.find((x) => x.legId === l.legId); if (!o || o.status !== l.status) onEvent({ type: `leg_${l.status}`, executionId: id, at: now, legId: l.legId, ticker: l.ticker, targetUsd: l.targetUsd, filledUsd: l.filledUsd, ...(l.txHash ? { txHash: l.txHash } : {}), ...(l.error ? { error: l.error } : {}) }); }
         if (prev.status !== ex.status) onEvent({ type: "execution_status", executionId: id, at: now, status: ex.status, legsFilled: ex.legs.filter((l) => l.status === "filled").length, legsTotal: ex.legs.length }); }
       prev = ex; if (TERMINAL.includes(ex.status)) { closed = true; return; }
-    } catch (e) { /* keep polling */ }
+    } catch (e) {
+      // Unknown execution (e.g. cached from an old chain): stop instead of polling forever.
+      if (e && (e.status === 404 || e.code === "NOT_FOUND")) { closed = true; onEvent({ type: "execution_status", executionId: id, at: new Date().toISOString(), status: "not_found" }); return; }
+      /* otherwise keep polling */
+    }
     if (!closed) setTimeout(tick, 2000);
   };
   tick();
