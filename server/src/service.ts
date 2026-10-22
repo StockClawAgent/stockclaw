@@ -352,13 +352,15 @@ function claimSwap(id: string, fp: string, quoteId: string | null, keyId: string
   });
 }
 const PENDING_COPY = { code: "TX_PENDING", message: "Your trade was sent and is still waiting for network confirmation.", retryable: false, hint: "Don't retry it: it is still pending and will update here when it confirms. Repeating the same trade won't send it twice." };
+/** What the UI shows for a swap (pending card, settle event, GET /api/swaps): the stock, buy/sell and the USD size. */
+const swapMeta = (r: SwapRow) => { const d = swapData(r); return { swapId: r.id, symbol: d.side === "buy" ? d.tokenOut : d.tokenIn, side: d.side, amountUsd: +d.estUsd.toFixed(2) }; };
 function swapResult(r: SwapRow, duplicate = false) {
   const d = swapData(r);
-  if (r.status === "filled") return { ...txOut(r.tx_hash!), amountOut: d.amountOut ?? null, swapId: r.id, ...(duplicate ? { duplicate: true, note: "Same trade as an earlier request: already confirmed, not sent again." } : {}) };
-  if (INFLIGHT.includes(r.status)) return { status: "pending" as const, txHash: r.tx_hash, explorerUrl: r.tx_hash ? cfg.explorerTx(r.tx_hash) : null, swapId: r.id, ...PENDING_COPY, ...(duplicate ? { duplicate: true } : {}) };
+  if (r.status === "filled") return { ...txOut(r.tx_hash!), amountOut: d.amountOut ?? null, ...swapMeta(r), ...(duplicate ? { duplicate: true, note: "Same trade as an earlier request: already confirmed, not sent again." } : {}) };
+  if (INFLIGHT.includes(r.status)) return { status: "pending" as const, txHash: r.tx_hash, explorerUrl: r.tx_hash ? cfg.explorerTx(r.tx_hash) : null, ...swapMeta(r), ...PENDING_COPY, ...(duplicate ? { duplicate: true } : {}) };
   throw new ApiError(409, `This trade already finished (${r.status}${d.error ? `: ${d.error}` : ""}); nothing was sent again. Get a fresh quote to trade again.`);
 }
-type SwapSettled = (jobIds: number[], o: { result: unknown } | { error: string; status: number }) => void;
+type SwapSettled = (jobIds: number[], o: { result: unknown } | { error: string; status: number; extra?: unknown }) => void;
 let swapSettledHook: SwapSettled | undefined;
 export const setSwapSettledHook = (f: SwapSettled) => { swapSettledHook = f; };
 function onSwapSubmitted(id: string, h: string, how: "send" | "speedup" | "resend" = "send") {
@@ -392,7 +394,7 @@ function failSwap(id: string, hash: string | null, reason: string): never {
   const r = swapGet(id)!, d = swapData(r);
   if (prior && prior !== "preparing") {
     pushHistory({ txHash: hash, type: "swap", in: d.inStr, out: "—", fee: "—", ts: d.ts, status: "blocked", reason, side: d.side });
-    if (prior === "pending" || prior === "abandoned") swapSettledHook?.(d.jobIds, { error: `Blocked: ${reason}`, status: 403 });
+    if (prior === "pending" || prior === "abandoned") swapSettledHook?.(d.jobIds, { error: `Blocked: ${reason}`, status: 403, extra: { ...swapMeta(r), txHash: hash ?? r.tx_hash, explorerUrl: (hash ?? r.tx_hash) ? cfg.explorerTx((hash ?? r.tx_hash)!) : null } });
   }
   throw new ApiError(403, `Blocked: ${reason}`);
 }
@@ -459,6 +461,12 @@ export function onSwapJobTimeout(jobId: number) {
   if (r.status === "preparing" && !r.tx_hash) { swapPut(r.id, { status: "abandoned" }); return undefined; } // beforeSend refuses from now on
   swapPut(r.id, { status: "pending" }); void watchSwap(r.id);
   return swapResult(swapGet(r.id)!);
+}
+/** GET /api/swaps?status=pending: swaps sent but not confirmed yet, so a page load can show them (newest first). */
+export function list_swaps(status = "pending") {
+  if (status !== "pending") throw new ApiError(400, 'status must be "pending"');
+  const rows = getDb().prepare("SELECT * FROM swaps WHERE tx_hash IS NOT NULL AND status IN ('preparing','submitted','pending','abandoned') ORDER BY created_at DESC LIMIT 100").all() as SwapRow[];
+  return { swaps: rows.map((r) => { const d = swapData(r); return { ...swapMeta(r), jobId: d.jobIds[0] ?? null, jobIds: d.jobIds, txHash: r.tx_hash, explorerUrl: cfg.explorerTx(r.tx_hash!), createdAt: new Date(r.created_at).toISOString(), status: "pending" as const }; }) };
 }
 export const _swap = (id: string) => { const r = swapGet(id); return r ? { ...r, data: swapData(r) } : undefined; };
 

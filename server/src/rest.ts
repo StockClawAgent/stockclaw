@@ -164,6 +164,7 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.post("/approvals/:id/approve", ownerOnly, h((q) => apr.approve(String(q.params.id), q.body?.webauthnAssertion, idem(q))));
   r.post("/approvals/:id/reject", ownerOnly, h((q) => apr.reject(String(q.params.id))));
   // activity feed (owner): polling + SSE; anomaly breaker
+  r.get("/swaps", ownerOnly, h((q) => svc.list_swaps(q.query.status ? String(q.query.status) : "pending")));
   r.get("/activity", ownerOnly, h((q) => act.list(q.query.since ? Number(q.query.since) : undefined, q.query.limit ? Number(q.query.limit) : undefined)));
   r.get("/activity/stream", ownerOnly, (req, res) => {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", "x-accel-buffering": "no" });

@@ -886,6 +886,84 @@ try {
     }
   });
 
+  // ---- pending-swap UI support (Flavius 224d6c4): list open swaps, symbol/side/amountUsd, swapId on activity, leg confirming
+  const sseOpen = async () => {
+    const ac = new AbortController(); const res = await fetch(`${API}/activity/stream`, { headers: { "x-owner-token": OWNER }, signal: ac.signal });
+    let buf = ""; void (async () => { const rd = res.body!.getReader(); try { for (;;) { const { value, done } = await rd.read(); if (done) break; buf += new TextDecoder().decode(value); } } catch { /* aborted */ } })();
+    const events = () => buf.split("\n\n").map((b) => { const ev = /^event: (.*)$/m.exec(b)?.[1], d = /^data: (.*)$/m.exec(b)?.[1]; return ev && d ? { event: ev, data: JSON.parse(d) } : null; }).filter(Boolean) as { event: string; data: any }[];
+    return { events, close: () => ac.abort() };
+  };
+  const ui: { swapId?: string; jobId?: number; txHash?: string; settled?: any; sse?: Awaited<ReturnType<typeof sseOpen>> } = {};
+  const SWAP_ENV = ["SETTLE_TIMEOUT_MS", "TRADE_JOB_TIMEOUT_MS", "PENDING_WAIT_MS", "SWAP_POLL_MS"];
+  const postSwap = async (b: Record<string, unknown>) => { const r = await fetch(`${API}/execute_swap`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${OWNER}` }, body: JSON.stringify(b) }); assert.equal(r.status, 202); return (await r.json()) as { jobId: number }; };
+  const jobDone = async (id: number) => { for (let i = 0; i < 200; i++) { const v = await (await fetch(`${API}/jobs/${id}`, { headers: { authorization: `Bearer ${OWNER}` } })).json(); if (!["queued", "running"].includes(v.status)) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error("job did not finish"); };
+
+  await step("pending swaps UI (1): GET /api/swaps?status=pending (owner auth, same as activity) lists a swap that is already pending on page load: {swapId, jobId, txHash, explorerUrl, symbol, side, amountUsd, createdAt, status}; empty once it confirms", async () => {
+    await freshUser();
+    const { pub: P } = await import("../src/chain.js");
+    Object.assign(process.env, { SETTLE_TIMEOUT_MS: "1500", TRADE_JOB_TIMEOUT_MS: "500", PENDING_WAIT_MS: "600000", SWAP_POLL_MS: "100" });
+    assert.equal((await callH("GET", "swaps", { status: "pending" })).body.swaps.length, 0, "nothing open yet");
+    assert.equal((await callH("GET", "swaps", { status: "pending" }, MCPT)).status, 403, "agent token: owner only");
+    assert.equal((await fetch(`${API}/swaps?status=pending`)).status, 401, "no token");
+    assert.equal((await callH("GET", "swaps", { status: "filled" })).status, 400, "only status=pending");
+    ui.sse = await sseOpen();
+    await P.request({ method: "evm_setAutomine", params: [false] } as any);
+    const j = await postSwap({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 40 });
+    const v = await jobDone(j.jobId); assert.equal(v.result.status, "pending", JSON.stringify(v));
+    Object.assign(ui, { swapId: v.result.swapId, jobId: j.jobId, txHash: v.result.txHash });
+    const lb = (await callH("GET", "swaps", { status: "pending" })).body; assert.deepEqual(Object.keys(lb), ["swaps"]); const list = lb.swaps; assert.equal(list.length, 1, JSON.stringify(lb));
+    const s = list[0];
+    assert.deepEqual(Object.keys(s).sort(), ["amountUsd", "createdAt", "explorerUrl", "jobId", "jobIds", "side", "status", "swapId", "symbol", "txHash"]);
+    assert.equal(s.swapId, ui.swapId); assert.equal(s.jobId, j.jobId); assert.deepEqual(s.jobIds, [j.jobId]); assert.equal(s.txHash, ui.txHash); assert.equal(s.explorerUrl, v.result.explorerUrl, "same explorerUrl as the pending result (null without an EXPLORER)");
+    assert.equal(s.symbol, "TSLA"); assert.equal(s.side, "buy"); assert.equal(typeof s.amountUsd, "number"); assert.ok(Math.abs(s.amountUsd - 40) < 0.01, String(s.amountUsd)); assert.equal(s.status, "pending"); assert.ok(!isNaN(Date.parse(s.createdAt)));
+    assert.equal((await callH("GET", "swaps")).body.swaps.length, 1, "status defaults to pending");
+    // confirm it: the list empties
+    await P.request({ method: "evm_mine", params: [] } as any); await P.request({ method: "evm_setAutomine", params: [true] } as any);
+    ui.settled = await (await fetch(`${API}/jobs/${j.jobId}?wait=20000`, { headers: { authorization: `Bearer ${OWNER}` } })).json();
+    assert.equal(ui.settled.result.status, "confirmed", JSON.stringify(ui.settled));
+    assert.equal((await callH("GET", "swaps", { status: "pending" })).body.swaps.length, 0, "confirmed swaps are not listed");
+  });
+
+  await step("pending swaps UI (2): symbol/side/amountUsd on the execute_swap pending result, on its confirmed settle (job view + SSE job event) and on its failed settle (dropped tx whose nonce was used: error carries swapId/symbol/side/amountUsd/txHash)", async () => {
+    const { pub: P } = await import("../src/chain.js");
+    assert.ok(ui.sse && ui.swapId, "needs step (1)");
+    try {
+      // confirmed settle (from step 1): job view + the SSE job events (pending, then confirmed)
+      const r = ui.settled.result; assert.equal(r.swapId, ui.swapId); assert.equal(r.symbol, "TSLA"); assert.equal(r.side, "buy"); assert.ok(Math.abs(r.amountUsd - 40) < 0.01);
+      let jev: any[] = []; for (let i = 0; i < 50; i++) { jev = ui.sse.events().filter((e) => e.event === "job" && e.data.jobId === ui.jobId && e.data.status === "done"); if (jev.length >= 2) break; await new Promise((res) => setTimeout(res, 100)); }
+      const pend = jev.find((e) => e.data.result?.status === "pending")?.data.result, conf = jev.find((e) => e.data.result?.status === "confirmed")?.data.result;
+      assert.ok(pend && conf, JSON.stringify(jev.map((e) => e.data.result?.status)));
+      for (const x of [pend, conf]) { assert.equal(x.swapId, ui.swapId); assert.equal(x.symbol, "TSLA"); assert.equal(x.side, "buy"); assert.ok(Math.abs(x.amountUsd - 40) < 0.01); }
+      assert.equal(pend.code, "TX_PENDING"); assert.equal(pend.txHash, ui.txHash);
+      // failed settle: the pending tx is dropped and its nonce is used by another tx => can never mine => job flips to failed
+      await freshUser();
+      Object.assign(process.env, { PENDING_WAIT_MS: "4000" });
+      const agentAddr = svc._agentWallet().address as `0x${string}`;
+      const n0 = await P.getTransactionCount({ address: agentAddr, blockTag: "latest" });
+      await P.request({ method: "evm_setAutomine", params: [false] } as any);
+      const j = await postSwap({ tokenIn: "mUSDG", tokenOut: "AMD", amountIn: 25 });
+      const v = await jobDone(j.jobId); const p = v.result; assert.equal(p.status, "pending", JSON.stringify(v));
+      assert.equal(p.symbol, "AMD"); assert.equal(p.side, "buy"); assert.ok(Math.abs(p.amountUsd - 25) < 0.01);
+      await P.request({ method: "anvil_dropTransaction", params: [p.txHash] } as any);
+      await P.request({ method: "anvil_impersonateAccount", params: [agentAddr] } as any);
+      await P.request({ method: "eth_sendTransaction", params: [{ from: agentAddr, to: agentAddr, value: "0x0", nonce: `0x${n0.toString(16)}` }] } as any);
+      await P.request({ method: "evm_mine", params: [] } as any);
+      await P.request({ method: "anvil_stopImpersonatingAccount", params: [agentAddr] } as any);
+      const f = await (await fetch(`${API}/jobs/${j.jobId}?wait=20000`, { headers: { authorization: `Bearer ${OWNER}` } })).json();
+      assert.equal(f.status, "failed", JSON.stringify(f));
+      const e = f.error; assert.ok(e.code && e.message && typeof e.retryable === "boolean" && e.error, "error shape kept");
+      assert.equal(e.swapId, p.swapId); assert.equal(e.symbol, "AMD"); assert.equal(e.side, "buy"); assert.ok(Math.abs(e.amountUsd - 25) < 0.01); assert.equal(e.txHash, p.txHash); assert.match(e.error, /nonce was used/);
+      let fev: any; for (let i = 0; i < 50 && !fev; i++) { fev = ui.sse.events().find((x) => x.event === "job" && x.data.jobId === j.jobId && x.data.status === "failed"); if (!fev) await new Promise((res) => setTimeout(res, 100)); }
+      assert.ok(fev, "SSE job event for the failed settle"); assert.equal(fev.data.error.swapId, p.swapId); assert.equal(fev.data.error.symbol, "AMD"); assert.equal(fev.data.error.side, "buy");
+      assert.equal(svc._swap(p.swapId)!.status, "failed");
+      assert.equal((await callH("GET", "swaps", { status: "pending" })).body.swaps.length, 0);
+    } finally {
+      await P.request({ method: "evm_setAutomine", params: [true] } as any).catch(() => {});
+      for (const k of SWAP_ENV) delete process.env[k];
+      ui.sse.close();
+    }
+  });
+
   await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
     await freshUser();
     assert.equal((await call("POST", "create_session_key", { allowlist: ["AMD", "TSLA"], label: "E2E seller", name: "Research bot" })).status, 200);
