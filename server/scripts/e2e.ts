@@ -64,6 +64,8 @@ try {
   const { C, read, wallet, revertReason } = await import("../src/chain.js");
   const svc = await import("../src/service.js");
   const cfg = await import("../src/config.js");
+
+  const attesterLocal = { ok: false, out: "" }; // filled by the R7-6 step's real server on the verified anvil
   const server = buildApp().listen(PORT_API);
   const jobs = await import("../src/jobs.js");
   const bk = await import("../src/baskets.js");
@@ -1254,6 +1256,7 @@ try {
       let ok = false; for (let i = 0; i < 100 && !ok; i++) { try { ok = [200, 503].includes((await fetch(`http://127.0.0.1:${PB}/healthz`)).status); } catch {} /* 503 = stale feeds after the e2e time warps: still "up" */ if (!ok) await new Promise((r) => setTimeout(r, 200)); }
       assert.ok(ok, `server did not come up on 127.0.0.1:${PB}\n${out.slice(-1500)}`);
       assert.match(out, /"host":"127\.0\.0\.1"/); assert.match(out, /geo header ignored/);
+      Object.assign(attesterLocal, { ok: true, out });
       if (lan) await assert.rejects(fetch(`http://${lan}:${PB}/healthz`, { signal: AbortSignal.timeout(3000) }), `must not be reachable on ${lan}`);
     } finally { killChild(); }
     // (c) geo header + client IP: ignored without TRUSTED_PROXY, honoured with it
@@ -1269,6 +1272,52 @@ try {
       assert.equal(await get(plain, { "x-forwarded-for": "203.0.113.9" }), 429, "same socket IP => same bucket");
       assert.equal(await get(trusted, { "x-forwarded-for": "203.0.113.10" }), 200); assert.equal(await get(trusted, { "x-forwarded-for": "203.0.113.11" }), 200);
     } finally { plain.close(); trusted.close(); }
+  });
+
+  await step("L3 attester separation: off a verified anvil the server (and deploy) refuse to start when ATTESTER == deployer (config and onchain role); on a verified anvil it starts with the warning; testnet dry run refuses too", async () => {
+    const { privateKeyToAccount, generatePrivateKey } = await import("viem/accounts");
+    const k0 = cfg.keys.deployer(), k9 = generatePrivateKey(); // k9: a fresh key that is not the deployer
+    const a0 = privateKeyToAccount(k0).address;
+    // (a) the rule (sync, no await between the toggles so nothing else sees the unverified state)
+    const was = cfg.localNodeInfo(); let r: any[] = [];
+    cfg.setLocalNode(false, "nitro/test");
+    try {
+      for (const env of [{ DEPLOYER_KEY: k0, ATTESTER_KEY: k0 }, { DEPLOYER: a0, ATTESTER: a0.toLowerCase() }, { DEPLOYER_KEY: k0 }, {}]) { try { cfg.attesterSeparation(env as any); r.push("ok"); } catch (e) { r.push(String((e as Error).message)); } }
+      r.push(cfg.attesterSeparation({ DEPLOYER_KEY: k0, ATTESTER_KEY: k9 } as any).same);
+      try { cfg.attesterSeparation({ ATTESTER_KEY: k0 } as any, a0); r.push("ok"); } catch (e) { r.push(String((e as Error).message)); } // deployer from the deployments file
+    } finally { cfg.setLocalNode(was.anvilVerified === true, was.client); }
+    assert.match(r[0], /REFUSING: ATTESTER .* is the deployer/); assert.match(r[1], /is the deployer/); assert.match(r[2], /ATTESTER_KEY \(or ATTESTER\) must be set/); assert.match(r[3], /must be set/);
+    assert.equal(r[4], false); assert.match(r[5], /is the deployer/);
+    assert.ok(cfg.isLocalChain(), "verdict restored");
+    const loc = cfg.attesterSeparation({ DEPLOYER_KEY: k0, ATTESTER_KEY: k0 } as any); assert.equal(loc.same, true); assert.match(String(loc.warning), /Local anvil only/);
+    assert.equal(cfg.attesterSeparation({ DEPLOYER_KEY: k0, ATTESTER_KEY: k9 } as any).warning, null);
+    // (b) the real server process against a NON-local RPC URL (127.0.0.2 is not on the local list => never "verified anvil"),
+    // proxied to this e2e anvil: refuses at startup by config (same key), then by the onchain role (deployer holds ATTESTER_ROLE)
+    const net = await import("node:net");
+    const px = net.createServer((c) => { const u = net.connect(PORT_RPC, "127.0.0.1"); c.pipe(u).pipe(c); c.on("error", () => u.destroy()); u.on("error", () => c.destroy()); });
+    const PX = await new Promise<number>((res) => px.listen(0, "127.0.0.2", () => res((px.address() as any).port)));
+    const dd = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-l3-")); fs.copyFileSync(path.join(process.env.DATA_DIR!, "local-46630.json"), path.join(dd, "d.json"));
+    const boot = (extra: Record<string, string>) => new Promise<{ code: number | null; out: string }>((res) => {
+      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "d.json"), PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, ATTESTER_KEY: undefined, ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
+      let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b));
+      const t = setTimeout(() => { try { process.kill(-ch.pid!, "SIGKILL"); } catch {} }, 30_000);
+      ch.on("exit", (code) => { clearTimeout(t); res({ code, out }); });
+    });
+    try {
+      const b1 = await boot({ DEPLOYER_KEY: k0, ATTESTER_KEY: k0 });
+      assert.notEqual(b1.code, 0); assert.match(b1.out, /REFUSING: ATTESTER .* is the deployer/, b1.out.slice(-1500));
+      const b2 = await boot({ DEPLOYER_KEY: k0, ATTESTER_KEY: k9 });
+      assert.notEqual(b2.code, 0); assert.match(b2.out, /REFUSING TO START: the deployer .* holds ATTESTER_ROLE/, b2.out.slice(-1500));
+      assert.doesNotMatch(b1.out + b2.out, /StockClaw API \+ UI/, "never listened");
+      // deploy refuses off a verified anvil as well (before any forge/tx)
+      const dpl = await new Promise<{ code: number | null; out: string }>((res) => { const ch = spawn(process.execPath, ["--import", "tsx", "src/deploy.ts"], { env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "x.json"), DEPLOYER_KEY: k0, ATTESTER_KEY: k0 } as any, stdio: ["ignore", "pipe", "pipe"] }); let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b)); ch.on("exit", (code) => res({ code, out })); });
+      assert.notEqual(dpl.code, 0); assert.match(dpl.out, /REFUSING/); assert.ok(!fs.existsSync(path.join(dd, "x.json")), "nothing deployed");
+      assert.equal(attesterLocal.ok, true, "on the verified anvil the R7-6 server started"); assert.match(attesterLocal.out, /ATTESTER_IS_DEPLOYER/);
+    } finally { px.close(); }
+    // (c) testnet dry run refuses ATTESTER == deployer before touching any RPC
+    const { spawnSync } = await import("node:child_process");
+    const dr = spawnSync("bash", ["scripts/testnet-dryrun.sh"], { env: { ...process.env, TESTNET_RPC_URL: "http://127.0.0.1:9", DRYRUN_SENDER: a0, ATTESTER: a0.toLowerCase() }, encoding: "utf8" });
+    assert.notEqual(dr.status, 0); assert.match(dr.stdout + dr.stderr, /REFUSING: ATTESTER == deployer/);
   });
 
   await step("healthz is red (503, CHAIN_UNREACHABLE) when anvil is down", async () => {

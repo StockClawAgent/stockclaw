@@ -96,6 +96,7 @@ let D: Deployment | undefined;
 export const dep = () => (D ??= loadDeployment());
 const owner = () => wallet(cfg.keys.demoOwner());
 const deployer = () => wallet(cfg.keys.deployer());
+const attester = () => wallet(cfg.keys.attester()); // L3: ATTESTER_ROLE holder (== deployer only on a verified local anvil)
 const keeper = () => wallet(cfg.keys.keeper());
 const updater = () => wallet(cfg.keys.updater());
 const agentWallet = () => {
@@ -208,7 +209,7 @@ export async function submit_attestation(_sig?: string, geoCountry?: string) {
   // Demo: the simulated wallet signs (real app: user's wallet signs in the browser and we verify).
   const sig = await o.client.signTypedData({ domain: { name: "StockClaw Eligibility", version: "1", chainId: cfg.TESTNET_CHAIN_ID }, types: ATTEST_TYPES, primaryType: "Attestation", message });
   const expiry = Number(issuedAt) + 30 * 86400;
-  const { hash } = await deployer().write(dep().registry, C.registry.abi, "setEligible", [o.address, BigInt(expiry)]);
+  const { hash } = await attester().write(dep().registry, C.registry.abi, "setEligible", [o.address, BigInt(expiry)]);
   S.attestation = { sig, ts: new Date().toISOString(), expiresAt: new Date(expiry * 1000).toISOString(), signer: o.address, txHash: hash };
   if (S.vault) await owner().write(dep().registry, C.registry.abi, "linkAccount", [S.vault]);
   save();
@@ -658,6 +659,20 @@ export function countCall() { get_usage(); S.usage.calls++; save(); }
 export const _state = () => S;
 export const _trade = () => tradeHooks;
 /** Startup (Gaius R6): fail closed if the anomaly breaker isn't registered. BREAKER=off only on a local chain with ALLOW_OPEN_LOCAL=1. */
+/** Startup (L3): off a verified anvil, refuse if ATTESTER is the deployer, by config (keys/addresses) and onchain (the
+ * deployer must hold no ATTESTER_ROLE / registry admin). On a verified anvil: today's behavior + a logged warning. */
+export async function assertAttesterSeparation(env = process.env) {
+  const deployedBy = (() => { try { return dep().deployer; } catch { return undefined; } })();
+  const sep = cfg.attesterSeparation(env, deployedBy); // throws off-anvil when attester == deployer
+  if (!cfg.isLocalChain() && deployedBy) {
+    const reg = dep().registry;
+    const [att, admin] = await Promise.all([read<Hex>(reg, C.registry.abi, "ATTESTER_ROLE"), read<Hex>(reg, C.registry.abi, "DEFAULT_ADMIN_ROLE")]);
+    if (await read<boolean>(reg, C.registry.abi, "hasRole", [att, deployedBy])) throw new Error(`REFUSING TO START: the deployer ${deployedBy} holds ATTESTER_ROLE on the registry ${reg}. Off a verified local anvil the attester must be a separate key (L3): redeploy with ATTESTER set to it.`);
+    if (await read<boolean>(reg, C.registry.abi, "hasRole", [admin, deployedBy])) throw new Error(`REFUSING TO START: the deployer ${deployedBy} still holds DEFAULT_ADMIN_ROLE on the registry ${reg} (L3 handoff not done)`);
+  }
+  if (sep.warning) log.warn("ATTESTER", { code: "ATTESTER_IS_DEPLOYER", message: sep.warning });
+  return sep;
+}
 export function assertGuardrails(env = process.env) {
   if (env.BREAKER === "off") {
     if (!(cfg.isLocalChain() && env.ALLOW_OPEN_LOCAL === "1")) throw new Error(`REFUSING TO START: BREAKER=off is only allowed on a local chain with ALLOW_OPEN_LOCAL=1 (test mode); the node must be a verified anvil (R7-3: ${JSON.stringify(cfg.localNodeInfo())})`);

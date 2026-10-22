@@ -88,7 +88,7 @@ export const BLOCKED_REGIONS: Record<string, string> = {
 };
 
 // Anvil default accounts (public test keys derived from the default mnemonic; local chain ONLY).
-import { mnemonicToAccount } from "viem/accounts";
+import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
 import { bytesToHex } from "viem";
 const ANVIL_MNEMONIC = "test test test test test test test test test test test junk"; // public anvil default
 const ANVIL_KEYS = Array.from({ length: 10 }, (_, i) => bytesToHex(mnemonicToAccount(ANVIL_MNEMONIC, { addressIndex: i }).getHdKey().privateKey!));
@@ -104,12 +104,29 @@ let userEpoch = 0;
 export function setUserEpoch(e: number) { userEpoch = e; }
 const hd = (i: number) => bytesToHex(mnemonicToAccount(ANVIL_MNEMONIC, { addressIndex: i }).getHdKey().privateKey!) as Hex;
 export const keys = {
-  deployer: () => key("DEPLOYER_KEY", 0),   // admin + attester + mock-token issuer
+  deployer: () => key("DEPLOYER_KEY", 0),   // deploys + seeds; mock-token issuer (local). Holds no roles after the Safe accepts (L3)
+  attester: () => key("ATTESTER_KEY", 0),   // eligibility attestations (ATTESTER_ROLE). Must differ from the deployer off a verified anvil
   keeper: () => key("KEEPER_KEY", 1),       // router + oracle keeper (executes intents, market schedule)
   updater: () => key("FEED_UPDATER_KEY", 4),// oracle feed updater (separate from keeper, review S-4)
   treasury: () => key("TREASURY_KEY", 2),   // fee treasury (testnet: 2/3 Safe address instead)
   demoOwner: () => (IS_LOCAL && userEpoch && !process.env.DEMO_OWNER_KEY ? hd(100 * userEpoch) : key("DEMO_OWNER_KEY", 3)),// stands in for the user's wallet (no wallet connect yet)
   agentPool: (): Hex[] => (process.env.AGENT_KEYS ? (process.env.AGENT_KEYS.split(",") as Hex[]) : IS_LOCAL ? (userEpoch ? Array.from({ length: 20 }, (_, i) => hd(100 * userEpoch + 1 + i)) : ([...ANVIL_KEYS.slice(5)] as Hex[])) : []),
 };
+/** Attester separation (L3): off a verified anvil (R7-3 check), the ATTESTER must not be the deployer; refuse to start/deploy.
+ * On a verified anvil both default to anvil key 0 (today's behavior) and this returns a warning to log. `deployedBy` is the
+ * deployer address from the deployments file when the server has no DEPLOYER_KEY (the onchain role check covers the rest). */
+export function attesterSeparation(env: NodeJS.ProcessEnv = process.env, deployedBy?: string) {
+  const local = isLocalChain();
+  const addrOf = (k?: string) => (k ? privateKeyToAccount(k as Hex).address : undefined);
+  const attester = addrOf(env.ATTESTER_KEY) ?? env.ATTESTER ?? (local ? addrOf(ANVIL_KEYS[0]) : undefined);
+  const deployer = addrOf(env.DEPLOYER_KEY) ?? env.DEPLOYER ?? deployedBy ?? (local ? addrOf(ANVIL_KEYS[0]) : undefined);
+  const same = !!attester && !!deployer && attester.toLowerCase() === deployer.toLowerCase();
+  if (!local) {
+    if (!attester) throw new Error("REFUSING: ATTESTER_KEY (or ATTESTER) must be set to a key separate from the deployer when RPC_URL is not a verified local anvil (L3)");
+    if (same) throw new Error(`REFUSING: ATTESTER ${attester} is the deployer. Off a verified local anvil the attester must be a separate key (L3: the deployer must end with no roles). Node: ${JSON.stringify(localNodeInfo())}`);
+    return { attester, deployer: deployer ?? null, same: false, warning: null as string | null };
+  }
+  return { attester, deployer: deployer ?? null, same, warning: same ? `ATTESTER is the deployer (${attester}): it keeps ATTESTER_ROLE. Local anvil only; testnet uses a separate ATTESTER key.` : null };
+}
 /** Country name -> code for the prototype's country picker (it sends names). */
 export const COUNTRY_NAMES: Record<string, string> = Object.fromEntries(Object.entries(BLOCKED_REGIONS).map(([k, v]) => [v.toUpperCase(), k]));

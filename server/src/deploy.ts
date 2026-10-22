@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { parseUnits, type Address } from "viem";
 import { C, wallet, assertChain, read, pub, type Deployment } from "./chain.js";
-import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT } from "./config.js";
+import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT, attesterSeparation } from "./config.js";
 
 export const BASE_PRICES: Record<string, number> = { TSLA: 250, AMZN: 190, PLTR: 40, NFLX: 700, AMD: 150 };
 const POOL_USD = 250_000; // per side
@@ -17,12 +17,15 @@ export async function deployAndSeed(): Promise<Deployment> {
   if (!IS_LOCAL) throw new Error(`REFUSING to deploy to ${RPC_URL}: this flow is local-anvil only. Robinhood Chain deploys need approval.`);
   await assertChain();
   const dep = wallet(keys.deployer()), kp = wallet(keys.keeper()), tr = wallet(keys.treasury()), up = wallet(keys.updater());
+  // L3: off a verified anvil ATTESTER must not be the deployer (throws); on anvil both are key 0 (warning, kept)
+  const sep = attesterSeparation({ ...process.env, DEPLOYER_KEY: keys.deployer(), ATTESTER_KEY: keys.attester() }, dep.address);
+  if (sep.warning) console.warn(`  WARNING: ${sep.warning}`);
   const head = path.join(ROOT, "artifacts", "head");
   if (!fs.existsSync(path.join(head, "script", "Deploy.s.sol"))) throw new Error("Run `npm run build` first");
   const forge = fs.existsSync(`${os.homedir()}/.foundry/bin/forge`) ? `${os.homedir()}/.foundry/bin/forge` : "forge";
   execFileSync(forge, ["script", "script/Deploy.s.sol:Deploy", "--rpc-url", RPC_URL, "--broadcast", "--private-key", keys.deployer(), "--slow", "--out", "../out", "--cache-path", "../cache"], {
     cwd: head, stdio: process.env.DEPLOY_VERBOSE ? "inherit" : "pipe",
-    env: { ...process.env, MOCK_TOKENS: "1", TREASURY_SAFE: tr.address, FEED_UPDATER: up.address, ATTESTER: dep.address, KEEPER: kp.address },
+    env: { ...process.env, MOCK_TOKENS: "1", TREASURY_SAFE: tr.address, FEED_UPDATER: up.address, ATTESTER: sep.attester!, KEEPER: kp.address },
   });
   const bc = JSON.parse(fs.readFileSync(path.join(head, "broadcast", "Deploy.s.sol", String(TESTNET_CHAIN_ID), "run-latest.json"), "utf8"));
   const created = (bc.transactions as any[]).filter((t) => t.transactionType === "CREATE").map((t) => ({ name: t.contractName as string, addr: t.contractAddress as Address }));
