@@ -70,7 +70,7 @@ contract DeployHandoffTest is Test {
         // setup that needs the deployer happens before the handoff (e.g. seeding mints)
         vm.prank(deployer);
         c.usdg.mint(deployer, 1e6);
-        d.handoff(c, deployer, safe);
+        d.handoff(c, deployer, safe, false);
 
         bytes32 admin = c.registry.DEFAULT_ADMIN_ROLE();
         bytes32 att = c.registry.ATTESTER_ROLE();
@@ -98,15 +98,66 @@ contract DeployHandoffTest is Test {
         c.registry.grantRole(att, deployer);
     }
 
-    /// Local server anvil passes ATTESTER == deployer; it must keep attesting (service setEligible).
-    function test_handoff_deployerAsAttester_keepsOnlyAttester() public {
+    /// ATTESTER == deployer without LOCAL_ANVIL: handoff refuses (defence in depth behind preflight).
+    function test_handoff_deployerAsAttester_revertsWithoutLocalFlag() public {
         vm.chainId(46630);
         address deployer = address(d);
         Deploy.Core memory c = d.deployCore(deployer, safe, deployer);
-        d.handoff(c, deployer, safe);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AttesterIsDeployer.selector, deployer));
+        d.handoff(c, deployer, safe, false);
+    }
+
+    /// LOCAL_ANVIL=1 (server's verified anvil): deployer keeps only ATTESTER (service setEligible keeps working).
+    function test_handoff_deployerAsAttester_localAnvil_keepsOnlyAttester() public {
+        vm.chainId(46630);
+        address deployer = address(d);
+        Deploy.Core memory c = d.deployCore(deployer, safe, deployer);
+        d.handoff(c, deployer, safe, true);
         assertFalse(c.registry.hasRole(c.registry.DEFAULT_ADMIN_ROLE(), deployer));
         assertTrue(c.registry.hasRole(c.registry.ATTESTER_ROLE(), deployer));
+        assertEq(c.usdg.pendingOwner(), safe);
         vm.prank(deployer);
         c.registry.setEligible(address(0xB0B), uint64(block.timestamp + 1 days));
+    }
+
+    function test_preflight_attesterIsDeployer() public {
+        address deployer = address(0xD0);
+        vm.etch(safe, hex"00"); // Safe has code
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AttesterIsDeployer.selector, deployer));
+        d.preflight(deployer, safe, deployer, false);
+        d.preflight(deployer, safe, deployer, true); // LOCAL_ANVIL=1: allowed
+        d.preflight(deployer, safe, attester, false); // separate attester: ok
+    }
+
+    function test_preflight_safeIsDeployer_revertsEvenLocal() public {
+        address deployer = address(0xD0);
+        vm.etch(deployer, hex"00"); // even with code
+        vm.expectRevert(abi.encodeWithSelector(Deploy.SafeIsDeployer.selector, deployer));
+        d.preflight(deployer, deployer, attester, false);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.SafeIsDeployer.selector, deployer));
+        d.preflight(deployer, deployer, attester, true);
+    }
+
+    /// D-1: off LOCAL_ANVIL the Safe must be a contract; LOCAL_ANVIL=1 accepts the EOA stand-in.
+    function test_preflight_safeNeedsCode() public {
+        address deployer = address(0xD0);
+        address eoaSafe = address(0x5AFE2);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.SafeHasNoCode.selector, eoaSafe));
+        d.preflight(deployer, eoaSafe, attester, false);
+        d.preflight(deployer, eoaSafe, attester, true);
+        vm.etch(eoaSafe, hex"00");
+        d.preflight(deployer, eoaSafe, attester, false);
+    }
+
+    /// LOCAL_ANVIL parsing is strict: only an explicit 1 enables it. Only this test sets LOCAL_ANVIL
+    /// (env is process-global; the other tests pass the flag explicitly).
+    function test_localAnvilFlag_explicitOnly() public {
+        vm.setEnv("LOCAL_ANVIL", "0");
+        assertFalse(d.localAnvil());
+        vm.setEnv("LOCAL_ANVIL", "2");
+        assertFalse(d.localAnvil());
+        vm.setEnv("LOCAL_ANVIL", "1");
+        assertTrue(d.localAnvil());
+        vm.setEnv("LOCAL_ANVIL", "0");
     }
 }

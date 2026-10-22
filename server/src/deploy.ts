@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { parseUnits, parseAbi, zeroAddress, type Address } from "viem";
 import { C, wallet, assertChain, read, pub, assertTreasurySafe, type Deployment } from "./chain.js";
-import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT, attesterSeparation } from "./config.js";
+import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT, attesterSeparation, isLocalChain } from "./config.js";
 
 export const BASE_PRICES: Record<string, number> = { TSLA: 250, AMZN: 190, PLTR: 40, NFLX: 700, AMD: 150 };
 const POOL_USD = 250_000; // per side
@@ -26,7 +26,7 @@ export async function deployAndSeed(): Promise<Deployment> {
   const forge = fs.existsSync(`${os.homedir()}/.foundry/bin/forge`) ? `${os.homedir()}/.foundry/bin/forge` : "forge";
   execFileSync(forge, ["script", "script/Deploy.s.sol:Deploy", "--rpc-url", RPC_URL, "--broadcast", "--private-key", keys.deployer(), "--slow", "--out", "../out", "--cache-path", "../cache"], {
     cwd: head, stdio: process.env.DEPLOY_VERBOSE ? "inherit" : "pipe",
-    env: { ...process.env, MOCK_TOKENS: "1", TREASURY_SAFE: tr.address, FEED_UPDATER: up.address, ATTESTER: sep.attester!, KEEPER: kp.address },
+    env: { ...process.env, MOCK_TOKENS: "1", TREASURY_SAFE: tr.address, FEED_UPDATER: up.address, ATTESTER: sep.attester!, KEEPER: kp.address, LOCAL_ANVIL: isLocalChain() ? "1" : "0" }, // LOCAL_ANVIL=1 only on the R7-3 verified anvil (never inherited)
   });
   const bc = JSON.parse(fs.readFileSync(path.join(head, "broadcast", "Deploy.s.sol", String(TESTNET_CHAIN_ID), "run-latest.json"), "utf8"));
   const created = (bc.transactions as any[]).filter((t) => t.transactionType === "CREATE").map((t) => ({ name: t.contractName as string, addr: t.contractAddress as Address }));

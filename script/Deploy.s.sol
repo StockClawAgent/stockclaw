@@ -17,9 +17,11 @@ import {MockStockToken} from "../src/mocks/MockStockToken.sol";
 /// Oracle starts in Session mode with no session => market CLOSED until the keeper pushes
 /// setSession(...) (or the Safe sets ForceOpen for a testnet demo).
 /// L3 handoff (end of run): the Safe gets DEFAULT_ADMIN_ROLE on the EligibilityRegistry and the deployer
-/// renounces DEFAULT_ADMIN_ROLE there; ATTESTER must be a separate key on testnet (if ATTESTER == deployer,
-/// as on the local server anvil, the deployer keeps ATTESTER_ROLE so local attestations keep working).
-/// MockUSDG ownership is offered to the Safe (2-step).
+/// renounces DEFAULT_ADMIN_ROLE there. MockUSDG ownership is offered to the Safe (2-step).
+/// Preflight (before any tx): ATTESTER == deployer reverts AttesterIsDeployer, TREASURY_SAFE == deployer
+/// reverts SafeIsDeployer, and a TREASURY_SAFE without code reverts SafeHasNoCode (D-1). Only an explicit
+/// LOCAL_ANVIL=1 (set by the server's local deploy after it verified the node is anvil) relaxes the attester
+/// rule (deployer keeps ATTESTER_ROLE, logged) and the Safe-code rule (EOA stand-in). Safe != deployer always.
 /// Post-deploy, in order: (1) seed pools (deployer mints mock USDG; still owner until accepted);
 /// (2) Safe batch `acceptOwnership()` on router, oracle, pools, feeds AND MockUSDG.
 /// NOT RUN YET. Usage (when approved):
@@ -30,6 +32,9 @@ contract Deploy is Script {
     address public constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3; // bytecode present on 46630
 
     error WrongChain(uint256 chainId);
+    error AttesterIsDeployer(address attester);
+    error SafeIsDeployer(address safe);
+    error SafeHasNoCode(address safe);
 
     struct Core {
         MockUSDG usdg;
@@ -90,6 +95,8 @@ contract Deploy is Script {
         address attester = vm.envAddress("ATTESTER");
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
+        bool local = localAnvil();
+        preflight(deployer, safe, attester, local);
         Core memory c = deployCore(deployer, safe, attester);
         address keeper = vm.envAddress("KEEPER"); // KMS-held: executes intents + pushes market sessions
         require(keeper != updater, "S-4: KEEPER and FEED_UPDATER must be different keys");
@@ -112,20 +119,33 @@ contract Deploy is Script {
         // Until accepted, the deployer remains owner (needed for seeding).
         c.router.transferOwnership(safe);
         c.oracle.transferOwnership(safe);
-        handoff(c, deployer, safe);
+        handoff(c, deployer, safe, local);
         vm.stopBroadcast();
+    }
+
+    /// @notice True only for an explicit LOCAL_ANVIL=1 (the server sets it after verifying the node is anvil).
+    function localAnvil() public view returns (bool) {
+        return vm.envOr("LOCAL_ANVIL", uint256(0)) == 1;
+    }
+
+    /// @notice L3 / D-1 role checks, run before any transaction is sent.
+    function preflight(address deployer, address safe, address attester, bool local) public view {
+        if (safe == deployer) revert SafeIsDeployer(safe);
+        if (!local && safe.code.length == 0) revert SafeHasNoCode(safe);
+        if (!local && attester == deployer) revert AttesterIsDeployer(attester);
     }
 
     /// @notice L3: registry admin -> Safe, deployer renounces admin; MockUSDG ownership offered to the Safe
     /// (Ownable2Step: deployer can still mint for seeding until the Safe accepts). Runs LAST, after all
     /// setup that needs the deployer's registry admin. The deployer only holds ATTESTER_ROLE if it was
-    /// explicitly configured as ATTESTER (local anvil); it is kept in that case and logged.
-    function handoff(Core memory c, address deployer, address safe) public {
+    /// configured as ATTESTER: allowed (kept, logged) only with `local` (LOCAL_ANVIL=1), else reverts.
+    function handoff(Core memory c, address deployer, address safe, bool local) public {
         bytes32 admin = c.registry.DEFAULT_ADMIN_ROLE();
         c.registry.grantRole(admin, safe);
         c.registry.renounceRole(admin, deployer);
         if (c.registry.hasRole(c.registry.ATTESTER_ROLE(), deployer)) {
-            console2.log("WARNING: deployer is ATTESTER and keeps ATTESTER_ROLE (local only; use a separate key on testnet)");
+            if (!local) revert AttesterIsDeployer(deployer);
+            console2.log("WARNING: deployer is ATTESTER and keeps ATTESTER_ROLE (LOCAL_ANVIL=1 only; testnet uses a separate key)");
         }
         c.usdg.transferOwnership(safe);
     }
