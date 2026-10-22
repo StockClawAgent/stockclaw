@@ -18,6 +18,13 @@ npm start                           # API + prototype UI + MCP (HTTP) + keeper o
 - MCP Streamable HTTP: `POST http://localhost:8787/mcp` (stateless). MCP stdio: `npm run mcp` (keep `npm start` running so the keeper executes orders)
 - Cursor/Claude Desktop stdio config: `{"command":"npx","args":["tsx","src/mcpStdio.ts"],"cwd":"<repo>/server"}`
 
+## After a box reboot
+A reboot stops anvil and the server and wipes `/tmp`, `server/node_modules` and `server/artifacts` (the repo, `server/data/` and `.env.demo` stay). Run:
+```bash
+bash server/scripts/demo-up.sh
+```
+It is idempotent and never kills anything: if nothing answers chain 46630 on :8545 it starts `npm run chain -- --state data/anvil-46630.state.json --state-interval 5` (the local deployment, vault and agent key come back from the state file, dumped every 5s; it refuses if something else holds :8545); runs `npm ci` if `node_modules` is missing; rebuilds the contract artifacts from git HEAD if they're missing; starts `npm start` detached if :8787 doesn't answer; then polls `/healthz` for up to 60s (exit 0 on HTTP 200). Logs go to `/workspace/logs/` (`chain.log`, `npm-ci.log`, `build.log`, `server.log`). If the state file is missing, anvil starts empty: run `npm run deploy` and re-seed the demo. Nothing auto-runs it at boot (the box has no init hook); run it by hand, then check `npm run -s passkey:status`.
+
 ## End-to-end test
 `npm run build && npm run e2e`: starts its own anvil on :8546 and the API on :8788, then runs 14 checks. The checks cover deploy, the fee cap, eligibility and blocked regions, the vault, the agent key, the faucet, a swap with the fee landing in the treasury, per-trade and allowlist blocks, MCP, DCA with no catch-up, limit orders and cancel, the rolling 24h cap, revoke, and prototype/api.js.
 
