@@ -71,6 +71,9 @@ function legend(sl){return `<ul class="bf-lg">${sl.map(s=>`<li class="bf-${s.sta
  s.status=="filled"?'<span class="bf-ok" aria-label="Filled">✓</span>':s.status=="failed"?`<button class="bf-retry" data-retry="${e(s.ticker)}" aria-label="Retry ${e(s.ticker)}${s.error?": "+e(s.error):""}">Retry</button>`:s.status=="confirming"?'<span class="bf-pend bf-conf">Confirming…</span>':s.status=="filling"?'<span class="bf-dot" aria-label="Filling">…</span>':'<span class="bf-pend">Waiting</span>'}</span></li>`).join("")}</ul>`}
 
 function mount(el,id,opts={}){if(!el)return;if(el._bf)el._bf.sub&&el._bf.sub.close();const st={id,sub:null,x:null};el._bf=st;
+ // once this element leaves the page (route change, re-render, stale card removed) or is re-mounted, stop its stream/poller:
+ // a dead execution id (404) never sends an event, so onEv alone would never close it and api.js would poll it forever
+ const dog=setInterval(()=>{if(!el.isConnected||el._bf!==st){clearInterval(dog);clearTimeout(st.w);try{st.sub&&typeof st.sub.close=="function"&&st.sub.close()}catch(_){}}},1500);
  const status=document.createElement("p");status.className="bf-live sr-only";status.setAttribute("aria-live","polite");
  const draw=x=>{const sl=slices(x);const was=el.querySelector(".bf-wrap");const html=`<div class="bf-wrap"><div class="bf-ring">${svg(sl,x)}</div>${legend(sl)}</div>`;
   const tmp=document.createElement("div");tmp.innerHTML=html;const nw=tmp.firstChild;

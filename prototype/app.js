@@ -18,7 +18,7 @@ function requestOwnerToken(force){const t=getTok();if(t)return Promise.resolve(t
 window.__requestOwnerToken=requestOwnerToken;
 async function askTok(){try{await requestOwnerToken(true);return true}catch(e){return false}}
 async function needOwner(){if(window.USE_MOCK||getTok())return true;return askTok()}
-window.__apiFails=[];if(window.api)for(const n of Object.keys(api)){if(n==="openActivityStream")continue;const f=api[n];api[n]=(...a)=>Promise.resolve().then(()=>f(...a)).catch(e=>{window.__apiFails.push(n+": "+(e&&e.message));console.warn("api."+n+" failed:",e);say("Can't reach StockClaw right now. Check your connection and try again.");throw e})}
+window.__apiFails=[];if(window.api)for(const n of Object.keys(api)){if(n==="openActivityStream"||n==="subscribeExecution")continue; /* stream openers return {close()} synchronously: wrapping them in a Promise made BasketFill unable to close a basket stream/poller (a dead execution id was polled forever) */const f=api[n];api[n]=(...a)=>Promise.resolve().then(()=>f(...a)).catch(e=>{window.__apiFails.push(n+": "+(e&&e.message));console.warn("api."+n+" failed:",e);if(!(e&&(e.status==404||e.code=="NOT_FOUND")))say("Can't reach StockClaw right now. Check your connection and try again.");throw e})}
 const KEY="stockclaw-proto-v1";const B='';
 const DISC='<p class="disc">Stock tokens are not available to US persons or residents of restricted regions and are not shares. Stock tokens can be frozen or restricted by their issuer; a frozen token can\'t be sold.</p>';
 const BLOCKED=["United States","Canada","United Kingdom","Switzerland","United Arab Emirates","Iran","North Korea","Cuba","Syria","Russia"];
@@ -169,7 +169,8 @@ if(!force&&C.bal&&C.assets&&S.orders&&S.history)return;C.loading=true;C.err=null
  const r=await Promise.allSettled([api.get_balances(),api.list_assets(),api.get_wallet(),(force||!C.synced||!S.orders)?api.list_orders():null,(force||!C.synced||!S.history)?api.get_history(50):null]);C.synced=true; // orders/history cached in localStorage are refetched once per page load (a redeployed chain makes old txs stale)
  const w=r.splice(2,1)[0];
  // live: the server's vault and agent key win over a cached S.sa / S.key from an earlier chain (redeploy -> new vault, new sk_)
- if(w.status=="fulfilled"&&w.value&&!window.USE_MOCK&&S.sa&&w.value.address&&String(w.value.address).toLowerCase()!=String(S.sa).toLowerCase()){S.sa=w.value.address;S.lastBasket=null}
+ if(w.status=="fulfilled"&&w.value&&!window.USE_MOCK&&S.sa&&w.value.address&&String(w.value.address).toLowerCase()!=String(S.sa).toLowerCase()){S.sa=w.value.address;S.lastBasket=null;S.mockAct=null}
+ if(w.status=="fulfilled"&&w.value&&w.value.sessionKey&&!S.key&&!window.USE_MOCK&&w.value.sessionKey.status=="active"&&w.value.sessionKey.id)S.key={spentToday:0,...w.value.sessionKey}; // fresh browser: the server already has a key
  if(w.status=="fulfilled"&&w.value&&w.value.sessionKey&&S.key){const sk=w.value.sessionKey;if(!window.USE_MOCK&&S.key.id&&sk.id&&sk.id!=S.key.id)S.key={spentToday:0,...sk};else if(!S.key.id||sk.id==S.key.id||S.key.status=="active")S.key={...S.key,...sk,status:sk.status=="revoked"&&S.key.status=="paused"?"paused":sk.status}}
  const bad=["get_balances","list_assets","list_orders","get_history"].filter((n,i)=>r[i].status=="rejected");if(w.status=="rejected")bad.push("get_wallet");
  if(r[0].status=="fulfilled")C.bal=r[0].value||[];if(r[1].status=="fulfilled")C.assets=r[1].value||[];
@@ -269,7 +270,8 @@ async function rest(method,path,body,owner){const tok=getTok();const r=await fet
  if(r.status==404)throw{fallback:1};const d=await r.json().catch(()=>{throw{fallback:1}});if(!r.ok){const e=new Error(d.error||"HTTP "+r.status);e.status=r.status;throw e}return d}
 const SREST={list_strategies:()=>rest("GET","/strategies"),preview_strategy:(b)=>rest("POST","/strategies/preview",b),
  choose_strategy:(b)=>rest("POST","/strategies/activate",b,true), // owner: propose + confirm in one call
- get_strategy_status:async(id)=>{const r=await rest("GET",id?"/strategies/activations/"+id:"/strategies/status");if(!r||r.status=="none"||!r.activationId)return null;return r},
+ get_strategy_status:async(id)=>{let r;try{r=await rest("GET",id?"/strategies/activations/"+id:"/strategies/status")}catch(e){if(id&&e&&(e.fallback||e.status==404))return null;throw e} // an activation the server no longer has (404) = ended
+ if(!r||r.status=="none"||!r.activationId)return null;return r},
  pause_strategy:(id)=>rest("POST",`/strategies/activations/${id}/pause`,{},true),resume_strategy:(id)=>rest("POST",`/strategies/activations/${id}/resume`,{},true),stop_strategy:(id)=>rest("POST",`/strategies/activations/${id}/stop`,{},true)};
 // Normalize a status object (server: strategyId, intents[{role,status,nextRunAt,lastError}], fills[]) for the view.
 function normStatus(r){if(!r)return null;const id=r.strategyId||r.id;const fills=(r.fills||[]).map(f=>({...f,ts:f.ts||f.time||f.at,symbol:f.symbol||f.tokenOut||f.token,side:f.side||(f.role=="take-profit"?"sell":"buy"),amountUsd:f.amountUsd??f.usd??f.amountIn}));
@@ -301,10 +303,10 @@ const sById=(id)=>(ST.list||MOCK_STRATS).find(s=>s.id==id)||MOCK_STRATS.find(s=>
 const avatar=(id,size,extra="")=>`<img class="av ${extra}" src="${SAVATAR[id]||""}" width="${size}" height="${size}" alt="${esc((sById(id)||{}).name||id)} avatar">`;
 const runsLbl=(r)=>r=="client"?"Runs on: your AI (within your limits)":r=="both"?"Runs on: our keeper + your AI":"Runs on: our keeper";
 function gallery(base){const cur=ST.status;return `${ST.loading&&!ST.list?'<div role="status"><span class="sr-only">Loading strategies</span><span class="sk sk-card"></span><span class="sk sk-card"></span></div>':""}${ST.err?`<div class="st err" role="alert">✕ Couldn't load strategies: ${esc(ST.err)} <button class="sec" id="sRetry">Retry</button></div>`:""}
-<ul class="sgrid" role="list">${(ST.list||MOCK_STRATS).map(s=>{const on=s.demoAvailable;const active=cur&&cur.id==s.id;return `<li class="scard ${on?"":"soon"}">${avatar(s.id,72,on?"":"grey")}
+<ul class="sgrid" role="list">${(()=>{const L=ST.list||MOCK_STRATS,first=cur?null:(L.find(x=>x.demoAvailable)||{}).id; /* one primary: the first available template when nothing runs */return L.map(s=>{const on=s.demoAvailable;const active=cur&&cur.id==s.id;return `<li class="scard ${on?"":"soon"}">${avatar(s.id,72,on?"":"grey")}
 <div><h3>${esc(s.name)}${active?(cur.status=="active"?' <span class="chip2">Active</span>':' <span class="rchip">⏸ Paused</span>'):""}</h3><p>${esc(s.summary)}</p><p class="muted">${runsLbl(s.runsIn)} · v${esc(s.version)}</p>
 <p>${(s.risks||[]).map(r=>`<span class="rchip">${esc(r)}</span>`).join(" ")}</p>
-${on?`<a class="btn ${active?"sec":""}" href="${base}/${s.id}">${active?"Edit / re-pick":"Set up"}</a>`:`<button disabled aria-disabled="true">Coming soon</button>`}</div></li>`}).join("")}</ul>
+${on?`<a class="btn ${s.id==first?"":"sec"}" href="${base}/${s.id}">${active?"Edit / re-pick":"Set up"}</a>`:`<span class="muted">Coming soon</span>`}</div></li>`}).join("")})()}</ul>
 <p class="muted">Available tokens: ${STOCKS.join(", ")}</p>${SDISC}`}
 function defaultsFor(id){const s=sById(id);return JSON.parse(JSON.stringify((s&&s.defaults)||{}))}
 function setupForm(id){const p=ST.draft;const s=sById(id);if(id=="steady-stacker"){const w=Object.fromEntries((p.basket||[]).map(b=>[b.symbol,b.weightBps/100]));
@@ -368,7 +370,7 @@ function statusBind(){const p=$("#s_pz");if(p)p.onchange=()=>{const want=p.check
  const st=$("#s_stop");st&&(st.onclick=()=>confirmDlg("Stop strategy?","Stopping cancels all its open orders onchain. You can pick a strategy again later. Needs your wallet signature.","Yes, stop",async()=>{try{await sapi("stop_strategy",ST.status.activationId);ST.status=null;render();say("Strategy stopped");loadStrats(true)}catch(e){fail("stop_strategy",e)}}));
  const r=$("#sRetry");r&&(r.onclick=()=>loadStrats(true))}
 // Dashboard tab
-function D6(){loadStrats();return dash("strategies",`<h1>Strategies</h1><p>Pick a template, set the rules, and StockClaw runs it within your agent key limits. One strategy at a time.</p>${statusView()}<h2>${ST.status?"Switch strategy":"Pick a strategy"}</h2>${gallery("#/dashboard/strategies")}`)}
+function D6(){initData();loadStrats();return dash("strategies",`<h1>Strategies</h1><p>Pick a template, set the rules, and StockClaw runs it within your agent key limits. One strategy at a time.</p>${statusView()}<h2>${ST.status?"Switch strategy":"Pick a strategy"}</h2>${gallery("#/dashboard/strategies")}`)}
 function D6bind(){statusBind()}
 function D6setup(id){return ()=>{loadStrats();return dash("strategies",SETUP(id,"#/dashboard/strategies","#/dashboard/strategies"))}}
 // Onboarding step 6 (optional)
