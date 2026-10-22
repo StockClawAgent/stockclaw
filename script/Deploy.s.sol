@@ -20,8 +20,9 @@ import {MockStockToken} from "../src/mocks/MockStockToken.sol";
 /// renounces DEFAULT_ADMIN_ROLE there. MockUSDG ownership is offered to the Safe (2-step).
 /// Preflight (before any tx): ATTESTER == deployer reverts AttesterIsDeployer, TREASURY_SAFE == deployer
 /// reverts SafeIsDeployer, and a TREASURY_SAFE without code reverts SafeHasNoCode (D-1). Only an explicit
-/// LOCAL_ANVIL=1 (set by the server's local deploy after it verified the node is anvil) relaxes the attester
-/// rule (deployer keeps ATTESTER_ROLE, logged) and the Safe-code rule (EOA stand-in). Safe != deployer always.
+/// LOCAL_ANVIL exactly "1" (set by the server's local deploy after it verified the node is anvil) relaxes the
+/// attester rule (deployer keeps ATTESTER_ROLE, logged) and the Safe-code rule (EOA stand-in), and only if the
+/// script's RPC answers anvil_nodeInfo and the deployer is anvil account #0. Safe != deployer always.
 /// Post-deploy, in order: (1) seed pools (deployer mints mock USDG; still owner until accepted);
 /// (2) Safe batch `acceptOwnership()` on router, oracle, pools, feeds AND MockUSDG.
 /// NOT RUN YET. Usage (when approved):
@@ -35,6 +36,11 @@ contract Deploy is Script {
     error AttesterIsDeployer(address attester);
     error SafeIsDeployer(address safe);
     error SafeHasNoCode(address safe);
+    error NotAnvilNode();
+    error DeployerNotAnvilAccount0(address deployer);
+
+    /// @notice anvil default account #0 (public test mnemonic); the only deployer allowed under LOCAL_ANVIL=1.
+    address public constant ANVIL_ACCOUNT_0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
     struct Core {
         MockUSDG usdg;
@@ -123,16 +129,37 @@ contract Deploy is Script {
         vm.stopBroadcast();
     }
 
-    /// @notice True only for an explicit LOCAL_ANVIL=1 (the server sets it after verifying the node is anvil).
+    /// @notice G2-a: true only when LOCAL_ANVIL is exactly the string "1" (the server / dry run set it after
+    /// verifying the node is anvil). "01", "0x1", "1 ", "1e0", "true", "2", "0", empty and unset are all off.
     function localAnvil() public view returns (bool) {
-        return vm.envOr("LOCAL_ANVIL", uint256(0)) == 1;
+        return isExactlyOne(vm.envOr("LOCAL_ANVIL", string("")));
     }
 
-    /// @notice L3 / D-1 role checks, run before any transaction is sent.
-    function preflight(address deployer, address safe, address attester, bool local) public view {
+    function isExactlyOne(string memory v) public pure returns (bool) {
+        return keccak256(bytes(v)) == keccak256(bytes("1"));
+    }
+
+    /// @notice L3 / D-1 role checks, run before any transaction is sent. G2-b: with `local` (LOCAL_ANVIL=1)
+    /// the node behind the script's RPC must answer anvil_nodeInfo (else NotAnvilNode) and the deployer must
+    /// be anvil account #0 (else DeployerNotAnvilAccount0), so a stale flag can't relax checks on a real chain.
+    function preflight(address deployer, address safe, address attester, bool local) public {
         if (safe == deployer) revert SafeIsDeployer(safe);
+        if (local) {
+            if (!_isAnvilNode()) revert NotAnvilNode();
+            if (deployer != ANVIL_ACCOUNT_0) revert DeployerNotAnvilAccount0(deployer);
+        }
         if (!local && safe.code.length == 0) revert SafeHasNoCode(safe);
         if (!local && attester == deployer) revert AttesterIsDeployer(attester);
+    }
+
+    /// @dev RPC probe (virtual so unit tests can simulate anvil / non-anvil nodes without a live RPC).
+    /// Any failure (method not found on a real node, no RPC at all) counts as "not anvil".
+    function _isAnvilNode() internal virtual returns (bool) {
+        try vm.rpc("anvil_nodeInfo", "[]") returns (bytes memory r) {
+            return r.length != 0;
+        } catch {
+            return false;
+        }
     }
 
     /// @notice L3: registry admin -> Safe, deployer renounces admin; MockUSDG ownership offered to the Safe

@@ -56,6 +56,19 @@ contract DeployGuardTest is Test {
     }
 }
 
+/// Simulates the node behind the script RPC (no live RPC in unit tests).
+contract DeployHarness is Deploy {
+    bool public nodeIsAnvil;
+
+    function setNodeIsAnvil(bool v) external {
+        nodeIsAnvil = v;
+    }
+
+    function _isAnvilNode() internal view override returns (bool) {
+        return nodeIsAnvil;
+    }
+}
+
 /// L3: registry admin + MockUSDG ownership handoff to the Safe (in-memory EVM only, no RPC/broadcast).
 /// The Deploy contract itself acts as deployer here so its handoff() calls come from the admin.
 contract DeployHandoffTest is Test {
@@ -121,43 +134,97 @@ contract DeployHandoffTest is Test {
     }
 
     function test_preflight_attesterIsDeployer() public {
-        address deployer = address(0xD0);
+        DeployHarness h = new DeployHarness();
+        h.setNodeIsAnvil(true);
+        address a0 = d.ANVIL_ACCOUNT_0();
         vm.etch(safe, hex"00"); // Safe has code
-        vm.expectRevert(abi.encodeWithSelector(Deploy.AttesterIsDeployer.selector, deployer));
-        d.preflight(deployer, safe, deployer, false);
-        d.preflight(deployer, safe, deployer, true); // LOCAL_ANVIL=1: allowed
-        d.preflight(deployer, safe, attester, false); // separate attester: ok
+        vm.expectRevert(abi.encodeWithSelector(Deploy.AttesterIsDeployer.selector, a0));
+        h.preflight(a0, safe, a0, false);
+        h.preflight(a0, safe, a0, true); // LOCAL_ANVIL=1 on a verified anvil with account #0: allowed
+        h.preflight(a0, safe, attester, false); // separate attester: ok
     }
 
     function test_preflight_safeIsDeployer_revertsEvenLocal() public {
-        address deployer = address(0xD0);
-        vm.etch(deployer, hex"00"); // even with code
-        vm.expectRevert(abi.encodeWithSelector(Deploy.SafeIsDeployer.selector, deployer));
-        d.preflight(deployer, deployer, attester, false);
-        vm.expectRevert(abi.encodeWithSelector(Deploy.SafeIsDeployer.selector, deployer));
-        d.preflight(deployer, deployer, attester, true);
+        DeployHarness h = new DeployHarness();
+        h.setNodeIsAnvil(true);
+        address a0 = d.ANVIL_ACCOUNT_0();
+        vm.etch(a0, hex"00"); // even with code
+        vm.expectRevert(abi.encodeWithSelector(Deploy.SafeIsDeployer.selector, a0));
+        h.preflight(a0, a0, attester, false);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.SafeIsDeployer.selector, a0));
+        h.preflight(a0, a0, attester, true);
     }
 
-    /// D-1: off LOCAL_ANVIL the Safe must be a contract; LOCAL_ANVIL=1 accepts the EOA stand-in.
+    /// D-1: off LOCAL_ANVIL the Safe must be a contract; LOCAL_ANVIL=1 (verified anvil, #0) accepts the EOA stand-in.
     function test_preflight_safeNeedsCode() public {
-        address deployer = address(0xD0);
+        DeployHarness h = new DeployHarness();
+        h.setNodeIsAnvil(true);
+        address a0 = d.ANVIL_ACCOUNT_0();
         address eoaSafe = address(0x5AFE2);
         vm.expectRevert(abi.encodeWithSelector(Deploy.SafeHasNoCode.selector, eoaSafe));
-        d.preflight(deployer, eoaSafe, attester, false);
-        d.preflight(deployer, eoaSafe, attester, true);
+        h.preflight(a0, eoaSafe, attester, false);
+        h.preflight(a0, eoaSafe, attester, true);
         vm.etch(eoaSafe, hex"00");
-        d.preflight(deployer, eoaSafe, attester, false);
+        h.preflight(a0, eoaSafe, attester, false);
     }
 
-    /// LOCAL_ANVIL parsing is strict: only an explicit 1 enables it. Only this test sets LOCAL_ANVIL
-    /// (env is process-global; the other tests pass the flag explicitly).
+    /// G2-b: a stale LOCAL_ANVIL=1 against a node that is not anvil reverts NotAnvilNode (simulated node).
+    function test_preflight_staleFlag_nonAnvilNode_reverts() public {
+        DeployHarness h = new DeployHarness();
+        h.setNodeIsAnvil(false);
+        address a0 = d.ANVIL_ACCOUNT_0();
+        vm.expectRevert(Deploy.NotAnvilNode.selector);
+        h.preflight(a0, address(0x5AFE2), a0, true);
+        vm.etch(address(0x5AFE2), hex"00");
+        h.preflight(a0, address(0x5AFE2), attester, false); // flag off: normal rules, no node probe
+    }
+
+    /// G2-b with the REAL probe: vm.rpc("anvil_nodeInfo") fails here (no RPC / not anvil) -> NotAnvilNode, not opaque.
+    function test_preflight_realProbe_noAnvilRpc_reverts() public {
+        address a0 = d.ANVIL_ACCOUNT_0();
+        vm.expectRevert(Deploy.NotAnvilNode.selector);
+        d.preflight(a0, address(0x5AFE2), a0, true);
+    }
+
+    /// G2-b: flag on, verified anvil, but the deployer is not anvil account #0.
+    function test_preflight_flagOn_deployerNotAccount0_reverts() public {
+        DeployHarness h = new DeployHarness();
+        h.setNodeIsAnvil(true);
+        address other = address(0xD0);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.DeployerNotAnvilAccount0.selector, other));
+        h.preflight(other, address(0x5AFE2), other, true);
+        vm.expectRevert(abi.encodeWithSelector(Deploy.DeployerNotAnvilAccount0.selector, other));
+        h.preflight(other, address(0x5AFE2), attester, true);
+    }
+
+    function test_anvilAccount0_isMnemonicIndex0() public {
+        assertEq(d.ANVIL_ACCOUNT_0(), vm.addr(0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80));
+    }
+
+    /// G2-a: exact-string parsing; only "1" is on.
+    function test_isExactlyOne_values() public view {
+        assertTrue(d.isExactlyOne("1"));
+        string[9] memory off = ["01", "0x1", "1 ", " 1", "1e0", "true", "2", "0", ""];
+        for (uint256 i; i < off.length; i++) assertFalse(d.isExactlyOne(off[i]), off[i]);
+    }
+
+    /// G2-a via the env. Only this test sets LOCAL_ANVIL (env is process-global; others pass the flag explicitly).
     function test_localAnvilFlag_explicitOnly() public {
-        vm.setEnv("LOCAL_ANVIL", "0");
-        assertFalse(d.localAnvil());
-        vm.setEnv("LOCAL_ANVIL", "2");
-        assertFalse(d.localAnvil());
+        if (!vm.envExists("LOCAL_ANVIL")) assertFalse(d.localAnvil()); // unset
+        string[9] memory off = ["01", "0x1", "1e0", "true", "2", "0", "", " 1", "\n1"];
+        for (uint256 i; i < off.length; i++) {
+            vm.setEnv("LOCAL_ANVIL", off[i]);
+            assertFalse(d.localAnvil(), off[i]);
+        }
         vm.setEnv("LOCAL_ANVIL", "1");
         assertTrue(d.localAnvil());
-        vm.setEnv("LOCAL_ANVIL", "0");
+        // Foundry (1.8.5) trims TRAILING whitespace from env values before the script sees them, so "1 " reads
+        // as "1" (isExactlyOne("1 ") itself is false, see test_isExactlyOne_values). Leading whitespace is kept
+        // and rejected above. Pinned here so a Foundry change shows up; G2-b (anvil probe + account #0) still
+        // guards a flag that reads as on.
+        vm.setEnv("LOCAL_ANVIL", "1 ");
+        assertTrue(d.localAnvil());
+        vm.setEnv("LOCAL_ANVIL", "");
+        assertFalse(d.localAnvil());
     }
 }
