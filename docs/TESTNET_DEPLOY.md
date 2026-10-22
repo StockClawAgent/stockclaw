@@ -22,7 +22,7 @@ The script refuses `--broadcast`, `--private-key`, `--ledger`, `--trezor` and `-
 - estimated gas 18.44M; at 0.02 gwei max fee that is **~0.00037 ETH**
 - all 5 real 46630 stock tokens resolved (TSLA, AMZN, PLTR, NFLX, AMD; `symbol()` checked onchain)
 
-To rehearse with the real role addresses, set `TREASURY_SAFE`, `FEED_UPDATER`, `KEEPER`, `ATTESTER` and `DRYRUN_SENDER` before running. Since D-1 the dry run refuses unless `TREASURY_SAFE` is a deployed contract on the target RPC (`eth_getCode` non-empty) and differs from `DRYRUN_SENDER`, so the placeholder Safe address no longer passes: deploy the Safe first. `DRYRUN_CHECK_ONLY=1` runs only these pre-checks.
+To rehearse with the real role addresses, set `TREASURY_SAFE`, `FEED_UPDATER`, `KEEPER`, `ATTESTER` and `DRYRUN_SENDER` before running. Off a verified local anvil the dry run requires `DRYRUN_SENDER` (no placeholder default) and refuses unless `TREASURY_SAFE` is a real Safe on the target RPC: not the sender/keeper/attester, code that is not an EIP-7702 delegation (`0xef0100…`), `getThreshold() >= 2`, `>= 3` owners and none of them a role key (D-1, D1-R1). The placeholder Safe address no longer passes: deploy the Safe first. "Verified local anvil" uses the server's rule: the RPC host is localhost **and** the node answers as anvil; a remote node that claims to be anvil is refused. The dry run sets `LOCAL_ANVIL` for `Deploy.s.sol` (G2, 035a91e) from that check only: `1` on a verified localhost anvil (so a local rehearsal with the EOA Safe stand-in doesn't revert `SafeHasNoCode`), `0` everywhere else, never inherited from your env. `DRYRUN_CHECK_ONLY=1` runs only these pre-checks.
 
 ## 2. Addresses needed (all distinct)
 
@@ -55,7 +55,13 @@ Total to start: **about 0.15 ETH on 46630**, spread across the roles above. Alch
    - `MockUSDG.mint` from the deployer now reverts `OwnableUnauthorizedAccount`.
    (Local anvil does this automatically right after seeding in `server/src/deploy.ts`, with the treasury key standing in for the Safe, and checks the same list. The only allowed leftover there is `ATTESTER_ROLE` when ATTESTER == deployer, which is logged as a warning.)
 6. Keeper pushes today's NYSE session (`setSession`). The market stays CLOSED until it does (fail-closed).
-7. Server: `RPC_URL=<alchemy 46630>`, `DEPLOYMENTS_FILE` (default `server/data/testnet-46630.json`), `DEMO_OWNER_KEY`, `AGENT_KEYS`, `EXPLORER_URL` (default is the Blockscout above), tokens set, `KEEPER=1`. The server refuses to start unless both API tokens are set (the local `ALLOW_OPEN_LOCAL` escape doesn't work on 46630). Check `/healthz` (rpc ok, oracle fresh, session open).
+7. Server env:
+   - `RPC_URL=<alchemy 46630>`, `DEPLOYMENTS_FILE` (default `server/data/testnet-46630.json`), `DEMO_OWNER_KEY`, `AGENT_KEYS`, `KEEPER_KEY`, `FEED_UPDATER_KEY`, `EXPLORER_URL` (default is the Blockscout above), `OWNER_API_TOKEN` + `MCP_API_TOKEN`, `KEEPER=1`.
+   - `ATTESTER_KEY`: the attester's key (must hold `ATTESTER_ROLE`; must not be the deployer).
+   - `TREASURY_SAFE`: the 2-of-3 Safe address (optional if the deployments file's `treasury` is the Safe).
+   - The deployments file must carry `deployer` (the deploy key's address, kept after step 9 retires the key) and `treasury` (the Safe), plus the contract addresses. `DEPLOYER=<address>` overrides `deployer`; no `DEPLOYER_KEY` is needed.
+   - Startup refuses (fail closed, before listening) unless: both API tokens are set (the local `ALLOW_OPEN_LOCAL` escape doesn't work on 46630); the deployer is known (G1); ATTESTER != deployer and ATTESTER holds `ATTESTER_ROLE`; the deployer holds no registry role; `TREASURY_SAFE` is a real Safe (code that is not an EIP-7702 delegation, `getThreshold() >= 2`, `>= 3` owners, none of them the deployer/keeper/attester); and the Safe owns all 13 contracts with no pending owner and holds registry admin (so run this after step 5). Any RPC error during these checks also refuses.
+   - Check `/healthz` (rpc ok, oracle fresh, session open).
 8. Smoke test: eligibility → vault → agent key → faucet claim → $5 swap. Check the tx link opens on Blockscout.
 9. **Retire the deployer key** (last step, only after seeding (step 4) and the Safe batch checks (step 5) pass):
    - Sweep the deployer's remaining ETH to the Safe (one plain transfer; leave only what that tx costs).
