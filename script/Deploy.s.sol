@@ -16,6 +16,12 @@ import {MockStockToken} from "../src/mocks/MockStockToken.sol";
 /// 46630). Unset => revert. MOCK_TOKENS=0 with missing real-token code => revert.
 /// Oracle starts in Session mode with no session => market CLOSED until the keeper pushes
 /// setSession(...) (or the Safe sets ForceOpen for a testnet demo).
+/// L3 handoff (end of run): the Safe gets DEFAULT_ADMIN_ROLE on the EligibilityRegistry and the deployer
+/// renounces DEFAULT_ADMIN_ROLE there; ATTESTER must be a separate key on testnet (if ATTESTER == deployer,
+/// as on the local server anvil, the deployer keeps ATTESTER_ROLE so local attestations keep working).
+/// MockUSDG ownership is offered to the Safe (2-step).
+/// Post-deploy, in order: (1) seed pools (deployer mints mock USDG; still owner until accepted);
+/// (2) Safe batch `acceptOwnership()` on router, oracle, pools, feeds AND MockUSDG.
 /// NOT RUN YET. Usage (when approved):
 ///   TREASURY_SAFE=0x.. FEED_UPDATER=0x.. ATTESTER=0x.. \
 ///   forge script script/Deploy.s.sol --rpc-url robinhood_testnet --broadcast --verify
@@ -103,11 +109,25 @@ contract Deploy is Script {
         // Pool seeding happens in a separate script after feeds are pushed (quotes need a fresh price).
         // Ownership -> 2-of-3 Safe. Router, pools, oracle and feeds are Ownable2Step: this only sets
         // `pendingOwner`; the Safe must execute `acceptOwnership()` on each (batch via Safe tx builder).
-        // Until accepted, the deployer remains owner (needed for seeding). Registry: Safe gets admin role.
+        // Until accepted, the deployer remains owner (needed for seeding).
         c.router.transferOwnership(safe);
         c.oracle.transferOwnership(safe);
-        c.registry.grantRole(c.registry.DEFAULT_ADMIN_ROLE(), safe);
+        handoff(c, deployer, safe);
         vm.stopBroadcast();
+    }
+
+    /// @notice L3: registry admin -> Safe, deployer renounces admin; MockUSDG ownership offered to the Safe
+    /// (Ownable2Step: deployer can still mint for seeding until the Safe accepts). Runs LAST, after all
+    /// setup that needs the deployer's registry admin. The deployer only holds ATTESTER_ROLE if it was
+    /// explicitly configured as ATTESTER (local anvil); it is kept in that case and logged.
+    function handoff(Core memory c, address deployer, address safe) public {
+        bytes32 admin = c.registry.DEFAULT_ADMIN_ROLE();
+        c.registry.grantRole(admin, safe);
+        c.registry.renounceRole(admin, deployer);
+        if (c.registry.hasRole(c.registry.ATTESTER_ROLE(), deployer)) {
+            console2.log("WARNING: deployer is ATTESTER and keeps ATTESTER_ROLE (local only; use a separate key on testnet)");
+        }
+        c.usdg.transferOwnership(safe);
     }
 
     function deployCore(address admin, address safe, address attester) public onlyTestnet returns (Core memory c) {

@@ -55,3 +55,58 @@ contract DeployGuardTest is Test {
         assertFalse(d.useMocks());
     }
 }
+
+/// L3: registry admin + MockUSDG ownership handoff to the Safe (in-memory EVM only, no RPC/broadcast).
+/// The Deploy contract itself acts as deployer here so its handoff() calls come from the admin.
+contract DeployHandoffTest is Test {
+    Deploy d = new Deploy();
+    address safe = address(0x5AFE);
+    address attester = address(0xA77E);
+
+    function test_handoff_safeAdmin_deployerNoRoles_usdgPendingSafe() public {
+        vm.chainId(46630);
+        address deployer = address(d);
+        Deploy.Core memory c = d.deployCore(deployer, safe, attester);
+        // setup that needs the deployer happens before the handoff (e.g. seeding mints)
+        vm.prank(deployer);
+        c.usdg.mint(deployer, 1e6);
+        d.handoff(c, deployer, safe);
+
+        bytes32 admin = c.registry.DEFAULT_ADMIN_ROLE();
+        bytes32 att = c.registry.ATTESTER_ROLE();
+        assertTrue(c.registry.hasRole(admin, safe));
+        assertFalse(c.registry.hasRole(admin, deployer));
+        assertFalse(c.registry.hasRole(att, deployer));
+        assertTrue(c.registry.hasRole(att, attester));
+
+        // MockUSDG: 2-step -> Safe pending; deployer can still mint for seeding until accepted
+        assertEq(c.usdg.pendingOwner(), safe);
+        vm.prank(deployer);
+        c.usdg.mint(deployer, 1e6);
+        vm.prank(safe);
+        c.usdg.acceptOwnership();
+        assertEq(c.usdg.owner(), safe);
+        vm.prank(deployer);
+        vm.expectRevert();
+        c.usdg.mint(deployer, 1e6);
+
+        // the Safe administers the registry (e.g. rotates the attester)
+        vm.prank(safe);
+        c.registry.grantRole(att, address(0xA77F));
+        vm.prank(deployer);
+        vm.expectRevert();
+        c.registry.grantRole(att, deployer);
+    }
+
+    /// Local server anvil passes ATTESTER == deployer; it must keep attesting (service setEligible).
+    function test_handoff_deployerAsAttester_keepsOnlyAttester() public {
+        vm.chainId(46630);
+        address deployer = address(d);
+        Deploy.Core memory c = d.deployCore(deployer, safe, deployer);
+        d.handoff(c, deployer, safe);
+        assertFalse(c.registry.hasRole(c.registry.DEFAULT_ADMIN_ROLE(), deployer));
+        assertTrue(c.registry.hasRole(c.registry.ATTESTER_ROLE(), deployer));
+        vm.prank(deployer);
+        c.registry.setEligible(address(0xB0B), uint64(block.timestamp + 1 days));
+    }
+}

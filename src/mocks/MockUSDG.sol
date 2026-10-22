@@ -2,10 +2,11 @@
 pragma solidity ^0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @notice Testnet-only USDG stand-in. 6 decimals, owner mint, public capped faucet (per 24h).
-contract MockUSDG is ERC20, Ownable {
+/// Ownable2Step (L3): the deployer stays owner (pool seeding mints) until the Safe accepts.
+contract MockUSDG is ERC20, Ownable2Step {
     uint256 public constant FAUCET_AMOUNT = 1_000e6;
     uint256 public constant FAUCET_COOLDOWN = 1 days;
     mapping(address => uint256) public lastFaucet;
