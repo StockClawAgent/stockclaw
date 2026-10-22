@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 import { formatUnits, parseUnits, parseEventLogs, erc20Abi, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, requireLocalAnvil, txState, txLogRow, assertTreasurySafe, deployerHandoff, type Deployment } from "./chain.js";
+import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, requireLocalAnvil, txState, txLogRow, assertTreasurySafe, deployerHandoff, ownedList, OWNED_CONTRACTS, type Deployment } from "./chain.js";
 import { log } from "./log.js";
 import * as cfg from "./config.js";
 import { getDb, migrateFromJson, tx, nowIso } from "./db.js";
@@ -675,6 +675,7 @@ export async function assertDeployRoles(env = process.env) {
   if (!d) throw new Error("REFUSING TO START: no deployments file off a verified local anvil (the role checks need it)");
   const deployer = sep.deployer as Address, attester = sep.attester as Address;
   const keeper = env.KEEPER_KEY ? privateKeyToAccount(env.KEEPER_KEY as Hex).address : d.keeper; // (env KEEPER is the on/off switch, not an address)
+  if (!keeper) throw new Error("REFUSING TO START: the keeper address is unknown (set KEEPER_KEY, or `keeper` in the deployments file) off a verified local anvil");
   const safe = (env.TREASURY_SAFE ?? d.treasury) as Address;
   const s = await assertTreasurySafe(safe, { deployer, keeper, attester }, false);
   const reg = d.registry;
@@ -682,10 +683,13 @@ export async function assertDeployRoles(env = process.env) {
   if (await read<boolean>(reg, C.registry.abi, "hasRole", [att, deployer])) throw new Error(`REFUSING TO START: the deployer ${deployer} holds ATTESTER_ROLE on the registry ${reg}. Off a verified local anvil the attester must be a separate key (L3): redeploy with ATTESTER set to it.`);
   if (await read<boolean>(reg, C.registry.abi, "hasRole", [admin, deployer])) throw new Error(`REFUSING TO START: the deployer ${deployer} still holds DEFAULT_ADMIN_ROLE on the registry ${reg} (L3 handoff not done)`);
   if (!(await read<boolean>(reg, C.registry.abi, "hasRole", [att, attester]))) throw new Error(`REFUSING TO START: ATTESTER ${attester} does not hold ATTESTER_ROLE on the registry ${reg} (G1: wrong ATTESTER_KEY, or the role was never granted)`);
+  // exactly 13 Ownable2Step contracts, derived from the deployments file: router, oracle, MockUSDG, 5 pools, 5 feeds
+  ownedList(d);
   const ss = Object.values(d.stocks);
   const h = await deployerHandoff({ router: d.router, oracle: d.oracle, registry: reg, usdg: d.usdg, pools: ss.map((x) => x.pool), feeds: ss.map((x) => x.feed) }, deployer, safe);
+  if (h.checked !== OWNED_CONTRACTS) throw new Error(`REFUSING TO START: the ownership check covered ${h.checked} contracts, expected exactly ${OWNED_CONTRACTS}`);
   if (h.problems.length) throw new Error(`REFUSING TO START: the Safe ${safe} does not own the deployment yet (L3 step 5): ${h.problems.slice(0, 6).join("; ")}${h.problems.length > 6 ? ` (+${h.problems.length - 6} more)` : ""}`);
-  log.info("deploy roles ok", { safe, threshold: s.threshold, owners: s.owners, ownedBySafe: h.ownedBySafe, attester, deployer });
+  log.info("deploy roles ok", { safe, singleton: s.singleton, threshold: s.threshold, owners: s.owners, ownedBySafe: h.ownedBySafe, attester, deployer });
   return { local: false, ...sep };
 }
 export function assertGuardrails(env = process.env) {

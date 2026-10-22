@@ -7,7 +7,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { parseUnits, parseAbi, type Address } from "viem";
-import { C, wallet, assertChain, read, pub, assertTreasurySafe, deployerHandoff, type Deployment } from "./chain.js";
+import { C, wallet, assertChain, read, pub, assertTreasurySafe, deployerHandoff, ownedList, OWNED_CONTRACTS, type Deployment } from "./chain.js";
 import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT, attesterSeparation, isLocalChain } from "./config.js";
 
 export const BASE_PRICES: Record<string, number> = { TSLA: 250, AMZN: 190, PLTR: 40, NFLX: 700, AMD: 150 };
@@ -57,6 +57,7 @@ export async function deployAndSeed(): Promise<Deployment> {
   // of router, oracle, pools, feeds and (65cd2f6) MockUSDG, right after seeding. The script already moved registry admin.
   for (const a of [router, oracle, ...pools, ...feeds, usdg]) await tr.write(a, OWNABLE2, "acceptOwnership");
   const h = await deployerHandoff({ router, oracle, registry, usdg, pools, feeds, tokens }, dep.address, tr.address);
+  if (!isLocalChain()) { ownedList({ router, oracle, usdg, stocks }); if (h.checked !== OWNED_CONTRACTS) throw new Error(`REFUSING: ownership check covered ${h.checked} contracts, expected exactly ${OWNED_CONTRACTS}`); }
   if (h.problems.length) throw new Error(`L3 handoff incomplete: ${h.problems.join("; ")}`);
   if (h.attesterRole) console.warn(`  WARNING: deployer ${dep.address} keeps ATTESTER_ROLE (ATTESTER == deployer, local anvil only)`);
   const d: Deployment = { chainId: TESTNET_CHAIN_ID, rpc: RPC_URL, deployedAt: new Date().toISOString(), deployer: dep.address, keeper: kp.address, treasury: tr.address, usdg, oracle, registry, router, stocks };

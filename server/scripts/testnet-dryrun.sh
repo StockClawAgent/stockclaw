@@ -31,7 +31,7 @@ CLIENT=$(rpc web3_clientVersion '[]' || true); NODEINFO=$(rpc anvil_nodeInfo '[]
 CLAIMS_ANVIL=0; if echo "$CLIENT" | grep -qi '"result":"anvil' && echo "$NODEINFO" | grep -q '"environment"'; then CLAIMS_ANVIL=1; fi
 if [ "$CLAIMS_ANVIL" = 1 ] && [ "$LOCALHOST" = 0 ]; then echo "REFUSING: $RPC is not a localhost RPC but answers as anvil. Only a localhost anvil counts as local (R7-3 rule); refusing."; exit 1; fi
 if [ "$CLAIMS_ANVIL" = 1 ]; then
-  SENDER="${SENDER:-0x000000000000000000000000000000000000dEaD}"
+  SENDER="${SENDER:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}" # anvil account #0: G2-b (1d407ae) requires it under LOCAL_ANVIL=1
   export LOCAL_ANVIL=1 # G2: Deploy.s.sol allows the EOA Safe stand-in / ATTESTER == deployer only with this
   echo "WARNING: $RPC is a verified local anvil: D-1 TREASURY_SAFE / Safe checks skipped (rehearsal only)"
 else
@@ -46,6 +46,17 @@ else
   case "$CODE" in 0x|""|*error*|*'{'*) echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE has no code on $RPC (eth_getCode empty): deploy the Safe first (D-1)."; exit 1;; esac
   case "$(lc "$CODE")" in 0xef0100*) echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE is an EIP-7702 delegated EOA (code 0xef0100...), not a Safe contract (D1-R1)."; exit 1;; esac
   CAST=$(command -v cast || echo "$HOME/.foundry/bin/cast")
+  # D1-R3: slot 0 (SafeProxy masterCopy) is a known Safe v1.4.1 singleton for this chain (allowlist keyed by chain id,
+  # same as SAFE_SINGLETONS in src/chain.ts); RPC errors refuse
+  case "$CHAIN" in
+    0xb626) SINGLETONS="0x29fcb43b46531bca003ddc8fcb67ffe91900c762:SafeL2-v1.4.1 0x41675c099f32341bf84bfc5382af534df5c7461a:Safe-v1.4.1";;
+    *) SINGLETONS="";;
+  esac
+  S0=$("$CAST" storage --rpc-url "$RPC" "$TREASURY_SAFE" 0 2>/dev/null) || { echo "REFUSING: could not read TREASURY_SAFE $TREASURY_SAFE slot 0 (RPC error, failing closed) (D1-R3)."; exit 1; }
+  case "$S0" in 0x[0-9a-fA-F]*) ;; *) echo "REFUSING: unreadable TREASURY_SAFE slot 0 '$S0' (failing closed) (D1-R3)."; exit 1;; esac
+  S0=$(lc "${S0#0x}"); S0=$(printf '%064s' "$S0" | tr ' ' 0); SINGLE="0x${S0:24:40}"; SNAME=""
+  for e in $SINGLETONS; do [ "$SINGLE" = "${e%%:*}" ] && SNAME="${e#*:}"; done
+  [ -n "$SNAME" ] || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE is not a proxy to a known Safe v1.4.1 singleton on chain $CHAIN (slot 0 = $SINGLE) (D1-R3)."; exit 1; }
   THRESH=$("$CAST" call --rpc-url "$RPC" "$TREASURY_SAFE" "getThreshold()(uint256)" 2>/dev/null) || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE does not answer getThreshold() (not a Safe, or RPC error) (D1-R1)."; exit 1; }
   OWNERS=$("$CAST" call --rpc-url "$RPC" "$TREASURY_SAFE" "getOwners()(address[])" 2>/dev/null) || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE does not answer getOwners() (not a Safe, or RPC error) (D1-R1)."; exit 1; }
   THRESH=${THRESH%% *}; case "$THRESH" in ''|*[!0-9]*) echo "REFUSING: unreadable getThreshold() '$THRESH' (D1-R1)."; exit 1;; esac
@@ -55,7 +66,15 @@ else
   for pair in "deployer:$SENDER" "keeper:$KEEPER" "attester:$ATTESTER"; do
     ! echo "$OLIST" | tr A-F a-f | grep -qx "$(lc "${pair#*:}")" || { echo "REFUSING: the ${pair%%:*} ${pair#*:} is an owner of TREASURY_SAFE; Safe signers must be separate keys (D1-R1)."; exit 1; }
   done
-  echo "TREASURY_SAFE $TREASURY_SAFE: Safe threshold $THRESH of $NOWN owners, no role key among them"
+  # D1-R3: no modules enabled (getModulesPaginated(SENTINEL, 10) returns an empty page) and no guard set
+  MODS=$("$CAST" call --rpc-url "$RPC" "$TREASURY_SAFE" "getModulesPaginated(address,uint256)(address[],address)" 0x0000000000000000000000000000000000000001 10 2>/dev/null) || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE does not answer getModulesPaginated() (not a Safe, or RPC error; failing closed) (D1-R3)."; exit 1; }
+  MLIST=$(echo "$MODS" | head -n1 | tr -d '[] ')
+  [ -z "$MLIST" ] || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE has module(s) enabled ($MLIST); none allowed (D1-R3)."; exit 1; }
+  GUARD_SLOT=0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8 # keccak256("guard_manager.guard.address"), Safe v1.4.1 GuardManager
+  GUARD=$("$CAST" storage --rpc-url "$RPC" "$TREASURY_SAFE" "$GUARD_SLOT" 2>/dev/null) || { echo "REFUSING: could not read TREASURY_SAFE guard slot (RPC error, failing closed) (D1-R3)."; exit 1; }
+  case "$GUARD" in 0x*) ;; *) echo "REFUSING: unreadable guard slot '$GUARD' (failing closed) (D1-R3)."; exit 1;; esac
+  [ -z "$(echo "${GUARD#0x}" | tr -d 0)" ] || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE has a guard set ($GUARD); none allowed (D1-R3)."; exit 1; }
+  echo "TREASURY_SAFE $TREASURY_SAFE: $SNAME proxy, threshold $THRESH of $NOWN owners, no role key among them, no modules, no guard"
 fi
 export SENDER
 echo "LOCAL_ANVIL=$LOCAL_ANVIL (from the node check; never inherited)"

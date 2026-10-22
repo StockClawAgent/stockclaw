@@ -211,18 +211,34 @@ export function loadDeployment(): Deployment {
  * a contract (eth_getCode non-empty and NOT an EIP-7702 delegation `0xef0100…`), getThreshold() >= 2, getOwners() >= 3,
  * and none of its owners (nor the Safe itself) is the deployer, keeper or attester. Any RPC error fails closed (throws).
  * On a verified anvil the treasury is an EOA stand-in (anvil #2): returns a note. */
-const SAFE_ABI = parseAbi(["function getThreshold() view returns (uint256)", "function getOwners() view returns (address[])"]);
+const SAFE_ABI = parseAbi(["function getThreshold() view returns (uint256)", "function getOwners() view returns (address[])", "function getModulesPaginated(address start, uint256 pageSize) view returns (address[] array, address next)"]);
+/** D1-R3: Safe v1.4.1 singletons (masterCopy in storage slot 0 of a SafeProxy), keyed by chain id. */
+export const SAFE_SINGLETONS: Record<number, Record<string, string>> = {
+  46630: { "0x29fcb43b46531bca003ddc8fcb67ffe91900c762": "SafeL2 v1.4.1", "0x41675c099f32341bf84bfc5382af534df5c7461a": "Safe v1.4.1" },
+};
+/** Safe GuardManager GUARD_STORAGE_SLOT = keccak256("guard_manager.guard.address") (Safe v1.4.1 source). */
+export const SAFE_GUARD_SLOT = "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8" as const;
+const SENTINEL = "0x0000000000000000000000000000000000000001" as const;
 export async function assertTreasurySafe(safe: string | undefined, roles: { deployer?: string | null; keeper?: string | null; attester?: string | null } | string | undefined, local = isLocalChain()) {
   if (local) return { ok: true, note: "verified local anvil: treasury may be an EOA stand-in for the Safe" };
   const r = typeof roles === "string" || roles === undefined ? { deployer: roles } : roles;
   if (!safe || !/^0x[0-9a-fA-F]{40}$/.test(safe)) throw new Error(`REFUSING: TREASURY_SAFE is missing or not an address (${safe ?? "unset"}) off a verified local anvil (D-1)`);
   if (!r.deployer) throw new Error("REFUSING: the deployer address is unknown (set DEPLOYER_KEY or DEPLOYER, or `deployer` in the deployments file) off a verified local anvil (G1)");
+  if (!r.keeper) throw new Error("REFUSING: the keeper address is unknown (set KEEPER_KEY, or `keeper` in the deployments file) off a verified local anvil: the keeper-vs-Safe checks can't be skipped");
+  if (!r.attester) throw new Error("REFUSING: the attester address is unknown off a verified local anvil: the attester-vs-Safe checks can't be skipped");
   const named = Object.entries({ deployer: r.deployer, keeper: r.keeper, attester: r.attester }).filter(([, a]) => !!a) as [string, string][];
   for (const [n, a] of named) if (safe.toLowerCase() === a.toLowerCase()) throw new Error(`REFUSING: TREASURY_SAFE ${safe} is the ${n}. The treasury must be the 2-of-3 Safe, not the ${n} key (D-1)`);
   let code: string | undefined;
   try { code = await pub.getCode({ address: safe as Address }); } catch (e) { throw new Error(`REFUSING: could not read TREASURY_SAFE ${safe} code (RPC error, failing closed): ${String((e as Error).message).slice(0, 160)}`); }
   if (!code || code === "0x") throw new Error(`REFUSING: TREASURY_SAFE ${safe} has no code (eth_getCode empty): not a Safe contract on this chain (D-1)`);
   if (code.toLowerCase().startsWith("0xef0100")) throw new Error(`REFUSING: TREASURY_SAFE ${safe} is an EIP-7702 delegated EOA (code 0xef0100…), not a Safe contract (D1-R1)`);
+  // D1-R3: a SafeProxy whose masterCopy (slot 0) is a known Safe v1.4.1 singleton on this chain
+  const fc = (what: string, e: unknown) => new Error(`REFUSING: could not read TREASURY_SAFE ${safe} ${what} (RPC error, failing closed) (D1-R3): ${String((e as Error).message).slice(0, 160)}`);
+  let chainId: number, slot0: string | undefined;
+  try { chainId = await pub.getChainId(); slot0 = await pub.getStorageAt({ address: safe as Address, slot: "0x0" }); } catch (e) { throw fc("singleton slot", e); }
+  const single = ("0x" + String(slot0 ?? "0x").slice(2).padStart(64, "0").slice(24)).toLowerCase();
+  const allowed = SAFE_SINGLETONS[chainId] ?? {};
+  if (!allowed[single]) throw new Error(`REFUSING: TREASURY_SAFE ${safe} is not a proxy to a known Safe v1.4.1 singleton on chain ${chainId} (slot 0 = ${single}; allowed: ${Object.values(allowed).join(", ") || "none for this chain"}) (D1-R3)`);
   let threshold: bigint, owners: readonly string[];
   try {
     [threshold, owners] = await Promise.all([pub.readContract({ address: safe as Address, abi: SAFE_ABI, functionName: "getThreshold" }), pub.readContract({ address: safe as Address, abi: SAFE_ABI, functionName: "getOwners" })]);
@@ -230,18 +246,38 @@ export async function assertTreasurySafe(safe: string | undefined, roles: { depl
   if (threshold < 2n) throw new Error(`REFUSING: TREASURY_SAFE ${safe} threshold is ${threshold}; need >= 2 (D1-R1)`);
   if (owners.length < 3) throw new Error(`REFUSING: TREASURY_SAFE ${safe} has ${owners.length} owners; need >= 3 (D1-R1)`);
   for (const [n, a] of named) if (owners.some((o) => o.toLowerCase() === a.toLowerCase())) throw new Error(`REFUSING: the ${n} ${a} is an owner of TREASURY_SAFE ${safe}; Safe signers must be separate keys (D1-R1)`);
-  return { ok: true, note: null, threshold: Number(threshold), owners: owners.length };
+  // D1-R3: no modules (a module can execute without owner signatures) and no guard (can block or alter the Safe's txs)
+  let modules: readonly string[], guard: string | undefined;
+  try {
+    [[modules], guard] = await Promise.all([pub.readContract({ address: safe as Address, abi: SAFE_ABI, functionName: "getModulesPaginated", args: [SENTINEL, 10n] }), pub.getStorageAt({ address: safe as Address, slot: SAFE_GUARD_SLOT })]);
+  } catch (e) { throw fc("modules/guard", e); }
+  if (modules.length) throw new Error(`REFUSING: TREASURY_SAFE ${safe} has ${modules.length} module(s) enabled (${modules.join(", ")}); none allowed (D1-R3)`);
+  if (guard && BigInt(guard) !== 0n) throw new Error(`REFUSING: TREASURY_SAFE ${safe} has a guard set (slot ${SAFE_GUARD_SLOT} = ${guard}); none allowed (D1-R3)`);
+  return { ok: true, note: null, threshold: Number(threshold), owners: owners.length, singleton: allowed[single] };
 }
 const OWNABLE2 = parseAbi(["function owner() view returns (address)", "function pendingOwner() view returns (address)"]);
 const ISSUER = parseAbi(["function issuer() view returns (address)"]);
 /** L3 check: the Safe owns all 13 Ownable2Step contracts (router, oracle, MockUSDG, 5 pools, 5 feeds) with no pending owner,
  * holds registry admin, and the deployer has no registry admin. The only allowed leftover is ATTESTER_ROLE when
  * ATTESTER == deployer (local anvil, logged). Mock stock tokens' immutable `issuer` is reported, not a StockClaw role. */
+/** Off-anvil: the owned list is derived from the deployments file and must be exactly 13 distinct addresses. */
+export const OWNED_CONTRACTS = 13;
+export function ownedList(d: { router?: string; oracle?: string; usdg?: string; stocks?: Record<string, { pool?: string; feed?: string }> }) {
+  const ss = Object.values(d.stocks ?? {});
+  const list = [d.router, d.oracle, d.usdg, ...ss.map((x) => x.pool), ...ss.map((x) => x.feed)];
+  const valid = list.filter((a): a is string => typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a));
+  const distinct = new Set(valid.map((a) => a.toLowerCase())).size;
+  if (list.length !== OWNED_CONTRACTS || valid.length !== OWNED_CONTRACTS || distinct !== OWNED_CONTRACTS)
+    throw new Error(`REFUSING: the ownership check must cover exactly ${OWNED_CONTRACTS} distinct contracts from the deployments file (router, oracle, usdg, 5 pools, 5 feeds); got ${list.length} entries, ${valid.length} valid, ${distinct} distinct (${ss.length} stocks)`);
+  return list as Address[];
+}
 export async function deployerHandoff(a: { router: Address; oracle: Address; registry: Address; usdg: Address; pools: Address[]; feeds: Address[]; tokens?: Address[] }, deployer: Address, safe: Address) {
   const problems: string[] = [], eq = (x: string, y: string) => x.toLowerCase() === y.toLowerCase();
   const owned = [["router", a.router], ["oracle", a.oracle], ["usdg", a.usdg], ...a.pools.map((p, i) => [`pool${i}`, p]), ...a.feeds.map((f, i) => [`feed${i}`, f])] as [string, Address][];
+  let ok = 0;
   for (const [n, c] of owned) {
     const [o, p] = await Promise.all([read<string>(c, OWNABLE2, "owner"), read<string>(c, OWNABLE2, "pendingOwner")]);
+    if (eq(o, safe) && eq(p, zeroAddress)) ok++;
     if (!eq(o, safe)) problems.push(`${n} owner ${o} != Safe`);
     if (!eq(p, zeroAddress)) problems.push(`${n} pendingOwner ${p} not accepted`);
   }
@@ -250,6 +286,6 @@ export async function deployerHandoff(a: { router: Address; oracle: Address; reg
   if (!(await read<boolean>(a.registry, C.registry.abi, "hasRole", [admin, safe]))) problems.push("Safe lacks registry DEFAULT_ADMIN_ROLE");
   const attesterRole = await read<boolean>(a.registry, C.registry.abi, "hasRole", [att, deployer]);
   const mockIssuer = (await Promise.all((a.tokens ?? []).map((t) => read<string>(t, ISSUER, "issuer").catch(() => "")))).filter((x) => eq(x, deployer)).length;
-  return { problems, ownedBySafe: owned.length, attesterRole, mockIssuerOf: mockIssuer };
+  return { problems, checked: owned.length, ownedBySafe: ok, attesterRole, mockIssuerOf: mockIssuer };
 }
 export const isRevert = (e: unknown) => e instanceof BaseError && !!e.walk((x) => x instanceof ContractFunctionRevertedError);
