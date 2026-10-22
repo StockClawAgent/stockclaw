@@ -208,12 +208,19 @@ const execSubs = new Map<string, Set<(e: ExecEvent) => void>>();
 export function onExecEvent(id: string, fn: (e: ExecEvent) => void) { let s = execSubs.get(id); if (!s) execSubs.set(id, (s = new Set())); s.add(fn); return () => { s!.delete(fn); if (!s!.size) execSubs.delete(id); }; }
 function emit(e: ExecEvent) { for (const fn of execSubs.get(e.executionId) ?? []) { try { fn(e); } catch { /* subscriber gone */ } } }
 const lastLegEmit = new Map<string, string>();
+// A failed leg whose tx is still being watched (it may still mine and fill): `confirming: true` on the leg (snapshot and
+// leg_failed events) so the UI hides Retry. Cleared (with another leg_failed event, confirming false) when the watch ends
+// without a fill; a fill emits leg_filled. In memory: after a restart nothing is watching, so Retry (which reconciles
+// by receipt first) is offered again.
+const confirmingLegs = new Set<string>();
+const isConfirming = (l: { legId: string; status: string; txHash?: string }) => l.status === "failed" && !!l.txHash && confirmingLegs.has(l.legId);
 function setLeg(id: string, l: LegRow) {
-  const { status, txHash, ...rest } = l as any; delete rest.idx;
+  const { status, txHash, ...rest } = l as any; delete rest.idx; delete rest.confirming;
   getDb().prepare("UPDATE legs SET status=?, tx_hash=?, json=? WHERE leg_id=?").run(status, txHash ?? null, JSON.stringify(rest), l.legId); touch(id);
-  const sig = `${status}:${txHash ?? ""}:${rest.error ?? ""}`;
+  const confirming = isConfirming({ legId: l.legId, status, txHash });
+  const sig = `${status}:${txHash ?? ""}:${rest.error ?? ""}:${confirming}`;
   if (lastLegEmit.get(l.legId) !== sig) { lastLegEmit.set(l.legId, sig);
-    emit({ type: `leg_${status}`, executionId: id, at: nowIso(), legId: l.legId, ticker: l.ticker, targetUsd: l.targetUsd, filledUsd: rest.filledUsd ?? 0, ...(txHash ? { txHash } : {}), ...(rest.error ? { error: rest.error, ...toUserError(rest.error, 409) } : {}) }); }
+    emit({ type: `leg_${status}`, executionId: id, at: nowIso(), legId: l.legId, ticker: l.ticker, targetUsd: l.targetUsd, filledUsd: rest.filledUsd ?? 0, ...(txHash ? { txHash } : {}), ...(status === "failed" && txHash ? { confirming } : {}), ...(rest.error ? { error: rest.error, ...toUserError(rest.error, 409) } : {}) }); }
 }
 function setStatus(id: string, status: string) {
   getDb().prepare("UPDATE basket_executions SET status=?, updated_at=? WHERE id=?").run(status, nowIso(), id);
@@ -226,7 +233,7 @@ export function get_execution(id: string) {
   if (!r) throw new ApiError(404, "Unknown basket execution");
   const ex = JSON.parse(r.json);
   return { id, basketId: ex.basketId, basketVersion: ex.basketVersion, basketHash: ex.basketHash, totalUsd: ex.totalUsd, status: r.status as "pending" | "running" | "partial" | "filled" | "failed", createdAt: r.created_at, updatedAt: r.updated_at,
-    legs: legsOf(id).map((l) => ({ legId: l.legId, ticker: l.ticker, weight: l.weight, targetUsd: l.targetUsd, filledUsd: l.filledUsd, status: l.status, ...(l.txHash ? { txHash: l.txHash } : {}), ...(l.error ? { error: l.error } : {}) })) };
+    legs: legsOf(id).map((l) => ({ legId: l.legId, ticker: l.ticker, weight: l.weight, targetUsd: l.targetUsd, filledUsd: l.filledUsd, status: l.status, ...(l.txHash ? { txHash: l.txHash } : {}), ...(l.status === "failed" && l.txHash ? { confirming: isConfirming(l) } : {}), ...(l.error ? { error: l.error } : {}) })) };
 }
 export function list_executions(limit = 20) { return (getDb().prepare("SELECT id FROM basket_executions ORDER BY created_at DESC LIMIT ?").all(limit) as { id: string }[]).map((r) => get_execution(r.id)); }
 function finalStatus(id: string) {
@@ -271,6 +278,15 @@ function fillLeg(exId: string, l: LegRow, hash: string, out: number) {
 /** R7-4: a leg that timed out with a tx on the wire is failed (not stuck) but keeps being reconciled: if that tx mines
  * the leg flips to filled (once); a retry (which takes over the leg) stops this watcher. */
 async function watchLeg(exId: string, legId: string, hash: Hex) {
+  confirmingLegs.add(legId);
+  try { await watchLegInner(exId, legId, hash); }
+  finally {
+    confirmingLegs.delete(legId);
+    const cur = legsOf(exId).find((x) => x.legId === legId);
+    if (cur && cur.status === "failed" && cur.txHash === hash) setLeg(exId, cur); // emits leg_failed confirming:false (terminal)
+  }
+}
+async function watchLegInner(exId: string, legId: string, hash: Hex) {
   const t0 = Date.now(), maxMs = Number(process.env.SETTLE_TIMEOUT_MS ?? 180_000);
   while (Date.now() - t0 < maxMs) {
     const cur = legsOf(exId).find((x) => x.legId === legId);
@@ -282,7 +298,7 @@ async function watchLeg(exId: string, legId: string, hash: Hex) {
       if (r.ok && fillLeg(exId, cur, hash, r.out)) { log.info("timed-out leg mined later: filled from its receipt", { executionId: exId, legId, txHash: hash }); const st2 = (getDb().prepare("SELECT status FROM basket_executions WHERE id=?").get(exId) as any)?.status; if (st2 !== "running" && st2 !== "pending") finalStatus(exId); }
       return;
     }
-    if (st === "reverted") { setLeg(exId, { ...cur, error: "Transaction reverted" }); return; }
+    if (st === "reverted") { confirmingLegs.delete(legId); setLeg(exId, { ...cur, error: "Transaction reverted" }); return; }
     await sleepMs(500);
   }
 }
@@ -302,8 +318,9 @@ async function runLeg(exId: string, l: LegRow & { idx: number }, slippageBps: nu
     const hash = (cur.txHash ?? loggedLegHash(l.legId)) as Hex | undefined;
     const unresolved = !hash && sending.has(l.legId);
     const reason = `Timed out after ${Math.round(ms / 1000)}s${hash ? " waiting for confirmation (retry checks the receipt first, so nothing is duplicated)" : unresolved ? " while sending (retry waits for that send first, so nothing is duplicated)" : " before submitting"}`;
+    if (hash) confirmingLegs.add(l.legId); // the first leg_failed already says confirming: true
     setLeg(exId, { ...cur, status: "failed", ...(hash ? { txHash: hash } : {}), error: reason }); log.warn("leg timed out", { executionId: exId, legId: l.legId, ms, txHash: hash ?? null });
-    if (hash) void watchLeg(exId, l.legId, hash);
+    if (hash) void watchLeg(exId, l.legId, hash); else confirmingLegs.delete(l.legId);
     return false;
   } finally { clearTimeout(timer); }
 }

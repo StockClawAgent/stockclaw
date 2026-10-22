@@ -980,6 +980,49 @@ try {
     } finally { ui.sse.close(); }
   });
 
+  await step("basket leg confirming (4): a leg that failed with a txHash still being watched has confirming:true (snapshot + leg_failed event) until terminal: filled (leg_filled, no confirming) or the watch ends (leg_failed confirming:false)", async () => {
+    const { pub: P } = await import("../src/chain.js");
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    Object.assign(process.env, { LEG_TIMEOUT_MS: "1200", SETTLE_TIMEOUT_MS: "30000" });
+    try {
+      // (a) late tx mines -> filled
+      await freshUser();
+      const pv = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+      await P.request({ method: "evm_setAutomine", params: [false] } as any);
+      bk._setFaults({ slowSendLeg: 0 });
+      const b = await callH("POST", "baskets/buy", { previewId: pv.previewId }); assert.equal(b.status, 202);
+      const evs: any[] = []; const off = bk.onExecEvent(b.body.id, (e) => evs.push(e));
+      const e1 = await waitExec(b.body.id);
+      const l0 = e1.legs[0]; assert.equal(l0.status, "failed", JSON.stringify(e1)); assert.ok(l0.txHash); assert.equal(l0.confirming, true, JSON.stringify(l0));
+      const lf = evs.filter((e) => e.type === "leg_failed" && e.legId === l0.legId); assert.ok(lf.length >= 1); assert.equal(lf[lf.length - 1].confirming, true);
+      for (const l of e1.legs.slice(1)) assert.ok(!l.confirming, "only legs with a watched tx");
+      await P.request({ method: "evm_mine", params: [] } as any); await P.request({ method: "evm_setAutomine", params: [true] } as any);
+      const e2 = await waitExec(b.body.id, (e: any) => e.legs[0].status === "filled");
+      assert.equal(e2.legs[0].status, "filled"); assert.equal(e2.legs[0].confirming, undefined, "terminal: no confirming flag");
+      assert.ok(evs.some((e) => e.type === "leg_filled" && e.legId === l0.legId && e.confirming === undefined));
+      off();
+      // (b) tx never mines within the watch window -> confirming:false (terminal, Retry can show)
+      Object.assign(process.env, { SETTLE_TIMEOUT_MS: "2500" });
+      await freshUser();
+      const pv2 = (await callH("POST", "baskets/preview", { id: "ai-tech-mini", usd: 30 })).body;
+      await P.request({ method: "evm_setAutomine", params: [false] } as any);
+      bk._setFaults({ slowSendLeg: 0 });
+      const b2 = await callH("POST", "baskets/buy", { previewId: pv2.previewId }); assert.equal(b2.status, 202);
+      const evs2: any[] = []; const off2 = bk.onExecEvent(b2.body.id, (e) => evs2.push(e));
+      const g1 = await waitExec(b2.body.id); assert.equal(g1.legs[0].confirming, true, JSON.stringify(g1.legs[0]));
+      const g2 = await waitExec(b2.body.id, (e: any) => e.legs[0].confirming === false);
+      assert.equal(g2.legs[0].status, "failed"); assert.equal(g2.legs[0].confirming, false); assert.ok(g2.legs[0].txHash);
+      assert.ok(evs2.some((e) => e.type === "leg_failed" && e.legId === g2.legs[0].legId && e.confirming === false), "leg_failed confirming:false event");
+      off2();
+      await P.request({ method: "evm_mine", params: [] } as any); // mine it so the agent's nonce stays in sync for later steps (nobody records it: the watch ended)
+      await sleep(200);
+    } finally {
+      await P.request({ method: "evm_setAutomine", params: [true] } as any).catch(() => {});
+      bk._setFaults({});
+      for (const k of ["LEG_TIMEOUT_MS", "SETTLE_TIMEOUT_MS"]) delete process.env[k];
+    }
+  });
+
   await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
     await freshUser();
     assert.equal((await call("POST", "create_session_key", { allowlist: ["AMD", "TSLA"], label: "E2E seller", name: "Research bot" })).status, 200);
