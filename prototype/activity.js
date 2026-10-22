@@ -40,11 +40,13 @@ function cardRow(c){const w=what(c),t=x=>w?`${e(w)} · ${x}`:x;
  if(c.st=="confirmed")return `<li class="af-job af-confirmed" data-job="${e(c.key)}" data-swap="${e(c.swapId||"")}"><span class="lv lv-on"></span><span class="af-title">${t("Confirmed")}</span>${txA(c.tx,c.url)}</li>`;
  if(c.st=="failed"){const i=SCErr.of(c.error||{});return `<li class="af-job af-failed" data-job="${e(c.key)}" data-swap="${e(c.swapId||"")}"><span class="lv lv-off"></span><span class="af-title">${t("Didn't go through.")} ${e(i.message)}</span>${txA(c.tx,c.url)}</li>`}
  return `<li class="af-job" data-job="${e(c.key)}"><span class="lv lv-wait"></span><span class="af-title">${e(/sell/i.test(c.jobKind||"")?"Sell in progress":/buy|swap|trade/i.test(c.jobKind||"")?"Trade in progress":"Working on it")}…</span></li>`}
-// queued/running: "in progress"; pending: keep until settled; settled after pending: in place; a fast swap that never pended: dropped (as before)
+// queued/running: "in progress"; pending: keep until settled; settled: in place. A swap that confirms without pending (automine) also
+// becomes the Confirmed card when the result names its swapId (its activity row folds in); a fast failure or a job without swapId: dropped.
 function onJob(j){if(!F.mounted||j==null||j.jobId==null)return;const st=jobState(j),r=(st=="failed"?j.error:j.result)||{},ids={jobId:j.jobId,jobIds:r.jobIds,swapId:r.swapId,tx:r.txHash},prev=findCard(ids),was=prev&&prev.st;
  if(st=="running"){if(!prev||prev.st=="running")upsert(ids,{st,jobKind:j.jobKind})}
  else if(st=="pending"){if(!prev||!/^(confirmed|failed)$/.test(prev.st))upsert(ids,{st,...fields(r)})}
  else if(prev&&prev.st!="running")upsert(ids,st=="failed"?{st,error:j.error,...fields(r)}:{st,...fields(r)}); // a failed settle carries swapId/symbol/side/amountUsd/txHash on error
+ else if(prev&&st=="confirmed"&&ids.swapId)upsert(ids,{st,...fields(r)}); // automine: running -> confirmed with no pending step: same one card, Confirmed
  else if(prev)F.jobs.delete(prev.key);
  draw();if(st=="pending"&&was!="pending"&&!/^(confirmed|failed)$/.test(was||""))say("Trade sent, confirming");else if(was=="pending"&&st!="pending"&&st!="running")say(st=="confirmed"?"Trade confirmed":"Trade didn't go through")}
 // the settled activity row for a swap we have a card for: upgrade the card, hide the row (one card per swap)

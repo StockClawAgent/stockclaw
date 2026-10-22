@@ -42,7 +42,7 @@ dash=function(t,body){if(INNER)return body;const k=S.key,act=k&&k.status=="activ
 ${ban}${dataErr()}<div class="dx-body">${body}</div>${DISC}`};
 
 // ---------- Home ----------
-function Home(){initData();if(ST.status===undefined)loadStrats().then(()=>{if(lastRoute=="/dashboard/overview")render()});
+function Home(){initData();if(ST.status===undefined)loadStrats().then(ok=>{if(ok&&lastRoute=="/dashboard/overview")render()}); /* only after a real fetch: a backed-off/failed load resolving at once used to re-render Home in a microtask loop that froze the page */
  const s=ST.status,id=s?s.id:"steady-stacker",name=NAMES[id]||(sById(id)||{}).name||"Steady Stacker",on=s&&s.status=="active";
  const pf=portfolio(),pl=pnlToday(),k=S.key;const used=Math.max(0,500-vaultLeft(),+(k&&k.spentToday)||0);
  const primary=!s?`<a class="dx-primary" href="#/dashboard/strategies">Pick a strategy</a>`:on?`<button class="dx-primary" id="dxPause">Pause agent</button>`:`<button class="dx-primary" id="dxResume">Resume agent</button>`;

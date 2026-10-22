@@ -294,9 +294,9 @@ function stratErrors(id,p){const e=[];const inr=(v,[a,b])=>typeof v=="number"&&i
   if(!Number.isInteger(p.expiryDays)||!inr(p.expiryDays,BOUNDS.expiry))e.push("Expiry must be 1–7 days.");}
  if(!Number.isInteger(p.oracleDevBps)||!inr(p.oracleDevBps,BOUNDS.dev))e.push("Max price deviation must be 10–300 bps.");return e}
 const ST={list:null,status:undefined,loading:false,err:null,draft:null,preview:null,ack:false,busy:false};
-async function loadStrats(force){if(ST.loading||(!force&&ST.list&&ST.status!==undefined))return;if(!force&&ST.err&&Date.now()-(ST.errAt||0)<15000)return;ST.loading=true;
+async function loadStrats(force){if(ST.loading||(!force&&ST.list&&ST.status!==undefined))return false;if(!force&&ST.err&&Date.now()-(ST.errAt||0)<15000)return false;ST.loading=true; // false = nothing fetched (callers must not re-render on it)
  try{const [l,s]=await Promise.all([sapi("list_strategies"),sapi("get_strategy_status")]);ST.list=(l||[]).map(normStrat);const ns=normStatus(s);ST.status=ns&&!["stopped","rejected","none"].includes(ns.status)?ns:null;ST.err=null}catch(e){ST.err=e.message||String(e);ST.errAt=Date.now()}
- ST.loading=false;if(/strateg/.test(lastRoute||""))render()}
+ ST.loading=false;if(/strateg/.test(lastRoute||""))render();return true}
 const sById=(id)=>(ST.list||MOCK_STRATS).find(s=>s.id==id)||MOCK_STRATS.find(s=>s.id==id);
 const avatar=(id,size,extra="")=>`<img class="av ${extra}" src="${SAVATAR[id]||""}" width="${size}" height="${size}" alt="${esc((sById(id)||{}).name||id)} avatar">`;
 const runsLbl=(r)=>r=="client"?"Runs on: your AI (within your limits)":r=="both"?"Runs on: our keeper + your AI":"Runs on: our keeper";
