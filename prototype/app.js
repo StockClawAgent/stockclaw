@@ -35,11 +35,16 @@ const short=(a)=>a?a.slice(0,6)+"…"+a.slice(-4):"";const go=(h)=>{location.has
 const fmtD=(iso)=>new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric"});
 // Reset demo: server reset via api.js if it has one, else POST /api/dev/reset; 404/unreachable/mock -> local-only reset with a note.
 let resetNote=null;
-document.getElementById("reset").onclick=async(e)=>{e.preventDefault();let note=null;
+// DANGER on a live demo: the server reset wipes every passkey and moves the demo owner/vault to a new address. So the link exists
+// only with ?dev=1 (it is not in index.html), and it always asks first; Cancel sends nothing.
+const RESET_Q="Reset demo?",RESET_BODY="This removes the presenter passkey and moves the vault to a new owner. You'll need to set up a passkey again.";
+if(DEVUI){const bar=document.querySelector(".tnbar");if(bar&&!document.getElementById("reset")){bar.insertAdjacentHTML("beforeend",` <a href="#" id="reset">Reset demo</a>`)}
+ const a=document.getElementById("reset");if(a)a.onclick=(e)=>{e.preventDefault();confirmDlg(RESET_Q,RESET_BODY,"Reset demo",doReset)}}
+async function doReset(){if(!DEVUI)return;let note=null;
  try{if(window.USE_MOCK)throw{local:1};if(api.dev_reset)await api.dev_reset();else if(api.reset_demo)await api.reset_demo();else{const r=await fetch(`${typeof API_BASE!=="undefined"?API_BASE:location.origin}/api/dev/reset`,{method:"POST",headers:{"content-type":"application/json",...((()=>{const t=getTok();return t?{authorization:`Bearer ${t}`,"x-owner-token":t}:{}})())}});if(r.status==404){const r2=await fetch(`${typeof API_BASE!=="undefined"?API_BASE:location.origin}/api/demo/reset`,{method:"POST"});if(!r2.ok)throw{status:r2.status}}else if(!r.ok)throw{status:r.status}}}
  catch(x){note=x&&x.local?"Reset complete.":x&&x.status==403?"Reset local state only: server reset is only allowed on the local chain.":x&&x.status==404?"Reset local state only: the server reset endpoint isn't available yet, so the wallet, key, orders and funding cooldown on the server are unchanged.":`Reset local state only: server reset failed (${(x&&(x.status||x.message))||"unreachable"}).`}
  const keepMock=localStorage.getItem("stockclaw-use-mock");localStorage.clear();if(keepMock)localStorage.setItem("stockclaw-use-mock",keepMock);
- S=def();draft=null;stage=null;ST.list=null;ST.status=undefined;ST.draft=null;ST.preview=null;TICKERS=null;C.bal=C.assets=null;C.err=null;resetNote=note;lastRoute=null;if(location.hash==="#/"||!location.hash)render();else go("#/");say(note||"Demo reset")};
+ S=def();draft=null;stage=null;ST.list=null;ST.status=undefined;ST.draft=null;ST.preview=null;TICKERS=null;C.bal=C.assets=null;C.err=null;resetNote=note;lastRoute=null;if(location.hash==="#/"||!location.hash)render();else go("#/");say(note||"Demo reset")}
 
 const STEPS=["Eligibility","Wallet","Agent key","Fund","AI client","Strategy (optional)"],SR=["eligibility","wallet","key","faucet","client"];
 const steps=(n)=>`<ol class="steps" aria-label="Onboarding progress">${STEPS.map((s,i)=>`<li class="${i<n?"done":i==n?"on":""}" ${i==n?'aria-current="step"':""}>${i<n?"✓ ":""}${i+1}. ${s}</li>`).join("")}</ol>`;
@@ -397,7 +402,7 @@ addEventListener("hashchange",render);render();
 // ---- Persistent banner (shared bar from index.html; landing reuses the same bar) ----
 const BANNER="";
 // ---- Owner token (presenter). sessionStorage only; never localStorage, never logged. ----
-function paintBar(){const b=document.querySelector(".tnbar");if(!b)return;let t=b.querySelector(".bn-t");if(!t){b.innerHTML=`<span class="bn-t"></span> <span class="bn-o"></span> <a href="#" id="reset">Reset demo</a>`;t=b.querySelector(".bn-t")}
+function paintBar(){const b=document.querySelector(".tnbar");if(!b)return;let t=b.querySelector(".bn-t");if(!t){b.innerHTML=`<span class="bn-t"></span> <span class="bn-o"></span>`;t=b.querySelector(".bn-t")}
  t.textContent=BANNER;const o=b.querySelector(".bn-o");if(window.USE_MOCK){o.innerHTML="";if(window.PUBLIC_SITE)b.hidden=true;return}
  o.innerHTML=getTok()?`Owner token set <button type="button" class="linkbtn" id="forgetTok">Forget token</button>`:`<button type="button" class="linkbtn" id="setTok">Set owner token</button>`}
 document.addEventListener("click",e=>{if(e.target.id=="forgetTok"){forgetTok();say&&say("Owner token forgotten")}else if(e.target.id=="setTok"){askTok()}});
