@@ -6,7 +6,7 @@
    Data source: BFAdapter below, all through api.js (mock with ?mock=1, forced leg failure with ?mockFail=1).
    A failed leg can later become filled (leg_filled after a late mine, R7-4): it renders as filled; after a terminal partial/failed
    the stream is re-opened while a failed leg still has a tx out. A leg with a tx out (server `confirming: true`, or txHash + failed until that lands) shows "Confirming…", never Retry.
-   ?mock=1&mockHeal=1 exercises failed+tx -> Confirming… -> filled; add &mockConfirmFlag=1 for the new server flag. */
+   ?mock=1&mockHeal=1 exercises failed+tx -> Confirming… -> filled; add &mockConfirmFlag=1 for the server flag, or =end for flag true -> false (watch over, Retry returns). */
 (function(){
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const usd=n=>"$"+(+n||0).toFixed(2);
@@ -34,18 +34,21 @@ const BFAdapter={
 const MOCK_HEAL=/[?&]mock=1/.test(location.search)&&/[?&]mockHeal=1/.test(location.search),HEAL={};
 function healState(id){const h=HEAL[id],t=Date.now()-h.t0,n=h.legs.length,end=(n+1)*1200,healAt=end+(+new URLSearchParams(location.search).get("mockHealMs")||6000);
  const legs=h.legs.map((l,i)=>{let status=t>(i+1)*1200?"filled":t>i*1200?"filling":"pending";const tx="0xMOCKLEG"+i+"a11ce";
-  if(i==1&&status=="filled")status=t>healAt?"filled":"failed";
-  return {legId:l.legId,ticker:l.ticker,weight:l.weight,targetUsd:l.targetUsd,filledUsd:status=="filled"?l.targetUsd:0,status,...(status!="pending"?{txHash:tx}:{}),...(status=="failed"&&/[?&]mockConfirmFlag=1/.test(location.search)?{confirming:true}:{}),...(status=="failed"?{error:"Sent, still waiting for the network. Retry checks the receipt first."}:{})}});
+  const fl=(location.search.match(/[?&]mockConfirmFlag=(\w+)/)||[])[1]; // 1: flag true then fills; end: flag true, then false (watch over) -> Retry
+  if(i==1&&status=="filled")status=t>healAt&&fl!="end"?"filled":"failed";
+  return {legId:l.legId,ticker:l.ticker,weight:l.weight,targetUsd:l.targetUsd,filledUsd:status=="filled"?l.targetUsd:0,status,...(status!="pending"?{txHash:tx}:{}),...(status=="failed"&&fl?{confirming:!(fl=="end"&&t>healAt)}:{}),...(status=="failed"?{error:"Sent, still waiting for the network. Retry checks the receipt first."}:{})}});
  const all=legs.every(l=>l.status=="filled"),busy=legs.some(l=>l.status=="pending"||l.status=="filling");
  return {id,basketId:h.basketId,totalUsd:h.totalUsd,status:all?"filled":busy?(t<300?"pending":"running"):"partial",createdAt:new Date(h.t0).toISOString(),updatedAt:new Date().toISOString(),legs}}
 function healSub(id,on){let closed=false,prev=null;(async()=>{if(!HEAL[id]){const x=await api.get_basket_execution(id);HEAL[id]={t0:Date.now(),legs:x.legs,basketId:x.basketId,totalUsd:x.totalUsd}}
-  const tick=()=>{if(closed)return;const x=healState(id);if(!prev)on({type:"snapshot",executionId:id,execution:x});else{x.legs.forEach(l=>{const o=prev.legs.find(p=>p.legId==l.legId);if(o.status!=l.status)on({type:"leg_"+l.status,executionId:id,legId:l.legId,ticker:l.ticker,targetUsd:l.targetUsd,filledUsd:l.filledUsd,...(l.txHash?{txHash:l.txHash}:{}),...(l.error?{code:l.error}:{}),...(l.confirming!=null?{confirming:l.confirming}:{})})});if(prev.status!=x.status)on({type:"execution_status",executionId:id,status:x.status})}
+  const tick=()=>{if(closed)return;const x=healState(id);if(!prev)on({type:"snapshot",executionId:id,execution:x});else{x.legs.forEach(l=>{const o=prev.legs.find(p=>p.legId==l.legId);if(o.status!=l.status||o.confirming!==l.confirming)on({type:"leg_"+l.status,executionId:id,legId:l.legId,ticker:l.ticker,targetUsd:l.targetUsd,filledUsd:l.filledUsd,...(l.txHash?{txHash:l.txHash}:{}),...(l.error?{code:l.error}:{}),...(l.confirming!=null?{confirming:l.confirming}:{})})});if(prev.status!=x.status)on({type:"execution_status",executionId:id,status:x.status})}
    prev=x;if(["filled","partial","failed"].includes(x.status))return;setTimeout(tick,250)};tick()})();return {close:()=>{closed=true}}}
 
 // ---------------- aggregation: slices by ticker ----------------
 // A leg whose tx is out but not settled is "confirming": no Retry (retrying could double-buy), shows "Confirming…".
-// Server flag `confirming` (Lucius) wins when present; until it lands, txHash + failed is the signal.
-const confirming=l=>l.status!="filled"&&(typeof l.confirming=="boolean"?l.confirming:(l.status=="failed"&&!!l.txHash));
+// Server flag `confirming` (Lucius 1dc3602, failed legs with a txHash only): true = tx still watched, false = terminal, Retry is safe.
+// Once any snapshot/event has carried the flag, the old txHash + failed fallback is off for good (a flag-less failed leg gets Retry).
+let FLAG_SEEN=false;const seeFlag=l=>{if(l&&typeof l.confirming=="boolean")FLAG_SEEN=true};
+const confirming=l=>l.status=="failed"&&(typeof l.confirming=="boolean"?l.confirming:(!FLAG_SEEN&&!!l.txHash));
 function slices(x){const m=new Map();(x.legs||[]).forEach(l=>{let s=m.get(l.ticker);if(!s){s={ticker:l.ticker,weight:+l.weight||0,target:0,filled:0,legs:[]};m.set(l.ticker,s)}s.target+=+l.targetUsd||0;s.filled+=+l.filledUsd||0;s.legs.push(l)});
  return [...m.values()].map(s=>{const st=s.legs.map(l=>l.status);s.status=st.every(v=>v=="filled")?"filled":s.legs.some(l=>l.status=="failed"&&!confirming(l))?"failed":s.legs.some(confirming)?"confirming":st.some(v=>v=="filling"||v=="filled")?"filling":"pending";
   s.frac=s.target?Math.min(1,s.filled/s.target):0;s.error=(s.legs.find(l=>l.error)||{}).error;return s})}
@@ -81,21 +84,22 @@ function mount(el,id,opts={}){if(!el)return;if(el._bf)el._bf.sub&&el._bf.sub.clo
   el.querySelectorAll("[data-retry]").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="Retrying…";const s=sl.find(s=>s.ticker==b.dataset.retry);
    try{for(const l of s.legs.filter(l=>l.status=="failed"&&!confirming(l)))await BFAdapter.retry(id,l.legId);follow()}catch(err){b.disabled=false;b.textContent="Retry";const i=SCErr.of(err);status.textContent=i.message}});
   opts.onUpdate&&opts.onUpdate(x)};
- // events: snapshot {execution} | leg_* {legId, ticker, targetUsd, filledUsd, txHash?, code?} | execution_status {status}
+ // events: snapshot {execution} | leg_* {legId, ticker, targetUsd, filledUsd, txHash?, confirming? (failed+tx), error?, code?} | execution_status {status}
  const onEv=ev=>{if(el._bf!==st||!el.isConnected&&st.x)return st.sub&&st.sub.close();
-  if(ev.type=="snapshot"){st.x=JSON.parse(JSON.stringify(ev.execution))}
+  if(ev.type=="snapshot"){st.x=JSON.parse(JSON.stringify(ev.execution));(st.x.legs||[]).forEach(seeFlag)}
   else if(!st.x)return;
   else if(/^leg_/.test(ev.type)){const k=ev.type.slice(4);let l=st.x.legs.find(l=>l.legId==ev.legId);if(!l){l={legId:ev.legId,ticker:ev.ticker,weight:0};st.x.legs.push(l)}
-   Object.assign(l,{status:k,ticker:ev.ticker||l.ticker,targetUsd:ev.targetUsd!=null?ev.targetUsd:l.targetUsd,filledUsd:ev.filledUsd!=null?ev.filledUsd:l.filledUsd},ev.txHash?{txHash:ev.txHash}:{},ev.code?{error:ev.code}:{},typeof ev.confirming=="boolean"?{confirming:ev.confirming}:{});
+   Object.assign(l,{status:k,ticker:ev.ticker||l.ticker,targetUsd:ev.targetUsd!=null?ev.targetUsd:l.targetUsd,filledUsd:ev.filledUsd!=null?ev.filledUsd:l.filledUsd},ev.txHash?{txHash:ev.txHash}:{},(ev.error||ev.code)?{error:ev.error||ev.code}:{},typeof ev.confirming=="boolean"?{confirming:ev.confirming}:{});seeFlag(ev);
    if(k=="filled"||k=="filling"){delete l.error;if(k=="filled")delete l.confirming} // a failed leg whose tx mined late (R7-4) arrives as leg_filled: it replaces the failed state
    if(st.x.status=="pending")st.x.status="running"}
   else if(ev.type=="execution_status"){st.x.status=ev.status}
   draw(st.x);watch()};
  const follow=()=>{st.sub&&st.sub.close();st.sub=BFAdapter.subscribe(id,onEv)};
  // The server stream ends at a terminal status, but a failed leg that has a txHash is still reconciled server-side and can
- // become filled later. While one is out, re-open the stream every 5s (snapshot = current state) for up to 10 min.
+ // become filled later. While one is out, re-open the stream every 5s (snapshot = current state): until the server flag says
+ // confirming:false (or the leg fills); on the old txHash+failed fallback, for up to 10 min.
  const watch=()=>{clearTimeout(st.w);const x=st.x;if(!x||!["partial","failed"].includes(x.status)||!el.isConnected||el._bf!==st)return;
-  if(!(x.legs||[]).some(confirming))return;st.w0=st.w0||Date.now();if(Date.now()-st.w0>6e5)return;st.w=setTimeout(()=>{if(el.isConnected&&el._bf===st)follow()},5000)};
+  if(!(x.legs||[]).some(confirming))return;st.w0=st.w0||Date.now();if(!FLAG_SEEN&&Date.now()-st.w0>6e5)return;st.w=setTimeout(()=>{if(el.isConnected&&el._bf===st)follow()},5000)};
  follow();return st}
 window.BasketFill={mount,slices,adapter:BFAdapter};
 })();

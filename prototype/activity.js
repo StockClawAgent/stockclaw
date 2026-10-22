@@ -3,7 +3,7 @@
    Offline/connecting/live indicator. Breaker via api.getBreaker / api.resumeKey. No token handling here.
    Swaps: running -> "Trade in progress"; execute_swap done + result.status "pending" -> "Sent, confirming…" (no retry, no timeout),
    one card per swapId (seeded from GET /api/swaps?status=pending on load), upgraded in place when it settles.
-   Mocks: ?mock=1&mockPending=1|fail|rich, &mockSeed=1. */
+   Mocks: ?mock=1&mockPending=1|fail|rich|richfail, &mockSeed=1. */
 (function(){
 const MOCK=new URLSearchParams(location.search).get("mock")==="1";
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -27,12 +27,13 @@ const amt=n=>{n=+n;return isFinite(n)?"$"+(n%1?n.toFixed(2):String(n)):""};
 const what=c=>{const sd=/^sell$/i.test(c.side||"")?"Sell":/^buy$/i.test(c.side||"")?"Buy":"";const parts=[sd,c.amountUsd!=null?amt(c.amountUsd):"",c.symbol||""].filter(Boolean);return sd&&c.symbol?parts.join(" "):""};
 function jobState(j){const r=j.result||{};if(j.status=="done"&&r.status=="pending")return "pending";if(j.status=="done")return "confirmed";if(j.status=="failed")return "failed";return "running"}
 const open_=c=>c.st=="pending"||c.st=="confirmed"||c.st=="failed";
-function findCard({jobId,swapId,tx}){for(const c of F.jobs.values()){if(swapId&&c.swapId==swapId)return c}
- for(const c of F.jobs.values()){if(jobId!=null&&c.jobIds.has(String(jobId)))return c}
+const jids=(jobId,jobIds)=>[jobId,...(Array.isArray(jobIds)?jobIds:[])].filter(x=>x!=null).map(String);
+function findCard({jobId,jobIds,swapId,tx}){const J=jids(jobId,jobIds);for(const c of F.jobs.values()){if(swapId&&c.swapId==swapId)return c}
+ for(const c of F.jobs.values()){if(J.some(x=>c.jobIds.has(x)))return c}
  if(tx)for(const c of F.jobs.values()){if(c.tx&&c.tx==tx)return c}return null}
 // a retried job's "in progress" card folds into its swap card once the duplicate result names the swapId
 function upsert(ids,patch){let c=findCard(ids);if(!c){c={key:"c"+ ++cardN,jobIds:new Set()};F.jobs.set(c.key,c)}
- if(ids.jobId!=null){const jid=String(ids.jobId);c.jobIds.add(jid);for(const o of F.jobs.values())if(o!==c&&o.jobIds.has(jid)&&o.st=="running")F.jobs.delete(o.key)}for(const [k,v] of Object.entries({swapId:ids.swapId,tx:ids.tx,...patch}))if(v!=null&&v!=="")c[k]=v;return c}
+ for(const jid of jids(ids.jobId,ids.jobIds)){c.jobIds.add(jid);for(const o of F.jobs.values())if(o!==c&&o.jobIds.has(jid)&&o.st=="running")F.jobs.delete(o.key)}for(const [k,v] of Object.entries({swapId:ids.swapId,tx:ids.tx,...patch}))if(v!=null&&v!=="")c[k]=v;return c}
 const fields=r=>({url:r.explorerUrl,symbol:r.symbol,side:r.side,amountUsd:r.amountUsd!=null?+r.amountUsd:null});
 function cardRow(c){const w=what(c),t=x=>w?`${e(w)} · ${x}`:x;
  if(c.st=="pending")return `<li class="af-job af-pending" data-job="${e(c.key)}" data-swap="${e(c.swapId||"")}"><span class="lv lv-wait"></span><span class="af-title">${t("Sent, confirming…")}</span>${txA(c.tx,c.url)}</li>`;
@@ -40,10 +41,10 @@ function cardRow(c){const w=what(c),t=x=>w?`${e(w)} · ${x}`:x;
  if(c.st=="failed"){const i=SCErr.of(c.error||{});return `<li class="af-job af-failed" data-job="${e(c.key)}" data-swap="${e(c.swapId||"")}"><span class="lv lv-off"></span><span class="af-title">${t("Didn't go through.")} ${e(i.message)}</span>${txA(c.tx,c.url)}</li>`}
  return `<li class="af-job" data-job="${e(c.key)}"><span class="lv lv-wait"></span><span class="af-title">${e(/sell/i.test(c.jobKind||"")?"Sell in progress":/buy|swap|trade/i.test(c.jobKind||"")?"Trade in progress":"Working on it")}…</span></li>`}
 // queued/running: "in progress"; pending: keep until settled; settled after pending: in place; a fast swap that never pended: dropped (as before)
-function onJob(j){if(!F.mounted||j==null||j.jobId==null)return;const st=jobState(j),r=j.result||{},ids={jobId:j.jobId,swapId:r.swapId,tx:r.txHash},prev=findCard(ids),was=prev&&prev.st;
+function onJob(j){if(!F.mounted||j==null||j.jobId==null)return;const st=jobState(j),r=(st=="failed"?j.error:j.result)||{},ids={jobId:j.jobId,jobIds:r.jobIds,swapId:r.swapId,tx:r.txHash},prev=findCard(ids),was=prev&&prev.st;
  if(st=="running"){if(!prev||prev.st=="running")upsert(ids,{st,jobKind:j.jobKind})}
  else if(st=="pending"){if(!prev||!/^(confirmed|failed)$/.test(prev.st))upsert(ids,{st,...fields(r)})}
- else if(prev&&(prev.st=="pending"||prev.st=="confirmed"))upsert(ids,st=="failed"?{st,error:j.error}:{st,...fields(r)});
+ else if(prev&&prev.st!="running")upsert(ids,st=="failed"?{st,error:j.error,...fields(r)}:{st,...fields(r)}); // a failed settle carries swapId/symbol/side/amountUsd/txHash on error
  else if(prev)F.jobs.delete(prev.key);
  draw();if(st=="pending"&&was!="pending"&&!/^(confirmed|failed)$/.test(was||""))say("Trade sent, confirming");else if(was=="pending"&&st!="pending"&&st!="running")say(st=="confirmed"?"Trade confirmed":"Trade didn't go through")}
 // the settled activity row for a swap we have a card for: upgrade the card, hide the row (one card per swap)
@@ -52,27 +53,30 @@ function foldRows(list){for(const x of list||[]){const c=rowCard(x);if(c&&c.st==
 // seed pending swaps that were already out when the page opened (GET /api/swaps?status=pending, Lucius). 404/any error: silent.
 function seedItems(list){for(const x of Array.isArray(list)?list:(list&&(list.swaps||list.items))||[]){if(!x||/^(confirmed|filled|failed)$/.test(x.status||""))continue;
   if([...F.items.values()].some(y=>(x.swapId&&y.swapId==x.swapId)||(x.txHash&&y.txHash==x.txHash)))continue; // already settled into the feed
-  const c=findCard({jobId:x.jobId,swapId:x.swapId,tx:x.txHash});if(c&&/^(confirmed|failed)$/.test(c.st))continue;
-  upsert({jobId:x.jobId,swapId:x.swapId,tx:x.txHash},{st:"pending",...fields(x)})}draw()}
+  const c=findCard({jobId:x.jobId,jobIds:x.jobIds,swapId:x.swapId,tx:x.txHash});if(c&&/^(confirmed|failed)$/.test(c.st))continue;
+  upsert({jobId:x.jobId,jobIds:x.jobIds,swapId:x.swapId,tx:x.txHash},{st:"pending",...fields(x)})}draw()}
 async function seed(){try{if(MOCK){if(mq.get("mockSeed")=="1")seedItems(mockSeedList())}else if(typeof getTok=="function"&&getTok()&&typeof rest=="function")seedItems(await rest("GET","/swaps?status=pending",null,true))}catch(_){}}
-// ---------- mocks: ?mock=1 &mockPending=1 (generic, confirms) | =fail | =rich (enriched + duplicate + settled row) ; &mockSeed=1 ; &mockPendingMs
+// ---------- mocks: ?mock=1 &mockPending=1 (generic, confirms) | =fail | =rich (enriched + duplicate + settled row) | =richfail (enriched, failed settle) ; &mockSeed=1 ; &mockPendingMs
 const mq=new URLSearchParams(location.search),hx=n=>"0x"+n.repeat(12).slice(0,64),mUrl=h=>EXPLORER+"/tx/"+h;
 function mockSeedList(){const at=new Date(Date.now()-90e3).toISOString();return [
- {swapId:"sw_seed1",jobId:8001,txHash:hx("5eed1a"),explorerUrl:mUrl(hx("5eed1a")),symbol:"NVDA",side:"buy",amountUsd:40,createdAt:at,status:"pending"},
- {swapId:"sw_seed2",jobId:8002,txHash:hx("5eed2b"),explorerUrl:mUrl(hx("5eed2b")),symbol:"PLTR",side:"sell",amountUsd:25.5,createdAt:at,status:"pending"}]}
+ {swapId:"sw_seed1",jobId:8001,jobIds:[8001],txHash:hx("5eed1a"),explorerUrl:mUrl(hx("5eed1a")),symbol:"NVDA",side:"buy",amountUsd:40,createdAt:at,status:"pending"},
+ {swapId:"sw_seed2",jobId:8002,jobIds:[8002,8003],txHash:hx("5eed2b"),explorerUrl:null,symbol:"PLTR",side:"sell",amountUsd:25.5,createdAt:at,status:"pending"}]}
 function mockJobs(){const m=mq.get("mockPending"),seedOn=mq.get("mockSeed")=="1";if(!MOCK||(!m&&!seedOn))return;const ms=+mq.get("mockPendingMs")||8000,at=new Date().toISOString();
  const J=(id,x)=>({jobId:id,kind:"job",jobKind:"trade.execute_swap",createdAt:at,statusUrl:"/api/jobs/"+id,...x});let rowId=500;
  const row=(x)=>add([{id:++rowId,ts:new Date().toISOString(),kind:"trade",keyId:"sk_mock",actions:[{type:"revoke_key",label:"Revoke agent key",method:"POST",href:"/api/revoke_session_key"}],...x}]);
  if(seedOn){const [a,b]=mockSeedList();
   setTimeout(()=>onJob(J(a.jobId,{status:"done",result:{status:"confirmed",txHash:a.txHash,explorerUrl:a.explorerUrl,amountOut:0.21,swapId:a.swapId,symbol:a.symbol,side:a.side,amountUsd:a.amountUsd}})),ms);
   setTimeout(()=>row({title:"Agent sold $25.50 of PLTR",side:"sell",usd:25.5,txHash:b.txHash,explorerUrl:b.explorerUrl,swapId:b.swapId}),ms+700)}
- if(!m)return;const tx=hx("5e7dbe"),url=mUrl(tx),rich=m=="rich",F2=rich?{symbol:"AMD",side:"buy",amountUsd:50}:{};
+ if(!m)return;const tx=hx("5e7dbe"),url=mUrl(tx),rich=/^rich/.test(m),F2=rich?{symbol:"AMD",side:"buy",amountUsd:50}:{};
  setTimeout(()=>onJob(J(9001,{status:"running"})),300);
  setTimeout(()=>onJob(J(9001,{status:"done",result:{status:"pending",txHash:tx,explorerUrl:url,swapId:"sw_mock1",code:"TX_PENDING",message:"Sent. Waiting for the network to confirm it.",retryable:false,hint:"Don't retry it. It will confirm or fail on its own.",...F2}})),900);
  if(rich){setTimeout(()=>onJob(J(9002,{status:"running"})),1500); // the agent retried: same swap comes back as duplicate:true under a new job
   setTimeout(()=>onJob(J(9002,{status:"done",result:{status:"pending",txHash:tx,explorerUrl:url,swapId:"sw_mock1",code:"TX_PENDING",message:"Already sent.",retryable:false,duplicate:true,...F2}})),1900);
-  setTimeout(()=>row({title:"Agent bought $50.00 of AMD",side:"buy",usd:50,txHash:tx,explorerUrl:url,swapId:"sw_mock1"}),900+ms);}
- setTimeout(()=>onJob(m=="fail"?J(9001,{status:"failed",error:{code:"TX_REVERTED",message:"The swap reverted onchain. Nothing was spent.",retryable:false,status:409}}):J(9001,{status:"done",result:{status:"confirmed",txHash:tx,explorerUrl:url,amountOut:0.0412,swapId:"sw_mock1",...F2}})),900+ms+(rich?400:0))}
+  if(!/fail$/.test(m))setTimeout(()=>row({title:"Agent bought $50.00 of AMD",side:"buy",usd:50,txHash:tx,explorerUrl:url,swapId:"sw_mock1"}),900+ms);}
+ // the server settles every job of the swap (jobIds); a failed settle carries swapId/symbol/side/amountUsd/txHash on error
+ const jobsOut=rich?[9001,9002]:[9001];
+ if(/fail$/.test(m))jobsOut.forEach((id,k)=>setTimeout(()=>onJob(J(id,{status:"failed",error:{error:"Blocked: dropped",code:"TX_REVERTED",message:"The swap reverted onchain. Nothing was spent.",retryable:false,status:409,swapId:"sw_mock1",txHash:tx,explorerUrl:url,...F2}})),900+ms+(rich?400:0)+k*100));
+ else setTimeout(()=>onJob(J(9001,{status:"done",result:{status:"confirmed",txHash:tx,explorerUrl:url,amountOut:0.0412,swapId:"sw_mock1",...F2}})),900+ms+(rich?400:0))}
 const LIVE={live:["Live","on"],connecting:["Connecting…","wait"],reconnecting:["Reconnecting…","wait"],offline:["Offline. We'll reconnect when you're back online.","off"],error:["Sign in to see live activity.","off"]};
 function draw(){const el=document.getElementById("afSlot");if(!el)return;const list=[...F.items.values()].filter(x=>!rowCard(x)).sort((a,b)=>String(b.ts).localeCompare(String(a.ts))||(+b.id-+a.id)).slice(0,25);
  if(F.loading&&!list.length){el.innerHTML=`<ul class="af-list sk-list" aria-hidden="true">${'<li><span class="sk sk-t"></span><span class="sk sk-l"></span></li>'.repeat(3)}</ul>`}
@@ -106,5 +110,5 @@ async function resume(keyId,btn){btn&&(btn.disabled=true);try{await api.resumeKe
  R["/dashboard/overview"]=[()=>V().replace('<div class="dx-body">','<div class="dx-body"><div id="brSlot"></div>').replace(/(<section class="dx-sec" aria-labelledby="dx-act"><h2 id="dx-act">Activity<\/h2>)[\s\S]*?(<\/section>)/,'$1<p class="dx-mut dx-small" id="afLive" aria-live="polite"></p><div id="afSlot" aria-live="polite"></div>$2'),
   ()=>{B();draw();drawBreaker();if(!F.mounted)start();loadBreaker()}]}
 addEventListener("hashchange",()=>{if(!/^#\/dashboard\/overview/.test(location.hash))stop()});
-window.SCActivity={feed:F,breaker:BR,stop,refreshBreaker,onJob};
+window.SCActivity={feed:F,breaker:BR,stop,refreshBreaker,onJob,addRows:add};
 })();
