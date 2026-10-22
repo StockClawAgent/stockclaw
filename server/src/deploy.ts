@@ -7,7 +7,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { parseUnits, parseAbi, zeroAddress, type Address } from "viem";
-import { C, wallet, assertChain, read, pub, type Deployment } from "./chain.js";
+import { C, wallet, assertChain, read, pub, assertTreasurySafe, type Deployment } from "./chain.js";
 import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT, attesterSeparation } from "./config.js";
 
 export const BASE_PRICES: Record<string, number> = { TSLA: 250, AMZN: 190, PLTR: 40, NFLX: 700, AMD: 150 };
@@ -20,6 +20,7 @@ export async function deployAndSeed(): Promise<Deployment> {
   // L3: off a verified anvil ATTESTER must not be the deployer (throws); on anvil both are key 0 (warning, kept)
   const sep = attesterSeparation({ ...process.env, DEPLOYER_KEY: keys.deployer(), ATTESTER_KEY: keys.attester() }, dep.address);
   if (sep.warning) console.warn(`  WARNING: ${sep.warning}`);
+  await assertTreasurySafe(tr.address, dep.address); // D-1: the TREASURY_SAFE passed to Deploy.s.sol (verified anvil: EOA stand-in ok)
   const head = path.join(ROOT, "artifacts", "head");
   if (!fs.existsSync(path.join(head, "script", "Deploy.s.sol"))) throw new Error("Run `npm run build` first");
   const forge = fs.existsSync(`${os.homedir()}/.foundry/bin/forge`) ? `${os.homedir()}/.foundry/bin/forge` : "forge";

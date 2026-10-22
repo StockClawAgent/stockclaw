@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 import { formatUnits, parseUnits, parseEventLogs, erc20Abi, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, requireLocalAnvil, txState, txLogRow, type Deployment } from "./chain.js";
+import { C, pub, read, wallet, revertReason, isRevert, loadDeployment, requireLocalAnvil, txState, txLogRow, assertTreasurySafe, type Deployment } from "./chain.js";
 import { log } from "./log.js";
 import * as cfg from "./config.js";
 import { getDb, migrateFromJson, tx, nowIso } from "./db.js";
@@ -661,6 +661,12 @@ export const _trade = () => tradeHooks;
 /** Startup (Gaius R6): fail closed if the anomaly breaker isn't registered. BREAKER=off only on a local chain with ALLOW_OPEN_LOCAL=1. */
 /** Startup (L3): off a verified anvil, refuse if ATTESTER is the deployer, by config (keys/addresses) and onchain (the
  * deployer must hold no ATTESTER_ROLE / registry admin). On a verified anvil: today's behavior + a logged warning. */
+/** Startup (D-1): off a verified anvil the treasury (TREASURY_SAFE, else the deployments file's) must be a contract and not the deployer. */
+export async function assertTreasury(env = process.env) {
+  const d = (() => { try { return dep(); } catch { return undefined; } })();
+  const deployer = env.DEPLOYER_KEY ? privateKeyToAccount(env.DEPLOYER_KEY as Hex).address : env.DEPLOYER ?? d?.deployer;
+  return assertTreasurySafe(env.TREASURY_SAFE ?? d?.treasury, deployer);
+}
 export async function assertAttesterSeparation(env = process.env) {
   const deployedBy = (() => { try { return dep().deployer; } catch { return undefined; } })();
   const sep = cfg.attesterSeparation(env, deployedBy); // throws off-anvil when attester == deployer

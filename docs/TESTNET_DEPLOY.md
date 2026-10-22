@@ -22,14 +22,14 @@ The script refuses `--broadcast`, `--private-key`, `--ledger`, `--trezor` and `-
 - estimated gas 18.44M; at 0.02 gwei max fee that is **~0.00037 ETH**
 - all 5 real 46630 stock tokens resolved (TSLA, AMZN, PLTR, NFLX, AMD; `symbol()` checked onchain)
 
-To rehearse with the real role addresses, set `TREASURY_SAFE`, `FEED_UPDATER`, `KEEPER`, `ATTESTER` and `DRYRUN_SENDER` before running.
+To rehearse with the real role addresses, set `TREASURY_SAFE`, `FEED_UPDATER`, `KEEPER`, `ATTESTER` and `DRYRUN_SENDER` before running. Since D-1 the dry run refuses unless `TREASURY_SAFE` is a deployed contract on the target RPC (`eth_getCode` non-empty) and differs from `DRYRUN_SENDER`, so the placeholder Safe address no longer passes: deploy the Safe first. `DRYRUN_CHECK_ONLY=1` runs only these pre-checks.
 
 ## 2. Addresses needed (all distinct)
 
 | Role | Env | Holds key? | What it does | ETH to fund (46630) |
 |---|---|---|---|---|
 | Deployer | sender of `forge script` | KMS / hardware, one-off | Deploys everything. Owns contracts until the Safe accepts. Seeds pools. | 0.01 (deploy ≈0.0004 + seeding + margin) |
-| Treasury Safe (2-of-3) | `TREASURY_SAFE` | Safe signers | Fee treasury. `pendingOwner` of router, oracle, pools, feeds and MockUSDG (Ownable2Step since 65cd2f6). Must call `acceptOwnership()` on each (batch in Safe tx builder). Gets registry admin (`DEFAULT_ADMIN_ROLE`) from the script; the deployer renounces it. | 0.005 (accept batch) |
+| Treasury Safe (2-of-3) | `TREASURY_SAFE` | Safe signers | Fee treasury. **Must be a deployed Safe contract and not the deployer** (D-1): the server, the local deploy and the dry run refuse otherwise off a verified local anvil (checked by node identity, `anvil_nodeInfo`, never by chain id). `pendingOwner` of router, oracle, pools, feeds and MockUSDG (Ownable2Step since 65cd2f6). Must call `acceptOwnership()` on each (batch in Safe tx builder). Gets registry admin (`DEFAULT_ADMIN_ROLE`) from the script; the deployer renounces it. | 0.005 (accept batch) |
 | Keeper | `KEEPER` | server (KMS for prod) | Executes DCA/limit intents, pushes NYSE `setSession`, relays `approveSellWithSig` | 0.05 (≈1 session tx/day + intents + relays) |
 | Feed updater | `FEED_UPDATER` (≠ KEEPER, S-4) | server | Pushes 5 mock feed prices every 60s | 0.05/week (≈7k tx/day × ~45k gas × 0.02 gwei ≈ 0.0065 ETH/day; cut it by pushing only on change) |
 | Attester | `ATTESTER` (server: `ATTESTER_KEY`) | server | Writes eligibility attestations (`ATTESTER_ROLE`). **Must not be the deployer** (L3): the server and `npm run testnet:dryrun` refuse to start when ATTESTER == deployer off a verified local anvil, and the server also refuses if the deployer holds `ATTESTER_ROLE` or registry admin onchain. | 0.005 |
@@ -49,7 +49,7 @@ Total to start: **about 0.15 ETH on 46630**, spread across the roles above. Alch
 2. `npm run testnet:dryrun` with the real addresses → review `server/artifacts/head/broadcast/Deploy.s.sol/46630/dry-run/run-latest.json`.
 3. Broadcast (a human runs this from the KMS-backed signer; it is **not scripted here**): `forge script script/Deploy.s.sol:Deploy --rpc-url $RPC --broadcast --verify --verifier blockscout --verifier-url https://explorer.testnet.chain.robinhood.com/api/` using the KMS signer.
 4. Push the first feed prices (feed updater), then seed the pools from the deployer (mint MockUSDG for seeding now: the deployer loses mint rights in step 5), before the Safe accepts ownership.
-5. Safe: one batch of `acceptOwnership()` on router, oracle, 5 pools, 5 feeds **and MockUSDG** (13 calls; MockUSDG is Ownable2Step since 65cd2f6, the script only set its `pendingOwner`). Check in Blockscout:
+5. Safe: one batch of `acceptOwnership()` on router, oracle, 5 pools, 5 feeds **and MockUSDG**. The batch must include MockUSDG: leaving it out keeps the deployer as the USDG owner/minter (13 calls in total; MockUSDG is Ownable2Step since 65cd2f6, the script only set its `pendingOwner`). Check in Blockscout:
    - `owner()` == Safe and `pendingOwner()` == `0x0` on all 13.
    - EligibilityRegistry: `hasRole(DEFAULT_ADMIN_ROLE, Safe)` true; `hasRole(DEFAULT_ADMIN_ROLE, deployer)` and `hasRole(ATTESTER_ROLE, deployer)` both false (the deployer ends with no roles or ownership).
    - `MockUSDG.mint` from the deployer now reverts `OwnableUnauthorizedAccount`.
@@ -57,6 +57,10 @@ Total to start: **about 0.15 ETH on 46630**, spread across the roles above. Alch
 6. Keeper pushes today's NYSE session (`setSession`). The market stays CLOSED until it does (fail-closed).
 7. Server: `RPC_URL=<alchemy 46630>`, `DEPLOYMENTS_FILE` (default `server/data/testnet-46630.json`), `DEMO_OWNER_KEY`, `AGENT_KEYS`, `EXPLORER_URL` (default is the Blockscout above), tokens set, `KEEPER=1`. The server refuses to start unless both API tokens are set (the local `ALLOW_OPEN_LOCAL` escape doesn't work on 46630). Check `/healthz` (rpc ok, oracle fresh, session open).
 8. Smoke test: eligibility → vault → agent key → faucet claim → $5 swap. Check the tx link opens on Blockscout.
+9. **Retire the deployer key** (last step, only after seeding (step 4) and the Safe batch checks (step 5) pass):
+   - Sweep the deployer's remaining ETH to the Safe (one plain transfer; leave only what that tx costs).
+   - Move the deployer key file / secret out of the active secrets environment (offline cold storage), so no running service can load it. The server does not need `DEPLOYER_KEY` on 46630: it reads the deployer address from the deployments file for its startup checks (or set `DEPLOYER=<address>`).
+   - What the key still holds after this: nothing on StockClaw contracts (no ownership, no registry role; ATTESTER is a separate key). The only leftover is the `MockStockToken` `issuer` role, which is **mock-only** (exists only with `MOCK_TOKENS=1`; with the real 46630 stock tokens there is none) and is immutable in the mock.
 
 Rollback: revoke agent keys (one tx per key = pause). The Safe can force-close the market on the oracle. Tokens have no value.
 

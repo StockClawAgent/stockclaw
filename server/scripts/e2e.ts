@@ -1312,7 +1312,7 @@ try {
     const PX = await new Promise<number>((res) => px.listen(0, "127.0.0.2", () => res((px.address() as any).port)));
     const dd = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-l3-")); fs.copyFileSync(path.join(process.env.DATA_DIR!, "local-46630.json"), path.join(dd, "d.json"));
     const boot = (extra: Record<string, string>) => new Promise<{ code: number | null; out: string }>((res) => {
-      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "d.json"), PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, ATTESTER_KEY: undefined, ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
+      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "d.json"), PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, ATTESTER_KEY: undefined, TREASURY_SAFE: d.router /* a contract: passes D-1 so the L3 check is what refuses */, ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
       let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b));
       const t = setTimeout(() => { try { process.kill(-ch.pid!, "SIGKILL"); } catch {} }, 30_000);
       ch.on("exit", (code) => { clearTimeout(t); res({ code, out }); });
@@ -1332,6 +1332,59 @@ try {
     const { spawnSync } = await import("node:child_process");
     const dr = spawnSync("bash", ["scripts/testnet-dryrun.sh"], { env: { ...process.env, TESTNET_RPC_URL: "http://127.0.0.1:9", DRYRUN_SENDER: a0, ATTESTER: a0.toLowerCase() }, encoding: "utf8" });
     assert.notEqual(dr.status, 0); assert.match(dr.stdout + dr.stderr, /REFUSING: ATTESTER == deployer/);
+  });
+
+  await step("D-1 treasury Safe: off a verified anvil (R7-3 verdict / anvil_nodeInfo, never the chain id) the server, local deploy and testnet dry run refuse when TREASURY_SAFE is the deployer or has no code (eth_getCode empty); on a verified anvil the EOA stand-in is allowed", async () => {
+    const { assertTreasurySafe } = await import("../src/chain.js");
+    const dw = wallet(cfg.keys.deployer()), eoa = wallet(cfg.keys.treasury()).address;
+    // (a) the rule, against this chain's real code (local=false forces "not a verified anvil" without touching the global verdict)
+    const why = async (safe: any, dep: any, local = false) => { try { return (await assertTreasurySafe(safe, dep, local)).note ?? "ok"; } catch (e) { return String((e as Error).message); } };
+    assert.match(await why(dw.address, dw.address), /TREASURY_SAFE .* is the deployer/);
+    assert.match(await why(dw.address.toLowerCase(), dw.address), /is the deployer/);
+    assert.match(await why(eoa, dw.address), /has no code/);
+    assert.match(await why(undefined, dw.address), /missing or not an address/);
+    assert.equal(await why(d.router, dw.address), "ok", "a contract that is not the deployer passes");
+    assert.match(await why(eoa, dw.address, true), /verified local anvil/, "verified anvil: EOA stand-in allowed");
+    // (b) the real server process on a non-local RPC URL (127.0.0.2 -> this anvil): refuses before listening
+    const net = await import("node:net");
+    const px = net.createServer((c) => { const u = net.connect(PORT_RPC, "127.0.0.1"); c.pipe(u).pipe(c); c.on("error", () => u.destroy()); u.on("error", () => c.destroy()); });
+    const PX = await new Promise<number>((res) => px.listen(0, "127.0.0.2", () => res((px.address() as any).port)));
+    const dd = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-d1-")); fs.copyFileSync(path.join(process.env.DATA_DIR!, "local-46630.json"), path.join(dd, "d.json"));
+    const { generatePrivateKey } = await import("viem/accounts");
+    const boot = (extra: Record<string, string | undefined>) => new Promise<{ code: number | null; out: string }>((res) => {
+      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "d.json"), PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, TREASURY_SAFE: undefined, DEPLOYER_KEY: cfg.keys.deployer(), ATTESTER_KEY: generatePrivateKey(), ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
+      let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b));
+      const t = setTimeout(() => { try { process.kill(-ch.pid!, "SIGKILL"); } catch {} }, 30_000);
+      ch.on("exit", (code) => { clearTimeout(t); res({ code, out }); });
+    });
+    try {
+      const b1 = await boot({}); // the deployment's treasury is the anvil EOA stand-in: no code
+      assert.notEqual(b1.code, 0); assert.match(b1.out, /REFUSING: TREASURY_SAFE .* has no code/, b1.out.slice(-1500));
+      const b2 = await boot({ TREASURY_SAFE: dw.address });
+      assert.notEqual(b2.code, 0); assert.match(b2.out, /REFUSING: TREASURY_SAFE .* is the deployer/, b2.out.slice(-1500));
+      const b3 = await boot({ TREASURY_SAFE: d.router }); // passes D-1, then stops at the next guard (L3: deployer holds ATTESTER_ROLE)
+      assert.notEqual(b3.code, 0); assert.doesNotMatch(b3.out, /TREASURY_SAFE/); assert.match(b3.out, /holds ATTESTER_ROLE/, b3.out.slice(-1500));
+      assert.doesNotMatch(b1.out + b2.out + b3.out, /StockClaw API \+ UI/, "never listened");
+    } finally { px.close(); }
+    // (c) testnet dry run, keyed on the node (not the chain id): a non-anvil node with chain id 46630 (HTTP proxy that hides
+    // anvil_nodeInfo and answers web3_clientVersion as another client) refuses; the verified anvil skips with a warning
+    const http = await import("node:http");
+    const fake = http.createServer((q, s) => { let b = ""; q.on("data", (c) => (b += c)); q.on("end", async () => {
+      const j = JSON.parse(b); if (j.method === "anvil_nodeInfo") return s.end(JSON.stringify({ jsonrpc: "2.0", id: j.id, error: { code: -32601, message: "method not found" } }));
+      if (j.method === "web3_clientVersion") return s.end(JSON.stringify({ jsonrpc: "2.0", id: j.id, result: "nitro/v3.5.0" }));
+      const r = await fetch(`http://127.0.0.1:${PORT_RPC}`, { method: "POST", headers: { "content-type": "application/json" }, body: b }); s.end(await r.text()); }); });
+    const PF = await new Promise<number>((res) => fake.listen(0, "127.0.0.1", () => res((fake.address() as any).port)));
+    const { spawn: sp } = await import("node:child_process");
+    const dry = (rpc: string, safe: string) => new Promise<{ code: number | null; out: string }>((res) => { const ch = sp("bash", ["scripts/testnet-dryrun.sh"], { env: { ...process.env, TESTNET_RPC_URL: rpc, DRYRUN_SENDER: dw.address, TREASURY_SAFE: safe, ATTESTER: "0x4444444444444444444444444444444444444444", DRYRUN_CHECK_ONLY: "1" } }); let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b)); ch.on("exit", (code) => res({ code, out })); });
+    try {
+      const fk = `http://127.0.0.1:${PF}`;
+      const r1 = await dry(fk, dw.address.toLowerCase()); assert.notEqual(r1.code, 0); assert.match(r1.out, /REFUSING: TREASURY_SAFE == deployer/, r1.out);
+      const r2 = await dry(fk, eoa); assert.notEqual(r2.code, 0); assert.match(r2.out, /REFUSING: TREASURY_SAFE .* has no code/, r2.out);
+      const r3 = await dry(fk, d.router); assert.equal(r3.code, 0, r3.out); assert.match(r3.out, /pre-checks passed/);
+      const r4 = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa); assert.equal(r4.code, 0, r4.out); assert.match(r4.out, /verified local anvil: D-1 TREASURY_SAFE checks skipped/);
+    } finally { fake.close(); }
+    // (d) local deploy: refuses any non-verified node up front (L3 step); on this verified anvil it ran with the EOA stand-in
+    assert.equal((await assertTreasurySafe(eoa, dw.address)).ok, true);
   });
 
   await step("healthz is red (503, CHAIN_UNREACHABLE) when anvil is down", async () => {

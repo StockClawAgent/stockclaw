@@ -4,7 +4,7 @@ import { createPublicClient, createWalletClient, http, defineChain, type Abi, ty
 import { privateKeyToAccount } from "viem/accounts";
 import { getDb, nowIso } from "./db.js";
 import { log } from "./log.js";
-import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE, IS_LOCAL, setLocalNode } from "./config.js";  // chain-guard: allow (guard import)
+import { RPC_URL, ROOT, TESTNET_CHAIN_ID, MAINNET_CHAIN_ID, DEPLOYMENTS_FILE, IS_LOCAL, setLocalNode, isLocalChain } from "./config.js";  // chain-guard: allow (guard import)
 
 export const chain = defineChain({
   id: TESTNET_CHAIN_ID, name: "Robinhood Chain (or local anvil)",
@@ -205,5 +205,15 @@ export type Deployment = {
 export function loadDeployment(): Deployment {
   if (!fs.existsSync(DEPLOYMENTS_FILE)) throw new Error(`No deployment at ${DEPLOYMENTS_FILE}. Run: npm run deploy`);
   return JSON.parse(fs.readFileSync(DEPLOYMENTS_FILE, "utf8"));
+}
+/** D-1: off a verified anvil (R7-3 verdict; never keyed on chain id) the treasury Safe must be a contract (eth_getCode
+ * non-empty) and must not be the deployer. On a verified anvil the treasury is an EOA stand-in (anvil #2): returns a note. */
+export async function assertTreasurySafe(safe: string | undefined, deployer: string | undefined, local = isLocalChain()) {
+  if (local) return { ok: true, note: "verified local anvil: treasury may be an EOA stand-in for the Safe" };
+  if (!safe || !/^0x[0-9a-fA-F]{40}$/.test(safe)) throw new Error(`REFUSING: TREASURY_SAFE is missing or not an address (${safe ?? "unset"}) off a verified local anvil (D-1)`);
+  if (deployer && safe.toLowerCase() === deployer.toLowerCase()) throw new Error(`REFUSING: TREASURY_SAFE ${safe} is the deployer. The treasury must be the 2-of-3 Safe, not the deploy key (D-1)`);
+  const code = await pub.getCode({ address: safe as Address });
+  if (!code || code === "0x") throw new Error(`REFUSING: TREASURY_SAFE ${safe} has no code (eth_getCode empty): not a Safe contract on this chain (D-1)`);
+  return { ok: true, note: null };
 }
 export const isRevert = (e: unknown) => e instanceof BaseError && !!e.walk((x) => x instanceof ContractFunctionRevertedError);
