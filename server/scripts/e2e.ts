@@ -65,6 +65,20 @@ try {
   const svc = await import("../src/service.js");
   const cfg = await import("../src/config.js");
 
+  await step("L3 handoff (65cd2f6): right after seeding, the (simulated, anvil) Safe accepts MockUSDG + router/oracle/pools/feeds; the deployer ends with no ownership and no registry role except ATTESTER_ROLE (ATTESTER == deployer on anvil, warned); MockUSDG mint is Safe-only", async () => {
+    const { deployerHandoff } = await import("../src/deploy.js");
+    const dw = wallet(cfg.keys.deployer()), safe = wallet(cfg.keys.treasury());
+    const ss = Object.values(d.stocks);
+    const h = await deployerHandoff({ router: d.router, oracle: d.oracle, registry: d.registry, usdg: d.usdg, pools: ss.map((s) => s.pool), feeds: ss.map((s) => s.feed), tokens: ss.map((s) => s.token) }, dw.address, safe.address);
+    assert.deepEqual(h.problems, [], h.problems.join("; "));
+    assert.equal(h.ownedBySafe, 13, "router, oracle, usdg, 5 pools, 5 feeds");
+    assert.equal(h.attesterRole, true, "ATTESTER == deployer on anvil: keeps ATTESTER_ROLE (the logged exception)");
+    assert.equal(h.mockIssuerOf, 5, "mock stock tokens' immutable issuer (MOCK_TOKENS=1 stand-in for the external issuer)");
+    assert.equal((await read<string>(d.usdg, C.usdg.abi, "owner")).toLowerCase(), safe.address.toLowerCase());
+    await assert.rejects(dw.write(d.usdg, C.usdg.abi, "mint", [dw.address, 1n]), (e) => revertReason(e).name === "OwnableUnauthorizedAccount", "deployer can no longer mint");
+    assert.ok((await safe.write(d.usdg, C.usdg.abi, "mint", [safe.address, 1n])).hash, "the Safe can");
+    const sep = cfg.attesterSeparation({} as any, dw.address); assert.equal(sep.same, true); assert.match(String(sep.warning), /ATTESTER is the deployer/);
+  });
   const attesterLocal = { ok: false, out: "" }; // filled by the R7-6 step's real server on the verified anvil
   const server = buildApp().listen(PORT_API);
   const jobs = await import("../src/jobs.js");

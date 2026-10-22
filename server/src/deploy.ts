@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
-import { parseUnits, type Address } from "viem";
+import { parseUnits, parseAbi, zeroAddress, type Address } from "viem";
 import { C, wallet, assertChain, read, pub, type Deployment } from "./chain.js";
 import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT, attesterSeparation } from "./config.js";
 
@@ -35,7 +35,7 @@ export async function deployAndSeed(): Promise<Deployment> {
   if (!router || tokens.length !== 5 || feeds.length !== 5 || pools.length !== 5) throw new Error("unexpected broadcast contents");
   const fee = await read<number>(router, C.router.abi, "feeBps");
   if (fee !== DEFAULT_FEE_BPS) throw new Error(`router feeBps ${fee} != ${DEFAULT_FEE_BPS}`);
-  // Deployer is still owner (ownership to the Safe is 2-step and not accepted locally).
+  // Deployer is still owner until the Safe accepts (2-step): it seeds feeds + pools first (MockUSDG mint included).
   const stocks: Deployment["stocks"] = {};
   const syms = ["TSLA", "AMZN", "PLTR", "NFLX", "AMD"];
   for (let i = 0; i < 5; i++) {
@@ -52,11 +52,12 @@ export async function deployAndSeed(): Promise<Deployment> {
     stocks[sym] = { token, feed, pool, decimals: 18 };
     console.log(`  ${sym}: token ${token} feed ${feed} pool ${pool}`);
   }
-  // Simulated Safe step (LOCAL ONLY): the treasury key stands in for the 2-of-3 Safe and accepts the
-  // 2-step ownership of router, oracle, pools and feeds; the deployer then renounces registry admin.
-  for (const a of [router, oracle, ...pools, ...feeds]) await tr.write(a, C.router.abi.concat(C.agg.abi) as any, "acceptOwnership");
-  await dep.write(registry, C.registry.abi, "renounceRole", [await read(registry, C.registry.abi, "DEFAULT_ADMIN_ROLE"), dep.address]);
-  if ((await read<string>(router, C.router.abi, "owner")).toLowerCase() !== tr.address.toLowerCase()) throw new Error("Safe acceptOwnership failed");
+  // Simulated Safe step (LOCAL ONLY): the treasury key stands in for the 2-of-3 Safe and accepts the 2-step ownership
+  // of router, oracle, pools, feeds and (65cd2f6) MockUSDG, right after seeding. The script already moved registry admin.
+  for (const a of [router, oracle, ...pools, ...feeds, usdg]) await tr.write(a, OWNABLE2, "acceptOwnership");
+  const h = await deployerHandoff({ router, oracle, registry, usdg, pools, feeds, tokens }, dep.address, tr.address);
+  if (h.problems.length) throw new Error(`L3 handoff incomplete: ${h.problems.join("; ")}`);
+  if (h.attesterRole) console.warn(`  WARNING: deployer ${dep.address} keeps ATTESTER_ROLE (ATTESTER == deployer, local anvil only)`);
   const d: Deployment = { chainId: TESTNET_CHAIN_ID, rpc: RPC_URL, deployedAt: new Date().toISOString(), deployer: dep.address, keeper: kp.address, treasury: tr.address, usdg, oracle, registry, router, stocks };
   fs.mkdirSync(path.dirname(DEPLOYMENTS_FILE), { recursive: true });
   fs.writeFileSync(DEPLOYMENTS_FILE, JSON.stringify(d, null, 2));
@@ -64,6 +65,27 @@ export async function deployAndSeed(): Promise<Deployment> {
   console.log(`Deployed via script/Deploy.s.sol (MOCK_TOKENS=1): router ${router} (fee ${fee} bps) -> ${DEPLOYMENTS_FILE}`);
   void pub;
   return d;
+}
+
+const OWNABLE2 = parseAbi(["function owner() view returns (address)", "function pendingOwner() view returns (address)", "function acceptOwnership()"]);
+const ISSUER = parseAbi(["function issuer() view returns (address)"]);
+/** L3 check: after the Safe accepted, the deployer holds no ownership and no registry role. The only allowed leftover is
+ * ATTESTER_ROLE when ATTESTER == deployer (local anvil, logged). Mock stock tokens' `issuer` (immutable, MOCK_TOKENS=1
+ * stand-in for the external stock issuer, used by the local faucet) is reported separately, not a StockClaw role. */
+export async function deployerHandoff(a: { router: Address; oracle: Address; registry: Address; usdg: Address; pools: Address[]; feeds: Address[]; tokens?: Address[] }, deployer: Address, safe: Address) {
+  const problems: string[] = [], eq = (x: string, y: string) => x.toLowerCase() === y.toLowerCase();
+  const owned = [["router", a.router], ["oracle", a.oracle], ["usdg", a.usdg], ...a.pools.map((p, i) => [`pool${i}`, p]), ...a.feeds.map((f, i) => [`feed${i}`, f])] as [string, Address][];
+  for (const [n, c] of owned) {
+    const [o, p] = await Promise.all([read<string>(c, OWNABLE2, "owner"), read<string>(c, OWNABLE2, "pendingOwner")]);
+    if (!eq(o, safe)) problems.push(`${n} owner ${o} != Safe`);
+    if (!eq(p, zeroAddress)) problems.push(`${n} pendingOwner ${p} not accepted`);
+  }
+  const [admin, att] = await Promise.all([read<`0x${string}`>(a.registry, C.registry.abi, "DEFAULT_ADMIN_ROLE"), read<`0x${string}`>(a.registry, C.registry.abi, "ATTESTER_ROLE")]);
+  if (await read<boolean>(a.registry, C.registry.abi, "hasRole", [admin, deployer])) problems.push("deployer still has registry DEFAULT_ADMIN_ROLE");
+  if (!(await read<boolean>(a.registry, C.registry.abi, "hasRole", [admin, safe]))) problems.push("Safe lacks registry DEFAULT_ADMIN_ROLE");
+  const attesterRole = await read<boolean>(a.registry, C.registry.abi, "hasRole", [att, deployer]);
+  const mockIssuer = (await Promise.all((a.tokens ?? []).map((t) => read<string>(t, ISSUER, "issuer").catch(() => "")))).filter((x) => eq(x, deployer)).length;
+  return { problems, ownedBySafe: owned.length, attesterRole, mockIssuerOf: mockIssuer };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) deployAndSeed().catch((e) => { console.error(e.message ?? e); process.exit(1); });
