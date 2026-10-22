@@ -65,6 +65,6 @@ export const reset = () => { const d = getDb(); d.prepare("DELETE FROM key_trade
 svc.setTradeHooks({ guard, record });
 svc.setActivityHook((h) => {
   const keyId = h.keyId ?? svc._agent()?.id ?? null, side = h.side ?? (h.in.endsWith("mUSDG") ? "buy" : "sell");
-  act.add({ kind: "trade", keyId, title: `${side === "sell" ? "Agent sold" : "Agent bought"}: ${h.in} -> ${h.out}${h.reason ? ` (${h.reason})` : ""}`, side, usd: h.usd, txHash: h.txHash, executionId: h.executionId, source: h.type, actions: [act.revokeAction(keyId)] });
+  act.add({ kind: "trade", keyId, title: `${side === "sell" ? "Agent sold" : "Agent bought"}: ${h.in} -> ${h.out}${h.reason ? ` (${h.reason})` : ""}`, side, usd: h.usd, txHash: h.txHash, ...(h.swapId ? { swapId: h.swapId } : {}), executionId: h.executionId, source: h.type, actions: [act.revokeAction(keyId)] });
 });
 svc.onReset(() => { reset(); act.reset(); });

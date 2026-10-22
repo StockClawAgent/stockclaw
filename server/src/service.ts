@@ -34,7 +34,7 @@ type Order = {
   agent: Address; intent: Record<string, string | number>; sig: Hex; hash: Hex; lastError?: string; txHashes: string[];
   activationId?: string; role?: "dca" | "rung" | "take-profit"; rung?: number; parent?: string;
 };
-type HistoryRow = { txHash: string | null; explorerUrl?: string | null; type: string; in: string; out: string; fee: string; ts: string; status: "filled" | "blocked" | "failed"; reason?: string; side?: "buy" | "sell"; executionId?: string; keyId?: string; usd?: number };
+type HistoryRow = { txHash: string | null; explorerUrl?: string | null; swapId?: string; type: string; in: string; out: string; fee: string; ts: string; status: "filled" | "blocked" | "failed"; reason?: string; side?: "buy" | "sell"; executionId?: string; keyId?: string; usd?: number };
 type State = {
   country?: string; attestation?: { sig: string; ts: string; expiresAt: string; signer: Address; txHash: string };
   vault?: Address; nextAgentIdx: number;
@@ -383,7 +383,7 @@ async function finalizeSwap(id: string, hash: string) {
   const r = swapGet(id)!;
   if (prior) {
     const feeBps = Number(await read(dep().router, C.router.abi, "feeBps").catch(() => 30));
-    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, type: "swap", in: d.inStr, out: `${out.toFixed(6)} ${d.outSym}`, fee: `${(d.amountIn * feeBps / 10_000).toFixed(4)} ${d.tokenIn}`, ts: d.ts, status: "filled", side: d.side, keyId: r.key_id, usd: +d.estUsd.toFixed(2) });
+    pushHistory({ txHash: hash, explorerUrl: txOut(hash).explorerUrl, swapId: id, type: "swap", in: d.inStr, out: `${out.toFixed(6)} ${d.outSym}`, fee: `${(d.amountIn * feeBps / 10_000).toFixed(4)} ${d.tokenIn}`, ts: d.ts, status: "filled", side: d.side, keyId: r.key_id, usd: +d.estUsd.toFixed(2) });
     tradeHooks?.record(r.key_id, d.side, d.estUsd, id); // breaker: onchain reality, once per intent
     if (prior === "pending" || prior === "abandoned") { swapSettledHook?.(d.jobIds, { result: swapResult(r) }); log.info("pending swap confirmed", { swapId: id, txHash: hash }); }
   }
@@ -393,7 +393,7 @@ function failSwap(id: string, hash: string | null, reason: string): never {
   const prior = tx(() => { const r = swapGet(id)!; if (r.status === "filled" || r.status === "failed") return null; swapPut(id, { status: "failed", ...(hash ? { tx_hash: hash } : {}), data: { error: reason } }); return r.status; });
   const r = swapGet(id)!, d = swapData(r);
   if (prior && prior !== "preparing") {
-    pushHistory({ txHash: hash, type: "swap", in: d.inStr, out: "—", fee: "—", ts: d.ts, status: "blocked", reason, side: d.side });
+    pushHistory({ txHash: hash, swapId: id, type: "swap", in: d.inStr, out: "—", fee: "—", ts: d.ts, status: "blocked", reason, side: d.side });
     if (prior === "pending" || prior === "abandoned") swapSettledHook?.(d.jobIds, { error: `Blocked: ${reason}`, status: 403, extra: { ...swapMeta(r), txHash: hash ?? r.tx_hash, explorerUrl: (hash ?? r.tx_hash) ? cfg.explorerTx((hash ?? r.tx_hash)!) : null } });
   }
   throw new ApiError(403, `Blocked: ${reason}`);

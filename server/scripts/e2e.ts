@@ -960,8 +960,24 @@ try {
     } finally {
       await P.request({ method: "evm_setAutomine", params: [true] } as any).catch(() => {});
       for (const k of SWAP_ENV) delete process.env[k];
-      ui.sse.close();
     }
+  });
+
+  await step("pending swaps UI (3): the activity row for a settled swap (GET /api/activity and the SSE activity event) carries the same swapId as the pending result / settle event; history rows too", async () => {
+    assert.ok(ui.sse && ui.swapId, "needs step (1)");
+    try {
+      // step (1)'s swap confirmed before step (2)'s freshUser reset the feed: check the SSE copy, then a fresh one end to end
+      const sseRow = ui.sse.events().find((e) => e.event === "activity" && e.data.kind === "trade" && e.data.txHash === ui.settled.result.txHash);
+      assert.ok(sseRow, "SSE activity event for the settled swap"); assert.equal(sseRow!.data.swapId, ui.swapId);
+      await freshUser();
+      const j = await postSwap({ tokenIn: "mUSDG", tokenOut: "TSLA", amountIn: 9 });
+      const v = await (await fetch(`${API}/jobs/${j.jobId}?wait=20000`, { headers: { authorization: `Bearer ${OWNER}` } })).json();
+      assert.equal(v.result.status, "confirmed", JSON.stringify(v)); assert.ok(v.result.swapId);
+      const rows = ((await callH("GET", "activity")).body as any[]).filter((a) => a.kind === "trade" && a.txHash === v.result.txHash);
+      assert.equal(rows.length, 1, "one activity row"); assert.equal(rows[0].swapId, v.result.swapId, "same swapId: the UI dedupes by it");
+      const hist = (await call("GET", "get_history", { limit: 20 })).body.filter((h: any) => h.txHash === v.result.txHash);
+      assert.equal(hist.length, 1); assert.equal(hist[0].swapId, v.result.swapId);
+    } finally { ui.sse.close(); }
   });
 
   await step("POST /api/dev/seed-approval (owner, local anvil only): pending over-cap sell approval with reasonCode + agentName from the key label", async () => {
