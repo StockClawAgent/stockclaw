@@ -74,8 +74,8 @@ contract Review3 is Base {
         assertGt(trueValue, cost); // profitable
     }
 
-    /// FINDING R3-3 (low): tokens sent directly to the pool are credited to the NEXT router swap.
-    function test_FINDING_donationCreditedToNextSwapper() public {
+    /// R3-3 (low) FIXED with F1: tokens sent directly to the pool are NOT credited to the next swap.
+    function test_FIXED_donationNotCreditedToNextSwapper() public {
         vm.prank(alice); usdg.transfer(address(pool), 1_000e6); // stray transfer
         uint256 q = pool.quote(address(usdg), address(tsla), uint256(10e6) - uint256(10e6) * router.feeBps() / 10_000);
         uint256 b0 = tsla.balanceOf(bob);
@@ -83,6 +83,6 @@ contract Review3 is Base {
         vm.prank(owner); usdg.mint(bob, 10e6);
         vm.startPrank(bob); usdg.approve(address(router), 10e6);
         router.swap(_params(address(usdg), address(tsla), 10e6, 0, bob)); vm.stopPrank();
-        assertGt(tsla.balanceOf(bob) - b0, q * 50); // bob gets ~$1,010 of stock for $10
+        assertEq(tsla.balanceOf(bob) - b0, q); // bob gets exactly the quote for his $10
     }
 }

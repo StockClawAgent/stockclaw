@@ -10,6 +10,7 @@ contract Handler is Test {
     MockStockToken tsla;
     address trader;
     uint256 public feesExpected;
+    uint256 public donatedUsdg; // F1: direct transfers into the pool (must never enter reserves)
 
     constructor(FeeRouter r, StockClawPool p, MockUSDG u, MockStockToken t, address tr) {
         router = r;
@@ -25,6 +26,14 @@ contract Handler is Test {
         try router.swap(FeeRouter.SwapParams(address(pool), address(usdg), address(tsla), amt, 1, trader, block.timestamp)) {
             feesExpected += amt * router.feeBps() / 10_000;
         } catch {}
+    }
+
+    function donate(uint256 amt) external {
+        amt = bound(amt, 1, 5_000e6);
+        if (usdg.balanceOf(trader) < amt) return;
+        vm.prank(trader);
+        usdg.transfer(address(pool), amt);
+        donatedUsdg += amt;
     }
 
     function sell(uint256 amt) external {
@@ -57,7 +66,7 @@ contract InvariantTest is Base {
 
     function invariant_reservesMatchBalances() public view {
         assertEq(tsla.balanceOf(address(pool)), pool.reserveStock());
-        assertEq(usdg.balanceOf(address(pool)), pool.reserveUsdg());
+        assertEq(usdg.balanceOf(address(pool)), pool.reserveUsdg() + h.donatedUsdg()); // donations stay outside
     }
 
     function invariant_usdgFeesToTreasury() public view {
