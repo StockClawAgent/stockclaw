@@ -39,7 +39,7 @@ function healState(id){const h=HEAL[id],t=Date.now()-h.t0,n=h.legs.length,end=(n
   return {legId:l.legId,ticker:l.ticker,weight:l.weight,targetUsd:l.targetUsd,filledUsd:status=="filled"?l.targetUsd:0,status,...(status!="pending"?{txHash:tx}:{}),...(status=="failed"&&fl?{confirming:!(fl=="end"&&t>healAt)}:{}),...(status=="failed"?{error:"Sent, still waiting for the network. Retry checks the receipt first."}:{})}});
  const all=legs.every(l=>l.status=="filled"),busy=legs.some(l=>l.status=="pending"||l.status=="filling");
  return {id,basketId:h.basketId,totalUsd:h.totalUsd,status:all?"filled":busy?(t<300?"pending":"running"):"partial",createdAt:new Date(h.t0).toISOString(),updatedAt:new Date().toISOString(),legs}}
-function healSub(id,on){let closed=false,prev=null;(async()=>{if(!HEAL[id]){const x=await api.get_basket_execution(id).catch(()=>null);if(!x)return;HEAL[id]={t0:Date.now(),legs:x.legs,basketId:x.basketId,totalUsd:x.totalUsd}}
+function healSub(id,on){let closed=false,prev=null;(async()=>{if(!HEAL[id]){const x=await api.get_basket_execution(id).catch(()=>null);if(!x){if(!closed)on({type:"execution_status",executionId:id,status:"not_found"});return}HEAL[id]={t0:Date.now(),legs:x.legs,basketId:x.basketId,totalUsd:x.totalUsd}}
   const tick=()=>{if(closed)return;const x=healState(id);if(!prev)on({type:"snapshot",executionId:id,execution:x});else{x.legs.forEach(l=>{const o=prev.legs.find(p=>p.legId==l.legId);if(o.status!=l.status||o.confirming!==l.confirming)on({type:"leg_"+l.status,executionId:id,legId:l.legId,ticker:l.ticker,targetUsd:l.targetUsd,filledUsd:l.filledUsd,...(l.txHash?{txHash:l.txHash}:{}),...(l.error?{code:l.error}:{}),...(l.confirming!=null?{confirming:l.confirming}:{})})});if(prev.status!=x.status)on({type:"execution_status",executionId:id,status:x.status})}
    prev=x;if(["filled","partial","failed"].includes(x.status))return;setTimeout(tick,250)};tick()})();return {close:()=>{closed=true}}}
 
@@ -87,8 +87,12 @@ function mount(el,id,opts={}){if(!el)return;if(el._bf)el._bf.sub&&el._bf.sub.clo
   el.querySelectorAll("[data-retry]").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="Retrying…";const s=sl.find(s=>s.ticker==b.dataset.retry);
    try{for(const l of s.legs.filter(l=>l.status=="failed"&&!confirming(l)))await BFAdapter.retry(id,l.legId);follow()}catch(err){b.disabled=false;b.textContent="Retry";const i=SCErr.of(err);status.textContent=i.message}});
   opts.onUpdate&&opts.onUpdate(x)};
- // events: snapshot {execution} | leg_* {legId, ticker, targetUsd, filledUsd, txHash?, confirming? (failed+tx), error?, code?} | execution_status {status}
- const onEv=ev=>{if(el._bf!==st||!el.isConnected&&st.x)return st.sub&&st.sub.close();
+ // events: snapshot {execution} | leg_* {legId, ticker, targetUsd, filledUsd, txHash?, confirming? (failed+tx), error?, code?} | execution_status {status | "not_found"}
+ // execution_status "not_found" (api.js fe9631d: the server doesn't know this id, e.g. cached from an old chain) is terminal:
+ // close the stream, drop the card quietly (no error copy) and let the page clear its cached id via opts.onGone.
+ const gone=()=>{clearTimeout(st.w);try{st.sub&&typeof st.sub.close=="function"&&st.sub.close()}catch(_){}if(el._bf===st){el._bf=null;el.innerHTML=""}opts.onGone&&opts.onGone(id)};
+ const onEv=ev=>{if(el._bf!==st||!el.isConnected&&st.x){try{st.sub&&typeof st.sub.close=="function"&&st.sub.close()}catch(_){}return}
+  if(ev&&ev.type=="execution_status"&&ev.status=="not_found")return gone();
   if(ev.type=="snapshot"){st.x=JSON.parse(JSON.stringify(ev.execution));(st.x.legs||[]).forEach(seeFlag)}
   else if(!st.x)return;
   else if(/^leg_/.test(ev.type)){const k=ev.type.slice(4);let l=st.x.legs.find(l=>l.legId==ev.legId);if(!l){l={legId:ev.legId,ticker:ev.ticker,weight:0};st.x.legs.push(l)}

@@ -25,6 +25,9 @@ const BLOCKED=["United States","Canada","United Kingdom","Switzerland","United A
 const COUNTRIES=["Germany","France","Spain","Brazil","Japan","Singapore","Australia",...BLOCKED].sort();
 const def=()=>({elig:null,country:"",attest:false,owner:null,sa:null,key:null,funded:false,claiming:false,client:"Claude",connected:false,orders:null,history:null,lastRefresh:Date.now(),devElig:"auto",dev:{},switched:false,err:null});
 let S=Object.assign(def(),JSON.parse(localStorage.getItem(KEY)||"{}"));S.dev=S.dev||{};
+// Dev/debug UI (error-state toggles, forced eligibility) only with ?dev=1 (?mock=1 alone doesn't show it). Without it, any toggles a
+// previous ?dev=1 session left in localStorage are ignored, so they can't silently change behavior.
+const DEVUI=/[?&]dev=1(&|$)/.test(location.search);if(!DEVUI){S.dev={};S.devElig="auto"}
 const save=()=>localStorage.setItem(KEY,JSON.stringify(S));
 const $=(s)=>document.querySelector(s);const esc=(t)=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const say=(t)=>{$("#live").textContent="";setTimeout(()=>$("#live").textContent=t,30)};
@@ -64,7 +67,7 @@ function O1(){const e=S.elig;let st="";
 <label><input type="checkbox" id="np" required ${S.np?"checked":""}> I am not a US person and not a resident of the US (persons and territories), Canada, the UK, Switzerland, the UAE, or sanctioned countries.</label>
 <p class="muted">You will sign this attestation with your wallet in the next step. Identity check: [provider placeholder].</p>
 <button>Check eligibility</button></form>${st}${e==="eligible"?`<p><a class="btn" href="#/onboarding/wallet">Continue</a></p>`:""}
-<fieldset class="dev"><legend>Dev toggle: force result</legend>${["auto","eligible","blocked","geo","pending"].map(v=>`<label style="display:inline"><input type="radio" name="dev" value="${v}" ${S.devElig==v?"checked":""}> ${v=="geo"?"geo-block 451":v}</label> `).join("")}</fieldset>`)}
+${DEVUI?`<fieldset class="dev"><legend>Dev toggle: force result</legend>${["auto","eligible","blocked","geo","pending"].map(v=>`<label style="display:inline"><input type="radio" name="dev" value="${v}" ${S.devElig==v?"checked":""}> ${v=="geo"?"geo-block 451":v}</label> `).join("")}</fieldset>`:""}`)}
 function O1bind(){document.querySelectorAll('[name=dev]').forEach(r=>r.onchange=()=>{S.devElig=r.value;save()});
  $("#ef").onsubmit=async(ev)=>{ev.preventDefault();S.country=$("#cty").value;S.np=$("#np").checked;let r;try{r=await api.check_eligibility(S.country)}catch(e){r=null}if(!r&&S.devElig=="auto"){S.elig="error";save();render();return}r=r||{eligible:true};
   S.elig=S.devElig!=="auto"?S.devElig:(BLOCKED.includes(S.country)?"blocked":(r.eligible?"eligible":"blocked"));save();render();say("Eligibility: "+S.elig)}}
@@ -379,7 +382,7 @@ function O6setup(id){return ()=>{loadStrats();return ob(5,SETUP(id,"#/onboarding
 
 // ---------- dev error-state panel ----------
 const DEV=[["wrongnet","Wrong network (O2)"],["walletfail","Wallet creation fails (O2)"],["ratelimit","Funding limit (O4)"],["oauthdeny","OAuth denied (O5)"],["limitsfail","Limits tx fails (Agent key)"],["service","Service issue banner (dashboard)"]];
-const devPanel=()=>window.PUBLIC_SITE?"":`<details class="dev" ${Object.values(S.dev).some(Boolean)?"open":""}><summary>Dev: simulate error states</summary><div class="row">${DEV.map(([k,l])=>`<label style="display:inline"><input type="checkbox" data-dev="${k}" ${S.dev[k]?"checked":""}> ${l}</label>`).join("")}</div></details>`;
+const devPanel=()=>window.PUBLIC_SITE||!DEVUI?"":`<details class="dev" ${Object.values(S.dev).some(Boolean)?"open":""}><summary>Dev: simulate error states</summary><div class="row">${DEV.map(([k,l])=>`<label style="display:inline"><input type="checkbox" data-dev="${k}" ${S.dev[k]?"checked":""}> ${l}</label>`).join("")}</div></details>`;
 // ---------- router ----------
 const R={"/":[L1],"/onboarding/eligibility":[O1,O1bind],"/onboarding/wallet":[O2,O2bind],"/onboarding/key":[O3,O3bind],"/onboarding/faucet":[O4,O4bind],"/onboarding/client":[O5,O5bind],
 "/dashboard/overview":[D1,D1bind],"/dashboard/orders":[D2,D2bind],"/dashboard/history":[D3],"/dashboard/fees":[D4,D4bind],"/dashboard/key":[D5,D5bind],"/dashboard/strategies":[D6,D6bind],"/onboarding/strategy":[O6,statusBind]};
