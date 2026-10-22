@@ -11,8 +11,7 @@ assertTokensConfigured();
 import "./breaker.js";
 import { assertGuardrails } from "./service.js";
 assertGuardrails(); // fail closed (Gaius R6)
-await (await import("./service.js")).assertTreasury(); // D-1: TREASURY_SAFE is a contract and not the deployer off a verified anvil
-await (await import("./service.js")).assertAttesterSeparation(); // L3: attester != deployer off a verified anvil
+await (await import("./service.js")).assertDeployRoles(); // G1/D-1/D1-R1/L3: off a verified anvil the roles must be separate and the Safe real + owning
 // Restart recovery: settle in-flight txs by hash, requeue jobs a dead process left running (baskets resume leg by leg).
 await jobs.recover();
 // R7-1: keep reconciling single swaps that were sent but not confirmed (by hash, same nonce only)

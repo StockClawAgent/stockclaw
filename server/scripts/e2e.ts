@@ -1288,7 +1288,33 @@ try {
     } finally { plain.close(); trusted.close(); }
   });
 
+  // ---- mock Safe on the e2e anvil (anvil_setCode; no Solidity, src/ untouched): a tiny runtime that answers
+  // getThreshold()/getOwners() with fixed ABI-encoded return data and reverts on anything else
+  const { encodeAbiParameters } = await import("viem");
+  const responder = (answers: Record<string, `0x${string}`>) => {
+    const ents = Object.entries(answers), hx = (n: number, b: number) => n.toString(16).padStart(b * 2, "0");
+    const head = 6 + ents.length * 11 + 4, handlers = ents.length * 16;
+    let code = "60003560e01c", tail = "", h = "", dataOff = head + handlers;
+    ents.forEach(([sel, data], i) => {
+      const len = (data.length - 2) / 2;
+      code += "80" + "63" + sel.slice(2) + "14" + "61" + hx(head + i * 16, 2) + "57";
+      h += "5b" + "61" + hx(len, 2) + "61" + hx(dataOff, 2) + "6000" + "39" + "61" + hx(len, 2) + "6000" + "f3";
+      tail += data.slice(2); dataOff += len;
+    });
+    return ("0x" + code + "600080fd" + h + tail) as `0x${string}`;
+  };
+  const SAFE_OWNERS = ["0x0000000000000000000000000000000000005a01", "0x0000000000000000000000000000000000005a02", "0x0000000000000000000000000000000000005a03"] as `0x${string}`[];
+  let safeN = 0;
+  const mockSafe = async (threshold: number, owners: string[]) => {
+    const { pub: P } = await import("../src/chain.js");
+    const addr = `0x5afe${(++safeN).toString(16).padStart(36, "0")}` as `0x${string}`;
+    const code = responder({ "0xe75235b8": encodeAbiParameters([{ type: "uint256" }], [BigInt(threshold)]), "0xa0e67e2b": encodeAbiParameters([{ type: "address[]" }], [owners as `0x${string}`[]]) });
+    await P.request({ method: "anvil_setCode", params: [addr, code] } as any);
+    return addr;
+  };
+
   await step("L3 attester separation: off a verified anvil the server (and deploy) refuse to start when ATTESTER == deployer (config and onchain role); on a verified anvil it starts with the warning; testnet dry run refuses too", async () => {
+    const l3Safe = await mockSafe(2, SAFE_OWNERS);
     const { privateKeyToAccount, generatePrivateKey } = await import("viem/accounts");
     const k0 = cfg.keys.deployer(), k9 = generatePrivateKey(); // k9: a fresh key that is not the deployer
     const a0 = privateKeyToAccount(k0).address;
@@ -1312,7 +1338,7 @@ try {
     const PX = await new Promise<number>((res) => px.listen(0, "127.0.0.2", () => res((px.address() as any).port)));
     const dd = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-l3-")); fs.copyFileSync(path.join(process.env.DATA_DIR!, "local-46630.json"), path.join(dd, "d.json"));
     const boot = (extra: Record<string, string>) => new Promise<{ code: number | null; out: string }>((res) => {
-      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "d.json"), PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, ATTESTER_KEY: undefined, TREASURY_SAFE: d.router /* a contract: passes D-1 so the L3 check is what refuses */, ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
+      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "d.json"), PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, ATTESTER_KEY: undefined, TREASURY_SAFE: l3Safe /* a 2-of-3 mock Safe: passes D-1 so the L3 check is what refuses */, ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
       let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b));
       const t = setTimeout(() => { try { process.kill(-ch.pid!, "SIGKILL"); } catch {} }, 30_000);
       ch.on("exit", (code) => { clearTimeout(t); res({ code, out }); });
@@ -1334,57 +1360,100 @@ try {
     assert.notEqual(dr.status, 0); assert.match(dr.stdout + dr.stderr, /REFUSING: ATTESTER == deployer/);
   });
 
-  await step("D-1 treasury Safe: off a verified anvil (R7-3 verdict / anvil_nodeInfo, never the chain id) the server, local deploy and testnet dry run refuse when TREASURY_SAFE is the deployer or has no code (eth_getCode empty); on a verified anvil the EOA stand-in is allowed", async () => {
-    const { assertTreasurySafe } = await import("../src/chain.js");
-    const dw = wallet(cfg.keys.deployer()), eoa = wallet(cfg.keys.treasury()).address;
+  await step("D-1 + D1-R1 treasury Safe: off a verified anvil (R7-3 verdict, never the chain id) the server, local deploy and testnet dry run accept only a real Safe: not the deployer/keeper/attester, code that isn't an EIP-7702 delegation, getThreshold() >= 2, >= 3 owners with no role key among them, RPC errors refuse; a verified anvil keeps the EOA stand-in", async () => {
+    const { assertTreasurySafe, pub: P } = await import("../src/chain.js");
+    const dw = wallet(cfg.keys.deployer()), eoa = wallet(cfg.keys.treasury()).address, kp = d.keeper, att = "0x4444444444444444444444444444444444444444";
+    const good = await mockSafe(2, SAFE_OWNERS), t1 = await mockSafe(1, SAFE_OWNERS), o2 = await mockSafe(2, SAFE_OWNERS.slice(0, 2));
+    const withDep = await mockSafe(2, [...SAFE_OWNERS, dw.address]), withKp = await mockSafe(2, [...SAFE_OWNERS, kp]), withAtt = await mockSafe(2, [...SAFE_OWNERS, att]);
+    const d7702 = "0x00000000000000000000000000000000000077a2"; await P.request({ method: "anvil_setCode", params: [d7702, "0xef0100" + "be".repeat(20)] } as any);
+    const roles = { deployer: dw.address, keeper: kp, attester: att };
     // (a) the rule, against this chain's real code (local=false forces "not a verified anvil" without touching the global verdict)
-    const why = async (safe: any, dep: any, local = false) => { try { return (await assertTreasurySafe(safe, dep, local)).note ?? "ok"; } catch (e) { return String((e as Error).message); } };
-    assert.match(await why(dw.address, dw.address), /TREASURY_SAFE .* is the deployer/);
-    assert.match(await why(dw.address.toLowerCase(), dw.address), /is the deployer/);
-    assert.match(await why(eoa, dw.address), /has no code/);
-    assert.match(await why(undefined, dw.address), /missing or not an address/);
-    assert.equal(await why(d.router, dw.address), "ok", "a contract that is not the deployer passes");
-    assert.match(await why(eoa, dw.address, true), /verified local anvil/, "verified anvil: EOA stand-in allowed");
+    const why = async (safe: any, r: any = roles, local = false) => { try { return (await assertTreasurySafe(safe, r, local)).note ?? "ok"; } catch (e) { return String((e as Error).message); } };
+    assert.match(await why(dw.address), /TREASURY_SAFE .* is the deployer/); assert.match(await why(dw.address.toLowerCase()), /is the deployer/);
+    assert.match(await why(kp), /is the keeper/); assert.match(await why(att), /is the attester/);
+    assert.match(await why(eoa), /has no code/); assert.match(await why(undefined), /missing or not an address/);
+    assert.match(await why(d7702), /EIP-7702 delegated EOA/);
+    assert.match(await why(d.router), /does not answer getThreshold\(\)\/getOwners\(\)/, "a contract that is not a Safe is refused");
+    assert.match(await why(t1), /threshold is 1; need >= 2/); assert.match(await why(o2), /has 2 owners; need >= 3/);
+    assert.match(await why(withDep), /the deployer .* is an owner/); assert.match(await why(withKp), /the keeper .* is an owner/); assert.match(await why(withAtt), /the attester .* is an owner/);
+    assert.match(await why(good, { keeper: kp, attester: att }), /deployer address is unknown/, "G1: unknown deployer refuses");
+    assert.equal(await why(good), "ok", "2-of-3 Safe with separate signers passes");
+    assert.match(await why(eoa, roles, true), /verified local anvil/, "verified anvil: EOA stand-in allowed");
     // (b) the real server process on a non-local RPC URL (127.0.0.2 -> this anvil): refuses before listening
     const net = await import("node:net");
     const px = net.createServer((c) => { const u = net.connect(PORT_RPC, "127.0.0.1"); c.pipe(u).pipe(c); c.on("error", () => u.destroy()); u.on("error", () => c.destroy()); });
     const PX = await new Promise<number>((res) => px.listen(0, "127.0.0.2", () => res((px.address() as any).port)));
-    const dd = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-d1-")); fs.copyFileSync(path.join(process.env.DATA_DIR!, "local-46630.json"), path.join(dd, "d.json"));
+    const dd = fs.mkdtempSync(path.join(os.tmpdir(), "stockclaw-d1-")); const depl = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR!, "local-46630.json"), "utf8"));
+    const writeDep = (name: string, patch: Record<string, unknown>) => { const f = path.join(dd, name); const x: any = { ...depl, ...patch }; for (const k of Object.keys(patch)) if (patch[k] === undefined) delete x[k]; fs.writeFileSync(f, JSON.stringify(x)); return f; };
+    const dfile = writeDep("d.json", {});
     const { generatePrivateKey } = await import("viem/accounts");
     const boot = (extra: Record<string, string | undefined>) => new Promise<{ code: number | null; out: string }>((res) => {
-      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: path.join(dd, "d.json"), PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, TREASURY_SAFE: undefined, DEPLOYER_KEY: cfg.keys.deployer(), ATTESTER_KEY: generatePrivateKey(), ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
+      const ch = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { detached: true, env: { ...process.env, RPC_URL: `http://127.0.0.2:${PX}`, DATA_DIR: dd, DEPLOYMENTS_FILE: dfile, PORT: "0", KEEPER: "off", BREAKER: undefined, ALLOW_OPEN_LOCAL: undefined, TREASURY_SAFE: undefined, DEPLOYER: undefined, DEPLOYER_KEY: cfg.keys.deployer(), ATTESTER_KEY: generatePrivateKey(), ...extra } as any, stdio: ["ignore", "pipe", "pipe"] });
       let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b));
       const t = setTimeout(() => { try { process.kill(-ch.pid!, "SIGKILL"); } catch {} }, 30_000);
       ch.on("exit", (code) => { clearTimeout(t); res({ code, out }); });
     });
+    const outs: string[] = [];
+    const refuses = async (extra: Record<string, string | undefined>, re: RegExp) => { const b = await boot(extra); outs.push(b.out); assert.notEqual(b.code, 0); assert.match(b.out, re, b.out.slice(-1500)); };
+    const other = (await import("viem/accounts")).privateKeyToAccount(generatePrivateKey()).address; // a deployer that holds nothing
     try {
-      const b1 = await boot({}); // the deployment's treasury is the anvil EOA stand-in: no code
-      assert.notEqual(b1.code, 0); assert.match(b1.out, /REFUSING: TREASURY_SAFE .* has no code/, b1.out.slice(-1500));
-      const b2 = await boot({ TREASURY_SAFE: dw.address });
-      assert.notEqual(b2.code, 0); assert.match(b2.out, /REFUSING: TREASURY_SAFE .* is the deployer/, b2.out.slice(-1500));
-      const b3 = await boot({ TREASURY_SAFE: d.router }); // passes D-1, then stops at the next guard (L3: deployer holds ATTESTER_ROLE)
-      assert.notEqual(b3.code, 0); assert.doesNotMatch(b3.out, /TREASURY_SAFE/); assert.match(b3.out, /holds ATTESTER_ROLE/, b3.out.slice(-1500));
-      assert.doesNotMatch(b1.out + b2.out + b3.out, /StockClaw API \+ UI/, "never listened");
+      await refuses({}, /REFUSING: TREASURY_SAFE .* has no code/); // the deployment's treasury is the anvil EOA stand-in
+      await refuses({ TREASURY_SAFE: dw.address }, /REFUSING: TREASURY_SAFE .* is the deployer/);
+      await refuses({ TREASURY_SAFE: d7702 }, /EIP-7702 delegated EOA/);
+      await refuses({ TREASURY_SAFE: d.router }, /does not answer getThreshold/);
+      await refuses({ TREASURY_SAFE: t1 }, /threshold is 1/);
+      await refuses({ TREASURY_SAFE: withKp }, /the keeper .* is an owner/);
+      // G1: deployer unknown (no DEPLOYER_KEY/DEPLOYER, deployments file without `deployer`) => refuse, never skip
+      await refuses({ TREASURY_SAFE: good, DEPLOYER_KEY: undefined, DEPLOYMENTS_FILE: writeDep("nodep.json", { deployer: undefined }) }, /deployer address is unknown/);
+      // L3: the real deployer holds ATTESTER_ROLE (anvil deploy) => refuse
+      await refuses({ TREASURY_SAFE: good }, /REFUSING TO START: the deployer .* holds ATTESTER_ROLE/);
+      // G1: a deployer that holds nothing, but the configured ATTESTER doesn't hold ATTESTER_ROLE => refuse
+      const nd = writeDep("other.json", { deployer: other });
+      await refuses({ TREASURY_SAFE: good, DEPLOYER_KEY: undefined, DEPLOYMENTS_FILE: nd }, /ATTESTER .* does not hold ATTESTER_ROLE/);
+      // roles all right (the attester is anvil #0, which holds the role) => the 13-contract ownership check: the Safe owns nothing yet
+      await refuses({ TREASURY_SAFE: good, DEPLOYER_KEY: undefined, DEPLOYMENTS_FILE: nd, ATTESTER_KEY: cfg.keys.deployer() }, /the Safe .* does not own the deployment yet .*router owner/);
+      assert.doesNotMatch(outs.join(""), /StockClaw API \+ UI/, "never listened");
+      // the ownership check itself passes for the real owner of all 13 (here the anvil stand-in) and names every gap otherwise
+      const { deployerHandoff } = await import("../src/chain.js"); const ss = Object.values(d.stocks);
+      const hk = await deployerHandoff({ router: d.router, oracle: d.oracle, registry: d.registry, usdg: d.usdg, pools: ss.map((x) => x.pool), feeds: ss.map((x) => x.feed) }, other as any, eoa);
+      assert.deepEqual(hk.problems, []); assert.equal(hk.ownedBySafe, 13);
     } finally { px.close(); }
-    // (c) testnet dry run, keyed on the node (not the chain id): a non-anvil node with chain id 46630 (HTTP proxy that hides
-    // anvil_nodeInfo and answers web3_clientVersion as another client) refuses; the verified anvil skips with a warning
+    // (c) testnet dry run: a non-anvil node with chain id 46630 (HTTP proxy hiding anvil_nodeInfo, other clientVersion)
     const http = await import("node:http");
     const fake = http.createServer((q, s) => { let b = ""; q.on("data", (c) => (b += c)); q.on("end", async () => {
       const j = JSON.parse(b); if (j.method === "anvil_nodeInfo") return s.end(JSON.stringify({ jsonrpc: "2.0", id: j.id, error: { code: -32601, message: "method not found" } }));
       if (j.method === "web3_clientVersion") return s.end(JSON.stringify({ jsonrpc: "2.0", id: j.id, result: "nitro/v3.5.0" }));
       const r = await fetch(`http://127.0.0.1:${PORT_RPC}`, { method: "POST", headers: { "content-type": "application/json" }, body: b }); s.end(await r.text()); }); });
     const PF = await new Promise<number>((res) => fake.listen(0, "127.0.0.1", () => res((fake.address() as any).port)));
+    // a REMOTE (non-localhost) RPC that answers exactly like anvil: 127.0.0.2 TCP pass-through to the real anvil
+    const pr = net.createServer((c) => { const u = net.connect(PORT_RPC, "127.0.0.1"); c.pipe(u).pipe(c); c.on("error", () => u.destroy()); u.on("error", () => c.destroy()); });
+    const PR = await new Promise<number>((res) => pr.listen(0, "127.0.0.2", () => res((pr.address() as any).port)));
     const { spawn: sp } = await import("node:child_process");
-    const dry = (rpc: string, safe: string) => new Promise<{ code: number | null; out: string }>((res) => { const ch = sp("bash", ["scripts/testnet-dryrun.sh"], { env: { ...process.env, TESTNET_RPC_URL: rpc, DRYRUN_SENDER: dw.address, TREASURY_SAFE: safe, ATTESTER: "0x4444444444444444444444444444444444444444", DRYRUN_CHECK_ONLY: "1" } }); let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b)); ch.on("exit", (code) => res({ code, out })); });
+    const dry = (rpc: string, safe: string, extra: Record<string, string | undefined> = {}) => new Promise<{ code: number | null; out: string }>((res) => { const ch = sp("bash", ["scripts/testnet-dryrun.sh"], { env: { ...process.env, TESTNET_RPC_URL: rpc, DRYRUN_SENDER: dw.address, TREASURY_SAFE: safe, KEEPER: kp, ATTESTER: att, DRYRUN_CHECK_ONLY: "1", ...extra } as any }); let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b)); ch.on("exit", (code) => res({ code, out })); });
     try {
       const fk = `http://127.0.0.1:${PF}`;
-      const r1 = await dry(fk, dw.address.toLowerCase()); assert.notEqual(r1.code, 0); assert.match(r1.out, /REFUSING: TREASURY_SAFE == deployer/, r1.out);
-      const r2 = await dry(fk, eoa); assert.notEqual(r2.code, 0); assert.match(r2.out, /REFUSING: TREASURY_SAFE .* has no code/, r2.out);
-      const r3 = await dry(fk, d.router); assert.equal(r3.code, 0, r3.out); assert.match(r3.out, /pre-checks passed/);
-      const r4 = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa); assert.equal(r4.code, 0, r4.out); assert.match(r4.out, /verified local anvil: D-1 TREASURY_SAFE checks skipped/);
-    } finally { fake.close(); }
+      const no = async (safe: string, re: RegExp, extra: Record<string, string | undefined> = {}) => { const r = await dry(fk, safe, extra); assert.notEqual(r.code, 0, r.out); assert.match(r.out, re, r.out); };
+      await no(dw.address.toLowerCase(), /REFUSING: TREASURY_SAFE == deployer/);
+      await no(kp, /REFUSING: TREASURY_SAFE == keeper/);
+      await no(eoa, /REFUSING: TREASURY_SAFE .* has no code/);
+      await no(d7702, /EIP-7702 delegated EOA/);
+      await no(d.router, /does not answer getThreshold/);
+      await no(t1, /threshold is 1; need >= 2/);
+      await no(o2, /has 2 owners; need >= 3/);
+      await no(withDep, /the deployer .* is an owner/); await no(withKp, /the keeper .* is an owner/); await no(withAtt, /the attester .* is an owner/);
+      await no(good, /DRYRUN_SENDER .* must be set off a verified local anvil/, { DRYRUN_SENDER: undefined });
+      const ok = await dry(fk, good); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /threshold 2 of 3 owners/); assert.match(ok.out, /pre-checks passed/);
+      const rem = await dry(`http://127.0.0.2:${PR}`, eoa); assert.notEqual(rem.code, 0); assert.match(rem.out, /not a localhost RPC but answers as anvil/, rem.out);
+      const loc = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa, { DRYRUN_SENDER: undefined, LOCAL_ANVIL: "0" }); assert.equal(loc.code, 0, loc.out); assert.match(loc.out, /verified local anvil: D-1 TREASURY_SAFE \/ Safe checks skipped/);
+      // G2 flag for Deploy.s.sol: LOCAL_ANVIL comes from the node check only, never from the caller's env
+      assert.match(loc.out, /LOCAL_ANVIL=1 \(from the node check/, "verified localhost anvil => 1 (even with LOCAL_ANVIL=0 in env)");
+      const offA = await dry(fk, good, { LOCAL_ANVIL: "1" }); assert.equal(offA.code, 0, offA.out); assert.match(offA.out, /LOCAL_ANVIL=0 \(from the node check/, "not anvil => 0 (even with LOCAL_ANVIL=1 in env)");
+      // full local rehearsal (forge script simulation, no broadcast) with the EOA Safe stand-in: no SafeHasNoCode revert
+      const full = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa, { DRYRUN_CHECK_ONLY: undefined, LOCAL_ANVIL: "0", MOCK_TOKENS: "1", DRYRUN_SENDER: wallet(cfg.keys.deployer()).address });
+      assert.equal(full.code, 0, full.out.slice(-2500)); assert.doesNotMatch(full.out, /SafeHasNoCode|AttesterIsDeployer|SafeIsDeployer/); assert.match(full.out, /NOT broadcasting/);
+    } finally { fake.close(); pr.close(); }
     // (d) local deploy: refuses any non-verified node up front (L3 step); on this verified anvil it ran with the EOA stand-in
-    assert.equal((await assertTreasurySafe(eoa, dw.address)).ok, true);
+    assert.equal((await assertTreasurySafe(eoa, roles)).ok, true);
   });
 
   await step("healthz is red (503, CHAIN_UNREACHABLE) when anvil is down", async () => {

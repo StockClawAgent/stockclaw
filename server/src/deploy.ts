@@ -6,8 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
-import { parseUnits, parseAbi, zeroAddress, type Address } from "viem";
-import { C, wallet, assertChain, read, pub, assertTreasurySafe, type Deployment } from "./chain.js";
+import { parseUnits, parseAbi, type Address } from "viem";
+import { C, wallet, assertChain, read, pub, assertTreasurySafe, deployerHandoff, type Deployment } from "./chain.js";
 import { IS_LOCAL, RPC_URL, DEPLOYMENTS_FILE, keys, TESTNET_CHAIN_ID, DEFAULT_FEE_BPS, ROOT, attesterSeparation, isLocalChain } from "./config.js";
 
 export const BASE_PRICES: Record<string, number> = { TSLA: 250, AMZN: 190, PLTR: 40, NFLX: 700, AMD: 150 };
@@ -20,7 +20,7 @@ export async function deployAndSeed(): Promise<Deployment> {
   // L3: off a verified anvil ATTESTER must not be the deployer (throws); on anvil both are key 0 (warning, kept)
   const sep = attesterSeparation({ ...process.env, DEPLOYER_KEY: keys.deployer(), ATTESTER_KEY: keys.attester() }, dep.address);
   if (sep.warning) console.warn(`  WARNING: ${sep.warning}`);
-  await assertTreasurySafe(tr.address, dep.address); // D-1: the TREASURY_SAFE passed to Deploy.s.sol (verified anvil: EOA stand-in ok)
+  await assertTreasurySafe(tr.address, { deployer: dep.address, keeper: kp.address, attester: sep.attester }); // D-1/D1-R1: the TREASURY_SAFE passed to Deploy.s.sol (verified anvil: EOA stand-in ok)
   const head = path.join(ROOT, "artifacts", "head");
   if (!fs.existsSync(path.join(head, "script", "Deploy.s.sol"))) throw new Error("Run `npm run build` first");
   const forge = fs.existsSync(`${os.homedir()}/.foundry/bin/forge`) ? `${os.homedir()}/.foundry/bin/forge` : "forge";
@@ -68,25 +68,7 @@ export async function deployAndSeed(): Promise<Deployment> {
   return d;
 }
 
-const OWNABLE2 = parseAbi(["function owner() view returns (address)", "function pendingOwner() view returns (address)", "function acceptOwnership()"]);
-const ISSUER = parseAbi(["function issuer() view returns (address)"]);
-/** L3 check: after the Safe accepted, the deployer holds no ownership and no registry role. The only allowed leftover is
- * ATTESTER_ROLE when ATTESTER == deployer (local anvil, logged). Mock stock tokens' `issuer` (immutable, MOCK_TOKENS=1
- * stand-in for the external stock issuer, used by the local faucet) is reported separately, not a StockClaw role. */
-export async function deployerHandoff(a: { router: Address; oracle: Address; registry: Address; usdg: Address; pools: Address[]; feeds: Address[]; tokens?: Address[] }, deployer: Address, safe: Address) {
-  const problems: string[] = [], eq = (x: string, y: string) => x.toLowerCase() === y.toLowerCase();
-  const owned = [["router", a.router], ["oracle", a.oracle], ["usdg", a.usdg], ...a.pools.map((p, i) => [`pool${i}`, p]), ...a.feeds.map((f, i) => [`feed${i}`, f])] as [string, Address][];
-  for (const [n, c] of owned) {
-    const [o, p] = await Promise.all([read<string>(c, OWNABLE2, "owner"), read<string>(c, OWNABLE2, "pendingOwner")]);
-    if (!eq(o, safe)) problems.push(`${n} owner ${o} != Safe`);
-    if (!eq(p, zeroAddress)) problems.push(`${n} pendingOwner ${p} not accepted`);
-  }
-  const [admin, att] = await Promise.all([read<`0x${string}`>(a.registry, C.registry.abi, "DEFAULT_ADMIN_ROLE"), read<`0x${string}`>(a.registry, C.registry.abi, "ATTESTER_ROLE")]);
-  if (await read<boolean>(a.registry, C.registry.abi, "hasRole", [admin, deployer])) problems.push("deployer still has registry DEFAULT_ADMIN_ROLE");
-  if (!(await read<boolean>(a.registry, C.registry.abi, "hasRole", [admin, safe]))) problems.push("Safe lacks registry DEFAULT_ADMIN_ROLE");
-  const attesterRole = await read<boolean>(a.registry, C.registry.abi, "hasRole", [att, deployer]);
-  const mockIssuer = (await Promise.all((a.tokens ?? []).map((t) => read<string>(t, ISSUER, "issuer").catch(() => "")))).filter((x) => eq(x, deployer)).length;
-  return { problems, ownedBySafe: owned.length, attesterRole, mockIssuerOf: mockIssuer };
-}
+const OWNABLE2 = parseAbi(["function acceptOwnership()"]);
+export { deployerHandoff }; // moved to chain.ts (the server's off-anvil startup check uses it too)
 
 if (import.meta.url === `file://${process.argv[1]}`) deployAndSeed().catch((e) => { console.error(e.message ?? e); process.exit(1); });

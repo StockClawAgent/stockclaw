@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseAbi, zeroAddress } from "viem";
 import { createPublicClient, createWalletClient, http, defineChain, type Abi, type Hex, type Address, BaseError, ContractFunctionRevertedError, decodeErrorResult } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { getDb, nowIso } from "./db.js";
@@ -206,14 +207,49 @@ export function loadDeployment(): Deployment {
   if (!fs.existsSync(DEPLOYMENTS_FILE)) throw new Error(`No deployment at ${DEPLOYMENTS_FILE}. Run: npm run deploy`);
   return JSON.parse(fs.readFileSync(DEPLOYMENTS_FILE, "utf8"));
 }
-/** D-1: off a verified anvil (R7-3 verdict; never keyed on chain id) the treasury Safe must be a contract (eth_getCode
- * non-empty) and must not be the deployer. On a verified anvil the treasury is an EOA stand-in (anvil #2): returns a note. */
-export async function assertTreasurySafe(safe: string | undefined, deployer: string | undefined, local = isLocalChain()) {
+/** D-1 + D1-R1: off a verified anvil (R7-3 verdict; never keyed on chain id) the treasury must be a real Safe:
+ * a contract (eth_getCode non-empty and NOT an EIP-7702 delegation `0xef0100…`), getThreshold() >= 2, getOwners() >= 3,
+ * and none of its owners (nor the Safe itself) is the deployer, keeper or attester. Any RPC error fails closed (throws).
+ * On a verified anvil the treasury is an EOA stand-in (anvil #2): returns a note. */
+const SAFE_ABI = parseAbi(["function getThreshold() view returns (uint256)", "function getOwners() view returns (address[])"]);
+export async function assertTreasurySafe(safe: string | undefined, roles: { deployer?: string | null; keeper?: string | null; attester?: string | null } | string | undefined, local = isLocalChain()) {
   if (local) return { ok: true, note: "verified local anvil: treasury may be an EOA stand-in for the Safe" };
+  const r = typeof roles === "string" || roles === undefined ? { deployer: roles } : roles;
   if (!safe || !/^0x[0-9a-fA-F]{40}$/.test(safe)) throw new Error(`REFUSING: TREASURY_SAFE is missing or not an address (${safe ?? "unset"}) off a verified local anvil (D-1)`);
-  if (deployer && safe.toLowerCase() === deployer.toLowerCase()) throw new Error(`REFUSING: TREASURY_SAFE ${safe} is the deployer. The treasury must be the 2-of-3 Safe, not the deploy key (D-1)`);
-  const code = await pub.getCode({ address: safe as Address });
+  if (!r.deployer) throw new Error("REFUSING: the deployer address is unknown (set DEPLOYER_KEY or DEPLOYER, or `deployer` in the deployments file) off a verified local anvil (G1)");
+  const named = Object.entries({ deployer: r.deployer, keeper: r.keeper, attester: r.attester }).filter(([, a]) => !!a) as [string, string][];
+  for (const [n, a] of named) if (safe.toLowerCase() === a.toLowerCase()) throw new Error(`REFUSING: TREASURY_SAFE ${safe} is the ${n}. The treasury must be the 2-of-3 Safe, not the ${n} key (D-1)`);
+  let code: string | undefined;
+  try { code = await pub.getCode({ address: safe as Address }); } catch (e) { throw new Error(`REFUSING: could not read TREASURY_SAFE ${safe} code (RPC error, failing closed): ${String((e as Error).message).slice(0, 160)}`); }
   if (!code || code === "0x") throw new Error(`REFUSING: TREASURY_SAFE ${safe} has no code (eth_getCode empty): not a Safe contract on this chain (D-1)`);
-  return { ok: true, note: null };
+  if (code.toLowerCase().startsWith("0xef0100")) throw new Error(`REFUSING: TREASURY_SAFE ${safe} is an EIP-7702 delegated EOA (code 0xef0100…), not a Safe contract (D1-R1)`);
+  let threshold: bigint, owners: readonly string[];
+  try {
+    [threshold, owners] = await Promise.all([pub.readContract({ address: safe as Address, abi: SAFE_ABI, functionName: "getThreshold" }), pub.readContract({ address: safe as Address, abi: SAFE_ABI, functionName: "getOwners" })]);
+  } catch (e) { throw new Error(`REFUSING: TREASURY_SAFE ${safe} does not answer getThreshold()/getOwners() (not a Safe, or RPC error: failing closed) (D1-R1): ${String((e as Error).message).slice(0, 160)}`); }
+  if (threshold < 2n) throw new Error(`REFUSING: TREASURY_SAFE ${safe} threshold is ${threshold}; need >= 2 (D1-R1)`);
+  if (owners.length < 3) throw new Error(`REFUSING: TREASURY_SAFE ${safe} has ${owners.length} owners; need >= 3 (D1-R1)`);
+  for (const [n, a] of named) if (owners.some((o) => o.toLowerCase() === a.toLowerCase())) throw new Error(`REFUSING: the ${n} ${a} is an owner of TREASURY_SAFE ${safe}; Safe signers must be separate keys (D1-R1)`);
+  return { ok: true, note: null, threshold: Number(threshold), owners: owners.length };
+}
+const OWNABLE2 = parseAbi(["function owner() view returns (address)", "function pendingOwner() view returns (address)"]);
+const ISSUER = parseAbi(["function issuer() view returns (address)"]);
+/** L3 check: the Safe owns all 13 Ownable2Step contracts (router, oracle, MockUSDG, 5 pools, 5 feeds) with no pending owner,
+ * holds registry admin, and the deployer has no registry admin. The only allowed leftover is ATTESTER_ROLE when
+ * ATTESTER == deployer (local anvil, logged). Mock stock tokens' immutable `issuer` is reported, not a StockClaw role. */
+export async function deployerHandoff(a: { router: Address; oracle: Address; registry: Address; usdg: Address; pools: Address[]; feeds: Address[]; tokens?: Address[] }, deployer: Address, safe: Address) {
+  const problems: string[] = [], eq = (x: string, y: string) => x.toLowerCase() === y.toLowerCase();
+  const owned = [["router", a.router], ["oracle", a.oracle], ["usdg", a.usdg], ...a.pools.map((p, i) => [`pool${i}`, p]), ...a.feeds.map((f, i) => [`feed${i}`, f])] as [string, Address][];
+  for (const [n, c] of owned) {
+    const [o, p] = await Promise.all([read<string>(c, OWNABLE2, "owner"), read<string>(c, OWNABLE2, "pendingOwner")]);
+    if (!eq(o, safe)) problems.push(`${n} owner ${o} != Safe`);
+    if (!eq(p, zeroAddress)) problems.push(`${n} pendingOwner ${p} not accepted`);
+  }
+  const [admin, att] = await Promise.all([read<Hex>(a.registry, C.registry.abi, "DEFAULT_ADMIN_ROLE"), read<Hex>(a.registry, C.registry.abi, "ATTESTER_ROLE")]);
+  if (await read<boolean>(a.registry, C.registry.abi, "hasRole", [admin, deployer])) problems.push("deployer still has registry DEFAULT_ADMIN_ROLE");
+  if (!(await read<boolean>(a.registry, C.registry.abi, "hasRole", [admin, safe]))) problems.push("Safe lacks registry DEFAULT_ADMIN_ROLE");
+  const attesterRole = await read<boolean>(a.registry, C.registry.abi, "hasRole", [att, deployer]);
+  const mockIssuer = (await Promise.all((a.tokens ?? []).map((t) => read<string>(t, ISSUER, "issuer").catch(() => "")))).filter((x) => eq(x, deployer)).length;
+  return { problems, ownedBySafe: owned.length, attesterRole, mockIssuerOf: mockIssuer };
 }
 export const isRevert = (e: unknown) => e instanceof BaseError && !!e.walk((x) => x instanceof ContractFunctionRevertedError);

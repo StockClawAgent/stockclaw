@@ -123,8 +123,9 @@ export function attesterSeparation(env: NodeJS.ProcessEnv = process.env, deploye
   const same = !!attester && !!deployer && attester.toLowerCase() === deployer.toLowerCase();
   if (!local) {
     if (!attester) throw new Error("REFUSING: ATTESTER_KEY (or ATTESTER) must be set to a key separate from the deployer when RPC_URL is not a verified local anvil (L3)");
+    if (!deployer) throw new Error("REFUSING: the deployer address is unknown off a verified local anvil: set DEPLOYER_KEY or DEPLOYER, or `deployer` in the deployments file (G1: the role checks can't be skipped)");
     if (same) throw new Error(`REFUSING: ATTESTER ${attester} is the deployer. Off a verified local anvil the attester must be a separate key (L3: the deployer must end with no roles). Node: ${JSON.stringify(localNodeInfo())}`);
-    return { attester, deployer: deployer ?? null, same: false, warning: null as string | null };
+    return { attester, deployer, same: false, warning: null as string | null };
   }
   return { attester, deployer: deployer ?? null, same, warning: same ? `ATTESTER is the deployer (${attester}): it keeps ATTESTER_ROLE. Local anvil only; testnet uses a separate ATTESTER key.` : null };
 }
