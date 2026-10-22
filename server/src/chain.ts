@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parseAbi, zeroAddress } from "viem";
+import { parseAbi, zeroAddress, keccak256 } from "viem";
 import { createPublicClient, createWalletClient, http, defineChain, type Abi, type Hex, type Address, BaseError, ContractFunctionRevertedError, decodeErrorResult } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { getDb, nowIso } from "./db.js";
@@ -219,6 +219,14 @@ export const SAFE_SINGLETONS: Record<number, Record<string, string>> = {
 /** Safe GuardManager GUARD_STORAGE_SLOT = keccak256("guard_manager.guard.address") (Safe v1.4.1 source). */
 export const SAFE_GUARD_SLOT = "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8" as const;
 const SENTINEL = "0x0000000000000000000000000000000000000001" as const;
+/** D1-R3b: keccak256 of the Safe v1.4.1 SafeProxy RUNTIME code, keyed by chain id. The runtime has no immutables (the
+ * singleton lives in slot 0), so every proxy from the factory has this hash. 46630: SafeProxyFactory
+ * 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67 `proxyCreationCode()` deployed with a singleton arg (scratch anvil) and
+ * eth_getCode'd => 0xd7d4…fb4c; the same hash on all 6 ProxyCreation proxies the factory emitted on 46630
+ * (blocks 140141456..140346125, both singletons). See docs/TESTNET_DEPLOY.md "Safe requirements". */
+export const SAFE_PROXY_CODEHASH: Record<number, string> = {
+  46630: "0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c",
+};
 export async function assertTreasurySafe(safe: string | undefined, roles: { deployer?: string | null; keeper?: string | null; attester?: string | null } | string | undefined, local = isLocalChain()) {
   if (local) return { ok: true, note: "verified local anvil: treasury may be an EOA stand-in for the Safe" };
   const r = typeof roles === "string" || roles === undefined ? { deployer: roles } : roles;
@@ -247,12 +255,16 @@ export async function assertTreasurySafe(safe: string | undefined, roles: { depl
   if (owners.length < 3) throw new Error(`REFUSING: TREASURY_SAFE ${safe} has ${owners.length} owners; need >= 3 (D1-R1)`);
   for (const [n, a] of named) if (owners.some((o) => o.toLowerCase() === a.toLowerCase())) throw new Error(`REFUSING: the ${n} ${a} is an owner of TREASURY_SAFE ${safe}; Safe signers must be separate keys (D1-R1)`);
   // D1-R3: no modules (a module can execute without owner signatures) and no guard (can block or alter the Safe's txs)
-  let modules: readonly string[], guard: string | undefined;
+  let modules: readonly string[], next: string, guard: string | undefined;
   try {
-    [[modules], guard] = await Promise.all([pub.readContract({ address: safe as Address, abi: SAFE_ABI, functionName: "getModulesPaginated", args: [SENTINEL, 10n] }), pub.getStorageAt({ address: safe as Address, slot: SAFE_GUARD_SLOT })]);
+    [[modules, next], guard] = await Promise.all([pub.readContract({ address: safe as Address, abi: SAFE_ABI, functionName: "getModulesPaginated", args: [SENTINEL, 10n] }), pub.getStorageAt({ address: safe as Address, slot: SAFE_GUARD_SLOT })]);
   } catch (e) { throw fc("modules/guard", e); }
   if (modules.length) throw new Error(`REFUSING: TREASURY_SAFE ${safe} has ${modules.length} module(s) enabled (${modules.join(", ")}); none allowed (D1-R3)`);
+  if (String(next).toLowerCase() !== SENTINEL) throw new Error(`REFUSING: TREASURY_SAFE ${safe} getModulesPaginated next is ${next}, expected the sentinel 0x1 (more modules beyond the page, or not a Safe) (D1-R3)`);
   if (guard && BigInt(guard) !== 0n) throw new Error(`REFUSING: TREASURY_SAFE ${safe} has a guard set (slot ${SAFE_GUARD_SLOT} = ${guard}); none allowed (D1-R3)`);
+  // D1-R3b: the code at TREASURY_SAFE is the canonical v1.4.1 SafeProxy runtime (a contract can fake slot 0 and the getters)
+  const wantHash = SAFE_PROXY_CODEHASH[chainId], gotHash = keccak256(code as Hex);
+  if (!wantHash || gotHash.toLowerCase() !== wantHash) throw new Error(`REFUSING: TREASURY_SAFE ${safe} runtime code hash ${gotHash} is not the Safe v1.4.1 SafeProxy (${wantHash ?? `none known for chain ${chainId}`}) (D1-R3b)`);
   return { ok: true, note: null, threshold: Number(threshold), owners: owners.length, singleton: allowed[single] };
 }
 const OWNABLE2 = parseAbi(["function owner() view returns (address)", "function pendingOwner() view returns (address)"]);

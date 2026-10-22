@@ -1307,15 +1307,23 @@ try {
   let safeN = 0;
   // D1-R3: slot 0 = masterCopy (default SafeL2 v1.4.1 for 46630; null = a fake contract that only mimics the getters),
   // getModulesPaginated(0x1, 10) answers `modules`, and the guard slot is set when `guard` is given
-  const SAFE_L2_141 = "0x29fcB43b46531BcA003ddC8FCB67FFE91900C762";
-  const mockSafe = async (threshold: number, owners: string[], o: { singleton?: string | null; modules?: string[]; guard?: string } = {}) => {
+  const SAFE_L2_141 = "0x29fcB43b46531BcA003ddC8FCB67FFE91900C762", SAFE_141 = "0x41675C099F32341bf84BFc5382aF534df5C7461a";
+  // D1-R3b: the real Safe v1.4.1 SafeProxy runtime (eth_getCode of a proxy from SafeProxyFactory 0x4e1DCf7A…ec67 on 46630;
+  // keccak = SAFE_PROXY_CODEHASH[46630]). `proxy: true` mocks run it and delegatecall to a responder installed at the
+  // singleton address (2-of-3 SAFE_OWNERS, no modules); the other mocks are plain responders that fake the getters.
+  const SAFE_PROXY_RUNTIME = "0x608060405273ffffffffffffffffffffffffffffffffffffffff600054167fa619486e0000000000000000000000000000000000000000000000000000000060003514156050578060005260206000f35b3660008037600080366000845af43d6000803e60008114156070573d6000fd5b3d6000f3fea264697066735822122003d1488ee65e08fa41e58e888a9865554c535f2c77126a82cb4c0f917f31441364736f6c63430007060033" as `0x${string}`;
+  const SENT = "0x0000000000000000000000000000000000000001" as `0x${string}`;
+  const safeAnswers = (threshold: number, owners: string[], modules: string[] = [], next: string = SENT) => responder({
+    "0xe75235b8": encodeAbiParameters([{ type: "uint256" }], [BigInt(threshold)]),
+    "0xa0e67e2b": encodeAbiParameters([{ type: "address[]" }], [owners as `0x${string}`[]]),
+    "0xcc2f8452": encodeAbiParameters([{ type: "address[]" }, { type: "address" }], [modules as `0x${string}`[], next as `0x${string}`]),
+  });
+  let singletonsSet = false;
+  const mockSafe = async (threshold: number, owners: string[], o: { singleton?: string | null; modules?: string[]; guard?: string; next?: string; proxy?: boolean } = {}) => {
     const { pub: P, SAFE_GUARD_SLOT } = await import("../src/chain.js");
     const addr = `0x5afe${(++safeN).toString(16).padStart(36, "0")}` as `0x${string}`;
-    const code = responder({
-      "0xe75235b8": encodeAbiParameters([{ type: "uint256" }], [BigInt(threshold)]),
-      "0xa0e67e2b": encodeAbiParameters([{ type: "address[]" }], [owners as `0x${string}`[]]),
-      "0xcc2f8452": encodeAbiParameters([{ type: "address[]" }, { type: "address" }], [(o.modules ?? []) as `0x${string}`[], "0x0000000000000000000000000000000000000001"]),
-    });
+    if (o.proxy && !singletonsSet) { for (const sgl of [SAFE_L2_141, SAFE_141]) await P.request({ method: "anvil_setCode", params: [sgl, safeAnswers(2, SAFE_OWNERS)] } as any); singletonsSet = true; }
+    const code = o.proxy ? SAFE_PROXY_RUNTIME : safeAnswers(threshold, owners, o.modules ?? [], o.next ?? SENT);
     await P.request({ method: "anvil_setCode", params: [addr, code] } as any);
     const word = (a: string) => "0x" + a.slice(2).toLowerCase().padStart(64, "0");
     const single = o.singleton === undefined ? SAFE_L2_141 : o.singleton;
@@ -1325,7 +1333,7 @@ try {
   };
 
   await step("L3 attester separation: off a verified anvil the server (and deploy) refuse to start when ATTESTER == deployer (config and onchain role); on a verified anvil it starts with the warning; testnet dry run refuses too", async () => {
-    const l3Safe = await mockSafe(2, SAFE_OWNERS);
+    const l3Safe = await mockSafe(2, SAFE_OWNERS, { proxy: true });
     const { privateKeyToAccount, generatePrivateKey } = await import("viem/accounts");
     const k0 = cfg.keys.deployer(), k9 = generatePrivateKey(); // k9: a fresh key that is not the deployer
     const a0 = privateKeyToAccount(k0).address;
@@ -1374,14 +1382,17 @@ try {
   await step("D-1 + D1-R1 treasury Safe: off a verified anvil (R7-3 verdict, never the chain id) the server, local deploy and testnet dry run accept only a real Safe: not the deployer/keeper/attester, code that isn't an EIP-7702 delegation, getThreshold() >= 2, >= 3 owners with no role key among them, RPC errors refuse; a verified anvil keeps the EOA stand-in", async () => {
     const { assertTreasurySafe, pub: P } = await import("../src/chain.js");
     const dw = wallet(cfg.keys.deployer()), eoa = wallet(cfg.keys.treasury()).address, kp = d.keeper, att = "0x4444444444444444444444444444444444444444";
-    const good = await mockSafe(2, SAFE_OWNERS), t1 = await mockSafe(1, SAFE_OWNERS), o2 = await mockSafe(2, SAFE_OWNERS.slice(0, 2));
+    const good = await mockSafe(2, SAFE_OWNERS, { proxy: true }), t1 = await mockSafe(1, SAFE_OWNERS), o2 = await mockSafe(2, SAFE_OWNERS.slice(0, 2));
     const withDep = await mockSafe(2, [...SAFE_OWNERS, dw.address]), withKp = await mockSafe(2, [...SAFE_OWNERS, kp]), withAtt = await mockSafe(2, [...SAFE_OWNERS, att]);
     const d7702 = "0x00000000000000000000000000000000000077a2"; await P.request({ method: "anvil_setCode", params: [d7702, "0xef0100" + "be".repeat(20)] } as any);
     // D1-R3 negatives: a fake contract answering the Safe getters (slot 0 not a Safe singleton), an enabled module, a set guard;
     // and the other v1.4.1 singleton (plain Safe) passes
     const fakeC = await mockSafe(2, SAFE_OWNERS, { singleton: null }), wrongS = await mockSafe(2, SAFE_OWNERS, { singleton: "0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552" /* Safe v1.3.0 */ });
     const withMod = await mockSafe(2, SAFE_OWNERS, { modules: ["0x000000000000000000000000000000000000d0d0"] }), withGuard = await mockSafe(2, SAFE_OWNERS, { guard: "0x000000000000000000000000000000000000ea9d" });
-    const plainSafe = await mockSafe(2, SAFE_OWNERS, { singleton: "0x41675C099F32341bf84BFc5382aF534df5C7461a" });
+    const plainSafe = await mockSafe(2, SAFE_OWNERS, { singleton: SAFE_141, proxy: true });
+    // D1-R3b negatives: a contract that fakes slot 0 (SafeL2) and every getter but isn't the SafeProxy runtime; a module page whose next != 0x1
+    const fakeSlot0 = await mockSafe(2, SAFE_OWNERS), nextBad = await mockSafe(2, SAFE_OWNERS, { next: "0x000000000000000000000000000000000000d0d0" });
+    { const { SAFE_PROXY_CODEHASH } = await import("../src/chain.js"); const { keccak256 } = await import("viem"); assert.equal(keccak256(SAFE_PROXY_RUNTIME), SAFE_PROXY_CODEHASH[46630], "mock proxy runtime == the 46630 SafeProxy"); }
     const roles = { deployer: dw.address, keeper: kp, attester: att };
     // (a) the rule, against this chain's real code (local=false forces "not a verified anvil" without touching the global verdict)
     const why = async (safe: any, r: any = roles, local = false) => { try { return (await assertTreasurySafe(safe, r, local)).note ?? "ok"; } catch (e) { return String((e as Error).message); } };
@@ -1395,6 +1406,8 @@ try {
     assert.match(await why(withMod), /has 1 module\(s\) enabled \(0x0{36}[dD]0[dD]0\)/, "D1-R3: enabled module");
     assert.match(await why(withGuard), /has a guard set/, "D1-R3: guard set");
     assert.equal(await why(plainSafe), "ok", "D1-R3: Safe (non-L2) v1.4.1 singleton passes");
+    assert.match(await why(fakeSlot0), /runtime code hash 0x[0-9a-f]{64} is not the Safe v1\.4\.1 SafeProxy \(0xd7d408eb/, "D1-R3b: fake slot 0 + getters, wrong code");
+    assert.match(await why(nextBad), /getModulesPaginated next is 0x0{36}[dD]0[dD]0, expected the sentinel 0x1/, "D1-R3: next must be 0x1");
     assert.match(await why(good, { deployer: dw.address, attester: att }), /keeper address is unknown/, "keeper unknown refuses (never skips keeper-vs-Safe)");
     { // fail closed on RPC errors: point the client at a dead port for the D1-R3 reads
       const { pub: P2 } = await import("../src/chain.js"); const orig = P2.getStorageAt; let msg = "";
@@ -1432,6 +1445,7 @@ try {
       await refuses({ TREASURY_SAFE: fakeC }, /not a proxy to a known Safe v1\.4\.1 singleton/);
       await refuses({ TREASURY_SAFE: withMod }, /module\(s\) enabled/);
       await refuses({ TREASURY_SAFE: withGuard }, /has a guard set/);
+      await refuses({ TREASURY_SAFE: fakeSlot0 }, /is not the Safe v1\.4\.1 SafeProxy \(0xd7d408eb[0-9a-f]+\) \(D1-R3b\)/);
       // keeper unknown (no KEEPER_KEY, deployments file without `keeper`) => refuse, never skip the keeper-vs-Safe check
       await refuses({ TREASURY_SAFE: good, KEEPER_KEY: undefined, DEPLOYMENTS_FILE: writeDep("nokeeper.json", { keeper: undefined }) }, /keeper address is unknown/);
       await refuses({ TREASURY_SAFE: t1 }, /threshold is 1/);
@@ -1467,7 +1481,7 @@ try {
     const pr = net.createServer((c) => { const u = net.connect(PORT_RPC, "127.0.0.1"); c.pipe(u).pipe(c); c.on("error", () => u.destroy()); u.on("error", () => c.destroy()); });
     const PR = await new Promise<number>((res) => pr.listen(0, "127.0.0.2", () => res((pr.address() as any).port)));
     const { spawn: sp } = await import("node:child_process");
-    const dry = (rpc: string, safe: string, extra: Record<string, string | undefined> = {}) => new Promise<{ code: number | null; out: string }>((res) => { const ch = sp("bash", ["scripts/testnet-dryrun.sh"], { env: { ...process.env, TESTNET_RPC_URL: rpc, DRYRUN_SENDER: dw.address, TREASURY_SAFE: safe, KEEPER: kp, ATTESTER: att, DRYRUN_CHECK_ONLY: "1", ...extra } as any }); let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b)); ch.on("exit", (code) => res({ code, out })); });
+    const dry = (rpc: string, safe: string, extra: Record<string, string | undefined> = {}) => new Promise<{ code: number | null; out: string }>((res) => { const ch = sp("bash", ["scripts/testnet-dryrun.sh"], { env: { ...process.env, TESTNET_RPC_URL: rpc, DRYRUN_SENDER: dw.address, TREASURY_SAFE: safe, KEEPER: kp, ATTESTER: att, FEED_UPDATER: "0x2222222222222222222222222222222222222222", DRYRUN_CHECK_ONLY: "1", ...extra } as any }); let out = ""; ch.stdout!.on("data", (b) => (out += b)); ch.stderr!.on("data", (b) => (out += b)); ch.on("exit", (code) => res({ code, out })); });
     try {
       const fk = `http://127.0.0.1:${PF}`;
       const no = async (safe: string, re: RegExp, extra: Record<string, string | undefined> = {}) => { const r = await dry(fk, safe, extra); assert.notEqual(r.code, 0, r.out); assert.match(r.out, re, r.out); };
@@ -1480,12 +1494,16 @@ try {
       await no(wrongS, /not a proxy to a known Safe v1\.4\.1 singleton/);
       await no(withMod, /module\(s\) enabled \(0x0{36}[dD]0[dD]0\)/);
       await no(withGuard, /has a guard set/);
-      { const r = await dry(fk, plainSafe); assert.equal(r.code, 0, r.out); assert.match(r.out, /Safe-v1\.4\.1 proxy, .*no modules, no guard/); }
+      await no(fakeSlot0, /runtime code hash 0x[0-9a-f]{64} is not the Safe v1\.4\.1 SafeProxy \(0xd7d408eb/);
+      await no(nextBad, /getModulesPaginated next is '0x0{36}d0d0', expected the sentinel 0x1/);
+      // off-anvil the role addresses are required (no placeholders)
+      for (const v of ["KEEPER", "ATTESTER", "FEED_UPDATER"]) await no(good, new RegExp(`REFUSING: ${v} must be set to the real address off a verified local anvil`), { [v]: undefined });
+      { const r = await dry(fk, plainSafe); assert.equal(r.code, 0, r.out); assert.match(r.out, /Safe-v1\.4\.1 proxy \(code hash ok\), .*no modules, no guard/); }
       await no(t1, /threshold is 1; need >= 2/);
       await no(o2, /has 2 owners; need >= 3/);
       await no(withDep, /the deployer .* is an owner/); await no(withKp, /the keeper .* is an owner/); await no(withAtt, /the attester .* is an owner/);
       await no(good, /DRYRUN_SENDER .* must be set off a verified local anvil/, { DRYRUN_SENDER: undefined });
-      const ok = await dry(fk, good); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /SafeL2-v1\.4\.1 proxy, threshold 2 of 3 owners.*no modules, no guard/); assert.match(ok.out, /pre-checks passed/);
+      const ok = await dry(fk, good); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /SafeL2-v1\.4\.1 proxy \(code hash ok\), threshold 2 of 3 owners.*no modules, no guard/); assert.match(ok.out, /pre-checks passed/);
       const rem = await dry(`http://127.0.0.2:${PR}`, eoa); assert.notEqual(rem.code, 0); assert.match(rem.out, /not a localhost RPC but answers as anvil/, rem.out);
       const loc = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa, { DRYRUN_SENDER: undefined, LOCAL_ANVIL: "0" }); assert.equal(loc.code, 0, loc.out); assert.match(loc.out, /verified local anvil: D-1 TREASURY_SAFE \/ Safe checks skipped/);
       // G2 flag for Deploy.s.sol: LOCAL_ANVIL comes from the node check only, never from the caller's env
@@ -1493,7 +1511,7 @@ try {
       const offA = await dry(fk, good, { LOCAL_ANVIL: "1" }); assert.equal(offA.code, 0, offA.out); assert.match(offA.out, /LOCAL_ANVIL=0 \(from the node check/, "not anvil => 0 (even with LOCAL_ANVIL=1 in env)");
       // full local rehearsal (forge script simulation, no broadcast) with the EOA Safe stand-in: no SafeHasNoCode revert
       // ... and WITHOUT DRYRUN_SENDER: the anvil fallback sender is account #0 (G2-b, 1d407ae), so no DeployerNotAnvilAccount0
-      const full = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa, { DRYRUN_CHECK_ONLY: undefined, LOCAL_ANVIL: "0", MOCK_TOKENS: "1", DRYRUN_SENDER: undefined });
+      const full = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa, { DRYRUN_CHECK_ONLY: undefined, LOCAL_ANVIL: "0", MOCK_TOKENS: "1", DRYRUN_SENDER: undefined, KEEPER: undefined, ATTESTER: undefined, FEED_UPDATER: undefined }); // verified anvil: placeholders still allowed
       assert.equal(full.code, 0, full.out.slice(-2500)); assert.doesNotMatch(full.out, /SafeHasNoCode|AttesterIsDeployer|SafeIsDeployer|DeployerNotAnvilAccount0|NotAnvilNode/); assert.match(full.out, /NOT broadcasting/);
       // a non-#0 sender under LOCAL_ANVIL=1 reverts in Deploy.s.sol (G2-b): the fallback is what makes the rehearsal pass
       const non0 = await dry(`http://127.0.0.1:${PORT_RPC}`, eoa, { DRYRUN_CHECK_ONLY: undefined, MOCK_TOKENS: "1", DRYRUN_SENDER: "0x000000000000000000000000000000000000dEaD" });

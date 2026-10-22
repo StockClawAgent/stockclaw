@@ -12,6 +12,8 @@ FORGE=$(command -v forge || echo "$HOME/.foundry/bin/forge")
 # DRYRUN_SENDER (the deployer) has NO default off a verified local anvil: the role checks compare against it.
 SENDER="${DRYRUN_SENDER:-}"
 unset LOCAL_ANVIL # G2: never inherited from the caller's env; set below from the node check only
+# Off a verified local anvil KEEPER, ATTESTER and FEED_UPDATER must be given (no placeholders): remember what the caller set.
+GIVEN_ROLES=""; for v in KEEPER ATTESTER FEED_UPDATER; do [ -n "${!v:-}" ] && GIVEN_ROLES="$GIVEN_ROLES $v"; done
 export TREASURY_SAFE="${TREASURY_SAFE:-0x1111111111111111111111111111111111111111}"
 export FEED_UPDATER="${FEED_UPDATER:-0x2222222222222222222222222222222222222222}"
 export KEEPER="${KEEPER:-0x3333333333333333333333333333333333333333}"
@@ -37,6 +39,10 @@ if [ "$CLAIMS_ANVIL" = 1 ]; then
 else
   export LOCAL_ANVIL=0
   [ -n "$SENDER" ] || { echo "REFUSING: DRYRUN_SENDER (the deployer address) must be set off a verified local anvil; the role checks compare against it."; exit 1; }
+  for v in KEEPER ATTESTER FEED_UPDATER; do
+    case " $GIVEN_ROLES " in *" $v "*) ;; *) echo "REFUSING: $v must be set to the real address off a verified local anvil (no placeholder defaults)."; exit 1;; esac
+    echo "${!v}" | grep -qE '^0x[0-9a-fA-F]{40}$' || { echo "REFUSING: $v is not an address (${!v})."; exit 1; }
+  done
   # D-1 + D1-R1: TREASURY_SAFE must be a real Safe: not the deployer/keeper/attester, has code that is not an
   # EIP-7702 delegation (0xef0100...), getThreshold() >= 2, getOwners() >= 3 and none of them a role key. RPC errors refuse.
   for pair in "deployer:$SENDER" "keeper:$KEEPER" "attester:$ATTESTER"; do
@@ -68,13 +74,19 @@ else
   done
   # D1-R3: no modules enabled (getModulesPaginated(SENTINEL, 10) returns an empty page) and no guard set
   MODS=$("$CAST" call --rpc-url "$RPC" "$TREASURY_SAFE" "getModulesPaginated(address,uint256)(address[],address)" 0x0000000000000000000000000000000000000001 10 2>/dev/null) || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE does not answer getModulesPaginated() (not a Safe, or RPC error; failing closed) (D1-R3)."; exit 1; }
-  MLIST=$(echo "$MODS" | head -n1 | tr -d '[] ')
+  MLIST=$(echo "$MODS" | sed -n 1p | tr -d '[] '); MNEXT=$(lc "$(echo "$MODS" | sed -n 2p | tr -d ' ')")
   [ -z "$MLIST" ] || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE has module(s) enabled ($MLIST); none allowed (D1-R3)."; exit 1; }
+  [ "$MNEXT" = "0x0000000000000000000000000000000000000001" ] || { echo "REFUSING: TREASURY_SAFE getModulesPaginated next is '$MNEXT', expected the sentinel 0x1 (D1-R3)."; exit 1; }
   GUARD_SLOT=0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8 # keccak256("guard_manager.guard.address"), Safe v1.4.1 GuardManager
   GUARD=$("$CAST" storage --rpc-url "$RPC" "$TREASURY_SAFE" "$GUARD_SLOT" 2>/dev/null) || { echo "REFUSING: could not read TREASURY_SAFE guard slot (RPC error, failing closed) (D1-R3)."; exit 1; }
   case "$GUARD" in 0x*) ;; *) echo "REFUSING: unreadable guard slot '$GUARD' (failing closed) (D1-R3)."; exit 1;; esac
   [ -z "$(echo "${GUARD#0x}" | tr -d 0)" ] || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE has a guard set ($GUARD); none allowed (D1-R3)."; exit 1; }
-  echo "TREASURY_SAFE $TREASURY_SAFE: $SNAME proxy, threshold $THRESH of $NOWN owners, no role key among them, no modules, no guard"
+  # D1-R3b: runtime code hash == the Safe v1.4.1 SafeProxy (from SafeProxyFactory 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67
+  # proxyCreationCode(); same as SAFE_PROXY_CODEHASH in src/chain.ts). A contract can fake slot 0 and the getters, not this.
+  case "$CHAIN" in 0xb626) PROXY_HASH=0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c;; *) PROXY_HASH="";; esac
+  CHASH=$("$CAST" keccak "$CODE" 2>/dev/null) || { echo "REFUSING: could not hash TREASURY_SAFE code (failing closed) (D1-R3b)."; exit 1; }
+  [ -n "$PROXY_HASH" ] && [ "$(lc "$CHASH")" = "$PROXY_HASH" ] || { echo "REFUSING: TREASURY_SAFE $TREASURY_SAFE runtime code hash $CHASH is not the Safe v1.4.1 SafeProxy (${PROXY_HASH:-none known for chain $CHAIN}) (D1-R3b)."; exit 1; }
+  echo "TREASURY_SAFE $TREASURY_SAFE: $SNAME proxy (code hash ok), threshold $THRESH of $NOWN owners, no role key among them, no modules, no guard"
 fi
 export SENDER
 echo "LOCAL_ANVIL=$LOCAL_ANVIL (from the node check; never inherited)"
