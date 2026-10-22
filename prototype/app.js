@@ -166,8 +166,11 @@ function dash(t,body){const k=S.key,act=k&&k.status=="active";
 const C={bal:null,assets:null,loading:false,err:null};
 async function loadDash(force){if(C.loading)return;if(!force&&C.err&&Date.now()-(C.errAt||0)<15000)return; // no auto-retry faster than 15s
 if(!force&&C.bal&&C.assets&&S.orders&&S.history)return;C.loading=true;C.err=null;
- const r=await Promise.allSettled([api.get_balances(),api.list_assets(),api.get_wallet(),(force||!S.orders)?api.list_orders():null,(force||!S.history)?api.get_history(50):null]);
- const w=r.splice(2,1)[0];if(w.status=="fulfilled"&&w.value&&w.value.sessionKey&&S.key){const sk=w.value.sessionKey;if(!S.key.id||sk.id==S.key.id||S.key.status=="active")S.key={...S.key,...sk,status:sk.status=="revoked"&&S.key.status=="paused"?"paused":sk.status}}
+ const r=await Promise.allSettled([api.get_balances(),api.list_assets(),api.get_wallet(),(force||!C.synced||!S.orders)?api.list_orders():null,(force||!C.synced||!S.history)?api.get_history(50):null]);C.synced=true; // orders/history cached in localStorage are refetched once per page load (a redeployed chain makes old txs stale)
+ const w=r.splice(2,1)[0];
+ // live: the server's vault and agent key win over a cached S.sa / S.key from an earlier chain (redeploy -> new vault, new sk_)
+ if(w.status=="fulfilled"&&w.value&&!window.USE_MOCK&&S.sa&&w.value.address&&String(w.value.address).toLowerCase()!=String(S.sa).toLowerCase()){S.sa=w.value.address;S.lastBasket=null}
+ if(w.status=="fulfilled"&&w.value&&w.value.sessionKey&&S.key){const sk=w.value.sessionKey;if(!window.USE_MOCK&&S.key.id&&sk.id&&sk.id!=S.key.id)S.key={spentToday:0,...sk};else if(!S.key.id||sk.id==S.key.id||S.key.status=="active")S.key={...S.key,...sk,status:sk.status=="revoked"&&S.key.status=="paused"?"paused":sk.status}}
  const bad=["get_balances","list_assets","list_orders","get_history"].filter((n,i)=>r[i].status=="rejected");if(w.status=="rejected")bad.push("get_wallet");
  if(r[0].status=="fulfilled")C.bal=r[0].value||[];if(r[1].status=="fulfilled")C.assets=r[1].value||[];
  if(r[2].status=="fulfilled"&&r[2].value){const prev=S.orders||[];S.orders=r[2].value.map(o=>({...o,status:(prev.find(x=>x.intentId==o.intentId)||{}).status=="cancelled"&&o.status!="filled"?"cancelled":o.status,cancelTx:(prev.find(x=>x.intentId==o.intentId)||{}).cancelTx}))}

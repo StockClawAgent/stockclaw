@@ -134,13 +134,15 @@ function bkEntryBind(){const rr=document.getElementById("bkRetry");rr&&(rr.oncli
 function BuyBasket(){const lb=S.lastBasket;if(!lb)return dash("overview",`<p class="dx-quiet">No basket order yet. <a href="#/dashboard/overview">Buy one from Home</a></p>`);
  return dash("overview",`<section class="dx-ob"><p class="dx-k">Basket order</p><h1>Buying ${esc(lb.name||lb.basketId)}</h1><div id="bfBuy" class="bf-card" tabindex="-1"></div>
 <p class="dx-mut dx-small">Each order is a separate trade of $100 or less, within your buy headroom (24h).</p><a class="dx-primary" href="#/dashboard/overview">Back to Home</a></section>`)}
-function BuyBasketBind(){const el=$("#bfBuy");if(el&&S.lastBasket){BasketFill.mount(el,S.lastBasket.id);el.focus()}}
+// a cached S.lastBasket can point at an execution the server no longer has (chain redeployed / mock memory reset): forget it
+function staleBasket(){const lb=S.lastBasket;if(!lb)return;Promise.resolve().then(()=>api.get_basket_execution(lb.id)).catch(e=>{if(S.lastBasket===lb&&e&&(e.status==404||e.code=="NOT_FOUND"||/unknown basket execution/i.test(e.message||""))){for(const x of document.querySelectorAll("#bfHome,#bfBuy")){try{const u=x._bf&&x._bf.sub;u&&typeof u.close=="function"&&u.close()}catch(_){}}S.lastBasket=null;save();render()}})}
+function BuyBasketBind(){const el=$("#bfBuy");if(el&&S.lastBasket){staleBasket();BasketFill.mount(el,S.lastBasket.id);el.focus()}}
 R["/dashboard/basket"]=[BuyBasket,BuyBasketBind];
 {const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/dashboard/basket"){document.body.classList.remove("is-landing");document.body.classList.add("sc-app");render()}}
 {const H0=Home,HB0=HomeBind;
  Home=function(){const h=H0();const lb=S.lastBasket;const card=lb?`<section class="dx-sec" aria-labelledby="dx-bk"><h2 id="dx-bk">Latest basket: ${esc(lb.name||lb.basketId)}</h2><div id="bfHome" class="bf-card"></div></section>`:"";
   return h.replace('<section class="dx-sec" aria-labelledby="dx-act">',card+bkEntry()+'<section class="dx-sec" aria-labelledby="dx-act">')};
- HomeBind=function(){HB0();bkEntryBind();const el=$("#bfHome");if(el&&S.lastBasket)BasketFill.mount(el,S.lastBasket.id,{onError:()=>{}})};
+ HomeBind=function(){HB0();bkEntryBind();const el=$("#bfHome");if(el&&S.lastBasket){staleBasket();BasketFill.mount(el,S.lastBasket.id,{onError:()=>{}})}};
  R["/dashboard/overview"]=[Home,HomeBind]}
 
 window.SCdx={obx,money};
