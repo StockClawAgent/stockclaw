@@ -241,6 +241,61 @@ try {
     assert.ok(!fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8").includes("window.prompt("), "no unmasked prompt");
   });
 
+  await step("api.js: unreachable server does NOT silently fall back to mock; ?mock=1 still serves mocks", async () => {
+    const src = fs.readFileSync(path.join(cfg.REPO, "prototype/api.js"), "utf8");
+    assert.ok(!/server unreachable, using mock/.test(src), "silent Unreachable→mock path must be gone");
+    // Dead API base: every live call must reject as Unreachable, never return mock $1000 / SAMPLE_PX figures.
+    const dead: any = {
+      fetch, URLSearchParams, console, setTimeout, setInterval, clearInterval, TextDecoder, AbortController, crypto,
+      localStorage: { getItem: () => null },
+      sessionStorage: memStore({ "stockclaw-owner-token": OWNER }),
+      location: { search: "", origin: "http://127.0.0.1:9", hostname: "127.0.0.1" },
+      window: { STOCKCLAW_API: "http://127.0.0.1:9" },
+    };
+    vm.createContext(dead); vm.runInContext(src, dead);
+    assert.equal(dead.window.USE_MOCK, false, "no ?mock=1 => live mode");
+    const D = dead.window.api;
+    for (const [name, call] of [
+      ["get_balances", () => D.get_balances()],
+      ["list_assets", () => D.list_assets()],
+      ["get_history", () => D.get_history(10)],
+      ["list_orders", () => D.list_orders()],
+      ["get_wallet", () => D.get_wallet()],
+      ["get_price", () => D.get_price("TSLA")],
+      ["list_baskets", () => D.list_baskets()],
+      ["get_activity", () => D.get_activity()],
+      ["list_approvals", () => D.list_approvals("pending")],
+      ["faucet", () => D.faucet()],
+    ] as [string, () => Promise<any>][]) {
+      await assert.rejects(call(), (e: any) => {
+        assert.equal(e.name, "Unreachable", `${name} should be Unreachable, got ${e && e.name}: ${e && e.message}`);
+        assert.equal(e.code, "NETWORK");
+        const s = JSON.stringify(e && e.message);
+        assert.ok(!/1000|248\.5|int_mock|Agent bought \$50/.test(s), `${name} must not carry mock figures`);
+        return true;
+      }, name);
+    }
+    // Explicit ?mock=1 still returns the original mock bodies (opt-in).
+    const mockCtx: any = {
+      fetch: () => Promise.reject(new TypeError("should not hit network in mock mode")),
+      URLSearchParams, console, setTimeout, setInterval, clearInterval, TextDecoder, AbortController, crypto,
+      localStorage: { getItem: () => null },
+      sessionStorage: memStore({}),
+      location: { search: "?mock=1", origin: "http://127.0.0.1:9", hostname: "127.0.0.1" },
+      window: { STOCKCLAW_API: "http://127.0.0.1:9" },
+    };
+    vm.createContext(mockCtx); vm.runInContext(src, mockCtx);
+    assert.equal(mockCtx.window.USE_MOCK, true);
+    const M = mockCtx.window.api;
+    const bal = await M.get_balances();
+    assert.ok(Array.isArray(bal) && bal.some((b: any) => b.symbol === "mUSDG" && +b.usdValue === 1000), "mock balances");
+    const px = await M.get_price("TSLA");
+    assert.equal(px.priceUsd, 248.5);
+    assert.equal(px.source, "MockAggregatorV3");
+    const hist = await M.get_history();
+    assert.ok(hist.some((h: any) => /MOCKTX/i.test(String(h.txHash || ""))));
+  });
+
   await step("order status enum + POST /api/dev/reset gives a fresh user and agent pool (repeatable demo)", async () => {
     const st = new Set((await call("GET", "list_orders")).body.map((o: any) => o.status));
     for (const x of st) assert.ok(["open", "paused", "filled", "cancelled", "expired"].includes(x as string), String(x));

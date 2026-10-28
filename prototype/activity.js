@@ -82,7 +82,7 @@ function mockJobs(){const m=mq.get("mockPending"),seedOn=mq.get("mockSeed")=="1"
 const LIVE={live:["Live","on"],connecting:["Connecting…","wait"],reconnecting:["Reconnecting…","wait"],offline:["Offline. We'll reconnect when you're back online.","off"],error:["Sign in to see live activity.","off"]};
 function draw(){const el=document.getElementById("afSlot");if(!el)return;const list=[...F.items.values()].filter(x=>!rowCard(x)).sort((a,b)=>String(b.ts).localeCompare(String(a.ts))||(+b.id-+a.id)).slice(0,25);
  if(F.loading&&!list.length){el.innerHTML=`<ul class="af-list sk-list" aria-hidden="true">${'<li><span class="sk sk-t"></span><span class="sk sk-l"></span></li>'.repeat(3)}</ul>`}
- else{const jb=[...F.jobs.values()].map(cardRow).join("");el.innerHTML=(list.length||jb)?`<ul class="af-list">${jb}${list.map(row).join("")}</ul>`:`<div class="empty"><img src="logo3d/claw-mark.svg" width="64" height="45" alt="" loading="lazy"><p>No agent trades yet. They'll show up here as they happen.</p></div>`}
+ else{const jb=[...F.jobs.values()].map(cardRow).join("");el.innerHTML=(list.length||jb)?`<ul class="af-list">${jb}${list.map(row).join("")}</ul>`:`<div class="empty"><img src="logo3d/claw-mark.svg" width="64" height="45" alt="" loading="lazy"><p>${F.mode=="offline"?"Can't reach StockClaw. Activity will show when you're back online.":"No agent trades yet. They'll show up here as they happen."}</p></div>`}
  F.first=false;
  const st=document.getElementById("afLive");if(st){const m=LIVE[F.mode];st.innerHTML=m?`<span class="lv lv-${m[1]}"></span>${m[0]}${F.mode=="error"?' <button class="dx-link" id="afSignin">Enter owner token</button>':""}`:"";const si=document.getElementById("afSignin");si&&(si.onclick=()=>{close();open()})}
  el.querySelectorAll("[data-revoke]").forEach(b=>b.onclick=()=>confirmDlg("Revoke agent key?","Your agent immediately loses the ability to trade. This signs one transaction. You can create a new key later.","Yes, revoke",()=>doRevoke("revoked")));
@@ -94,7 +94,7 @@ function open(){if(!F.mounted||F.stream)return;if(navigator.onLine===false)retur
 function close(){F.stream&&F.stream.close();F.stream=null}
 addEventListener("offline",()=>{if(F.mounted){close();setMode("offline")}});
 addEventListener("online",()=>{if(F.mounted){open();api.getActivity(F.lastId||undefined).then(add,()=>{})}});
-async function start(){F.mounted=true;F.loading=true;draw();try{add(await api.getActivity(F.lastId||undefined))}catch(_){}F.loading=false;draw();open();await seed();mockJobs()}
+async function start(){F.mounted=true;F.loading=true;draw();try{add(await api.getActivity(F.lastId||undefined))}catch(e){if(e&&(e.name=="Unreachable"||e.code=="NETWORK"||/Unreachable|Failed to fetch|NetworkError/i.test(String((e&&e.name)||"")+" "+String((e&&e.message)||e))))setMode("offline")}F.loading=false;draw();open();await seed();mockJobs()}
 function stop(){F.mounted=false;close()}
 // ---------- breaker ----------
 const BR={tripped:[],msg:""};

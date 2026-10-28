@@ -1,8 +1,9 @@
 // StockClaw data layer. Chain 46630 (demo / non-mainnet): tokens and prices may be mocks.
 // Each function is named after an MCP tool / REST endpoint in ARCHITECTURE.md §7.
 // Live mode calls the StockClaw server (server/, `npm start`, same origin). Return shapes match the original stubs.
-// Mock mode: ?mock=1 or localStorage "stockclaw-use-mock"="1" restores the original mock bodies. If the server is
-// unreachable (network error) each call falls back to its mock automatically. HTTP errors (403 blocked, 451) are not masked.
+// Mock mode: only with explicit ?mock=1 (or a static public build via config.js STOCKCLAW_USE_MOCK / *.github.io).
+// Unreachable / network errors are NOT masked with mock data — callers must show an empty/offline state.
+// HTTP errors (403 blocked, 451) are also not masked.
 const API_BASE = (typeof window !== "undefined" && window.STOCKCLAW_API) || (typeof location !== "undefined" && location.origin.startsWith("http") ? location.origin : "http://localhost:8787");
 const CHAIN_ID = 46630;
 // Network display config (defaults match current 46630 URLs). Live mode overwrites from GET /api/config.
@@ -12,8 +13,13 @@ let NETWORK_LABEL = "Demo network";
 const FEE_BPS = 30; // 0.30%, taken from the input token (router default; cap 0.50%)
 // Public static build (GitHub Pages, no backend): config.js sets STOCKCLAW_PUBLIC/STOCKCLAW_USE_MOCK, *.github.io is detected too.
 const PUBLIC_SITE = (typeof window !== "undefined" && window.STOCKCLAW_PUBLIC === true) || (typeof location !== "undefined" && /\.github\.io$/i.test(location.hostname || ""));
-const USE_MOCK = (() => { try { return PUBLIC_SITE || (typeof window !== "undefined" && window.STOCKCLAW_USE_MOCK === true) || (typeof location !== "undefined" && new URLSearchParams(location.search).get("mock") === "1") || (typeof localStorage !== "undefined" && localStorage.getItem("stockclaw-use-mock") === "1"); } catch { return false; } })();
-class Unreachable extends Error {}
+// Explicit opt-in only. localStorage alone is no longer enough (avoids forgotten silent mocks).
+const USE_MOCK = (() => { try {
+  if (PUBLIC_SITE || (typeof window !== "undefined" && window.STOCKCLAW_USE_MOCK === true)) return true; // static Pages build, no backend
+  if (typeof location !== "undefined" && new URLSearchParams(location.search).get("mock") === "1") return true;
+  return false;
+} catch { return false; } })();
+class Unreachable extends Error { constructor(m) { super(m); this.name = "Unreachable"; this.code = "NETWORK"; } }
 function applyNetworkConfig(c) {
   if (!c || typeof c !== "object") return;
   if ("explorerUrl" in c) EXPLORER = c.explorerUrl || null;
@@ -303,7 +309,7 @@ const liveApi = {
 };
 const api = Object.fromEntries(Object.keys(mockApi).map((name) => [name, (name === "openActivityStream" || name === "subscribeExecution") ? (...args) => (USE_MOCK ? mockApi : liveApi)[name](...args) : async (...args) => {
   if (USE_MOCK || !liveApi[name]) return mockApi[name](...args);
-  try { return await liveApi[name](...args); }
-  catch (e) { if (e instanceof Unreachable) { console.warn(`[api] server unreachable, using mock for ${name}`); return mockApi[name](...args); } throw e; }
+  // Live mode: surface Unreachable / HTTP errors. Never silently substitute mock balances, prices, or activity.
+  return liveApi[name](...args);
 }]));
 if (typeof window !== "undefined") Object.assign(window, { api, FEE_BPS, EXPLORER, FAUCET_URL, NETWORK_LABEL, CHAIN_ID, USE_MOCK, PUBLIC_SITE, StockClawAuth, networkConfigReady, applyNetworkConfig });

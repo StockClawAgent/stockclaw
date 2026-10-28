@@ -176,9 +176,9 @@ function dash(t,body){const k=S.key,act=k&&k.status=="active";
  return `<header class="card nav"><a class="logo" href="#/">StockClaw</a><span>${act?"● Agent active":"○ Agent "+(k?k.status:"none")} · wallet ${short(S.sa)||"—"}</span>${act?`<button class="danger" id="topRevoke">Revoke agent key</button>`:""}</header>
 <nav class="tabs" aria-label="Dashboard">${TABS.map(([id,l])=>`<a href="#/dashboard/${id}" ${id==t?'aria-current="page"':""}>${l}</a>`).join("")}</nav>${ban}${dataErr()}${loadingRow()}<section class="card">${body}</section>${DISC}`}
 // Dashboard data: fetched only through api.js functions; cached in memory (C) and, for orders/history, in S.
-const C={bal:null,assets:null,loading:false,err:null};
+const C={bal:null,assets:null,loading:false,err:null,offline:false};
 async function loadDash(force){if(C.loading)return;if(!force&&C.err&&Date.now()-(C.errAt||0)<15000)return; // no auto-retry faster than 15s
-if(!force&&C.bal&&C.assets&&S.orders&&S.history)return;C.loading=true;C.err=null;
+if(!force&&C.bal&&C.assets&&S.orders&&S.history)return;C.loading=true;C.err=null;C.offline=false;
  const r=await Promise.allSettled([api.get_balances(),api.list_assets(),api.get_wallet(),(force||!C.synced||!S.orders)?api.list_orders():null,(force||!C.synced||!S.history)?api.get_history(50):null]);C.synced=true; // orders/history cached in localStorage are refetched once per page load (a redeployed chain makes old txs stale)
  const w=r.splice(2,1)[0];
  // live: the server's vault and agent key win over a cached S.sa / S.key from an earlier chain (redeploy -> new vault, new sk_)
@@ -186,19 +186,23 @@ if(!force&&C.bal&&C.assets&&S.orders&&S.history)return;C.loading=true;C.err=null
  if(w.status=="fulfilled"&&w.value&&w.value.sessionKey&&!S.key&&!window.USE_MOCK&&w.value.sessionKey.status=="active"&&w.value.sessionKey.id)S.key={spentToday:0,...w.value.sessionKey}; // fresh browser: the server already has a key
  if(w.status=="fulfilled"&&w.value&&w.value.sessionKey&&S.key){const sk=w.value.sessionKey;if(!window.USE_MOCK&&S.key.id&&sk.id&&sk.id!=S.key.id)S.key={spentToday:0,...sk};else if(!S.key.id||sk.id==S.key.id||S.key.status=="active")S.key={...S.key,...sk,status:sk.status=="revoked"&&S.key.status=="paused"?"paused":sk.status}}
  const bad=["get_balances","list_assets","list_orders","get_history"].filter((n,i)=>r[i].status=="rejected");if(w.status=="rejected")bad.push("get_wallet");
- if(r[0].status=="fulfilled")C.bal=r[0].value||[];if(r[1].status=="fulfilled")C.assets=r[1].value||[];
- if(r[2].status=="fulfilled"&&r[2].value){const prev=S.orders||[];S.orders=r[2].value.map(o=>({...o,status:(prev.find(x=>x.intentId==o.intentId)||{}).status=="cancelled"&&o.status!="filled"?"cancelled":o.status,cancelTx:(prev.find(x=>x.intentId==o.intentId)||{}).cancelTx}))}
- if(r[3].status=="fulfilled"&&r[3].value)S.history=r[3].value;
+ const reasons=[r[0],r[1],r[2],r[3],w].filter(x=>x&&x.status=="rejected").map(x=>x.reason);
+ C.offline=reasons.some(e=>isNetErr(e));
+ // On failure: clear figures so we never keep showing mock/stale dollars while offline.
+ if(r[0].status=="fulfilled")C.bal=r[0].value||[];else C.bal=null;
+ if(r[1].status=="fulfilled")C.assets=r[1].value||[];else C.assets=null;
+ if(r[2].status=="fulfilled"&&r[2].value){const prev=S.orders||[];S.orders=r[2].value.map(o=>({...o,status:(prev.find(x=>x.intentId==o.intentId)||{}).status=="cancelled"&&o.status!="filled"?"cancelled":o.status,cancelTx:(prev.find(x=>x.intentId==o.intentId)||{}).cancelTx}))}else if(r[2].status=="rejected")S.orders=[];
+ if(r[3].status=="fulfilled"&&r[3].value)S.history=r[3].value;else if(r[3].status=="rejected")S.history=[];
  C.err=bad.length?bad:null;C.errAt=bad.length?Date.now():0;C.loading=false;S.lastRefresh=Date.now();save();if(lastRoute&&lastRoute.startsWith("/dashboard"))render()}
 function initData(){loadDash(false)}
-const dataErr=()=>C.err?`<div class="st err" role="alert">✕ Couldn't load some of your data. <button class="sec" id="dataRetry">Retry</button></div>`:"";
+const dataErr=()=>C.err?`<div class="st err" role="alert">✕ ${C.offline?"Can't reach StockClaw right now. Balances, prices, and activity aren't available.":"Couldn't load some of your data."} <button class="sec" id="dataRetry">Retry</button></div>`:"";
 const loadingRow=(c)=>C.loading?`<p class="muted" role="status">⏳ Loading…</p>`:"";
 const ago=()=>Math.round((Date.now()-S.lastRefresh)/1000);
 function D1(){initData();const k=S.key;const bal=(C.bal||[]).filter(b=>+b.amount>0);
  return dash("overview",`<div class="row" style="justify-content:space-between"><h1>Overview</h1><span><span id="ago" role="status">Last updated ${ago()}s ago</span> <button class="sec" id="rf">Refresh</button></span></div>
 <div class="grid"><div class="st"><b>Agent key</b><br>${k?`${k.status=="active"?"● Active":"○ "+k.status}, expires ${fmtD(k.expiresAt)}<br>Buy headroom (24h, all agents): $${vaultLeft().toFixed(2)} of $500 left<div class="meter" aria-hidden="true"><i style="width:${Math.min(100,(500-vaultLeft())/5)}%"></i></div>Per-trade cap $${k.perTradeCap} · <a href="#/dashboard/key">Edit limits</a>`:"None. <a href='#/dashboard/key'>Create</a>"}</div></div>
-<h2>Balances ${B}</h2>${bal.length?`<div class="tw"><table><thead><tr><th>Token</th><th>Amount</th><th>Value</th></tr></thead><tbody>${bal.map(b=>`<tr><td>${b.symbol}</td><td>${(+b.amount).toLocaleString("en-US",{maximumFractionDigits:6})}</td><td>$${(+b.usdValue||0).toFixed(2)}</td></tr>`).join("")}</tbody></table></div>`:`<p class="muted">No balances yet. <a href="#/onboarding/faucet">Add funds</a></p>`}
-<h2>Prices</h2><div class="tw"><table><thead><tr><th>Token</th><th>Price</th><th>Source</th></tr></thead><tbody>${(C.assets||[]).map(a=>`<tr><td>${a.symbol}</td><td>$${(+a.priceUsd||0).toFixed(2)}</td><td>${a.source}</td></tr>`).join("")}</tbody></table></div>`)}
+<h2>Balances ${B}</h2>${C.err&&!C.bal?`<p class="muted" role="status">${C.offline?"Offline — balances unavailable.":"Couldn't load balances."}</p>`:bal.length?`<div class="tw"><table><thead><tr><th>Token</th><th>Amount</th><th>Value</th></tr></thead><tbody>${bal.map(b=>`<tr><td>${b.symbol}</td><td>${(+b.amount).toLocaleString("en-US",{maximumFractionDigits:6})}</td><td>$${(+b.usdValue||0).toFixed(2)}</td></tr>`).join("")}</tbody></table></div>`:`<p class="muted">No balances yet. <a href="#/onboarding/faucet">Add funds</a></p>`}
+<h2>Prices</h2>${C.err&&!C.assets?`<p class="muted" role="status">${C.offline?"Offline — prices unavailable.":"Couldn't load prices."}</p>`:`<div class="tw"><table><thead><tr><th>Token</th><th>Price</th><th>Source</th></tr></thead><tbody>${(C.assets||[]).map(a=>`<tr><td>${a.symbol}</td><td>$${(+a.priceUsd||0).toFixed(2)}</td><td>${a.source}</td></tr>`).join("")}</tbody></table></div>`}`)}
 let tick;function D1bind(){clearInterval(tick);tick=setInterval(()=>{const e=$("#ago");e?e.textContent=`Last updated ${ago()}s ago`:clearInterval(tick)},1000);
  $("#rf").onclick=async()=>{$("#rf").textContent="Refreshing…";await loadDash(true);render();say("Refreshed");$("#rf").focus()}}
 // Order status enum: open|paused|filled|cancelled|expired (legacy values normalized; "pending" = local cancel in flight).
