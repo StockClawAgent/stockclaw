@@ -82,7 +82,7 @@ ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join
 <footer class="lp-foot">${DIS}<p>Tools, not investment advice.</p><p>Terms · Privacy · Disclosures · Status</p></footer>
 </div>`}
 function LandingBind(){const f=document.getElementById("lp-form");if(!f)return;f.onsubmit=e=>{e.preventDefault();const i=f.querySelector("input"),m=document.getElementById("lp-msg");if(!i.checkValidity()){i.setAttribute("aria-invalid","true");m.textContent="Enter a valid email address.";i.focus();return}i.removeAttribute("aria-invalid");m.textContent="Thanks. Sign-ups open soon.";f.querySelector("button").disabled=true}}
-function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.body.classList.toggle("is-landing",!(p in R)||p==="/")}
+function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];const app=/^\/(dashboard|onboarding)(\/|$)/.test(p)||(p in R&&p!=="/");document.body.classList.toggle("is-landing",!app)}
 R["/"]=[Landing,()=>{LandingBind();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
 addEventListener("hashchange",mark);mark();render();
 // Shared with dashboard/basketfill: basket data + fixed ticker colors.
