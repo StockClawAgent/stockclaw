@@ -1,16 +1,34 @@
-// StockClaw data layer. TESTNET (chain 46630): tokens and prices are mocks.
+// StockClaw data layer. Chain 46630 (demo / non-mainnet): tokens and prices may be mocks.
 // Each function is named after an MCP tool / REST endpoint in ARCHITECTURE.md §7.
 // Live mode calls the StockClaw server (server/, `npm start`, same origin). Return shapes match the original stubs.
 // Mock mode: ?mock=1 or localStorage "stockclaw-use-mock"="1" restores the original mock bodies. If the server is
 // unreachable (network error) each call falls back to its mock automatically. HTTP errors (403 blocked, 451) are not masked.
 const API_BASE = (typeof window !== "undefined" && window.STOCKCLAW_API) || (typeof location !== "undefined" && location.origin.startsWith("http") ? location.origin : "http://localhost:8787");
 const CHAIN_ID = 46630;
-const EXPLORER = "https://explorer.testnet.chain.robinhood.com";
+// Network display config (defaults match current 46630 URLs). Live mode overwrites from GET /api/config.
+let EXPLORER = "https://explorer.testnet.chain.robinhood.com";
+let FAUCET_URL = "https://faucet.testnet.chain.robinhood.com";
+let NETWORK_LABEL = "Demo network";
 const FEE_BPS = 30; // 0.30%, taken from the input token (router default; cap 0.50%)
 // Public static build (GitHub Pages, no backend): config.js sets STOCKCLAW_PUBLIC/STOCKCLAW_USE_MOCK, *.github.io is detected too.
 const PUBLIC_SITE = (typeof window !== "undefined" && window.STOCKCLAW_PUBLIC === true) || (typeof location !== "undefined" && /\.github\.io$/i.test(location.hostname || ""));
 const USE_MOCK = (() => { try { return PUBLIC_SITE || (typeof window !== "undefined" && window.STOCKCLAW_USE_MOCK === true) || (typeof location !== "undefined" && new URLSearchParams(location.search).get("mock") === "1") || (typeof localStorage !== "undefined" && localStorage.getItem("stockclaw-use-mock") === "1"); } catch { return false; } })();
 class Unreachable extends Error {}
+function applyNetworkConfig(c) {
+  if (!c || typeof c !== "object") return;
+  if ("explorerUrl" in c) EXPLORER = c.explorerUrl || null;
+  if (c.faucetUrl) FAUCET_URL = c.faucetUrl;
+  if (c.networkLabel) NETWORK_LABEL = c.networkLabel;
+  if (typeof window !== "undefined") Object.assign(window, { EXPLORER, FAUCET_URL, NETWORK_LABEL, NETWORK_LOCAL: !!c.local, MOCK_TOKENS: !!c.mockTokens });
+}
+const networkConfigReady = (async () => {
+  if (USE_MOCK || PUBLIC_SITE) { applyNetworkConfig({ networkLabel: "Demo network", explorerUrl: EXPLORER, faucetUrl: FAUCET_URL, local: false, mockTokens: true }); return; }
+  try {
+    const r = await fetch(API_BASE.replace(/\/+$/, "") + "/api/config", { headers: { accept: "application/json" } });
+    if (r.ok) applyNetworkConfig(await r.json());
+  } catch (_) { /* keep defaults */ }
+  if (typeof window !== "undefined") Object.assign(window, { EXPLORER, FAUCET_URL, NETWORK_LABEL });
+})();
 // ---------------------------------------------------------------- original mocks (unchanged)
 const delay = (v) => new Promise((r) => setTimeout(() => r(v), 50));
 const SAMPLE_PX = { TSLA: 248.5, AMZN: 186.2, PLTR: 42.1, NFLX: 702.3, AMD: 149.6 }; // sample prices for mock mode only
@@ -51,7 +69,8 @@ const mockApi = {
   list_orders: (status) => delay(MOCK.orders),
   cancel_order: (intentId) => delay({ txHash: "0xMOCKCANCEL", status: "pending" }),
   get_history: (limit) => delay(MOCK.history),
-  faucet_testnet: () => delay({ ethFaucet: "https://faucet.testnet.chain.robinhood.com", musdgFaucet: "MockUSDG.faucet() [placeholder]" }),
+  faucet: () => delay({ ethFaucet: FAUCET_URL, faucetUrl: FAUCET_URL, musdgFaucet: "MockUSDG.faucet() [placeholder]" }),
+  faucet_testnet: (...a) => mockApi.faucet(...a), // alias
   // ---- baskets (agreed shape with Flavius). Mock animates legs over ~10s; ?mockFail=1 fails leg 2 (retry fixes it).
   list_baskets: () => delay(MOCK_BASKETS.list),
   get_basket: (id) => delay(MOCK_BASKETS.list.find((b) => b.id === id) || null),
@@ -279,11 +298,12 @@ const liveApi = {
   resumeKey: (keyId) => call("POST", `keys/${encodeURIComponent(keyId)}/resume`),
   openActivityStream: (onEvent, opts) => openStream(onEvent, opts),       // opts {since, onState}; returns {close()}
   subscribeExecution: (id, onEvent) => subscribeExec(id, onEvent),        // {close()}
-  faucet_testnet: () => call("POST", "faucet_testnet"),
+  faucet: () => call("POST", "faucet"),
+  faucet_testnet: () => call("POST", "faucet"), // alias of faucet
 };
 const api = Object.fromEntries(Object.keys(mockApi).map((name) => [name, (name === "openActivityStream" || name === "subscribeExecution") ? (...args) => (USE_MOCK ? mockApi : liveApi)[name](...args) : async (...args) => {
   if (USE_MOCK || !liveApi[name]) return mockApi[name](...args);
   try { return await liveApi[name](...args); }
   catch (e) { if (e instanceof Unreachable) { console.warn(`[api] server unreachable, using mock for ${name}`); return mockApi[name](...args); } throw e; }
 }]));
-if (typeof window !== "undefined") Object.assign(window, { api, FEE_BPS, EXPLORER, CHAIN_ID, USE_MOCK, PUBLIC_SITE, StockClawAuth });
+if (typeof window !== "undefined") Object.assign(window, { api, FEE_BPS, EXPLORER, FAUCET_URL, NETWORK_LABEL, CHAIN_ID, USE_MOCK, PUBLIC_SITE, StockClawAuth, networkConfigReady, applyNetworkConfig });

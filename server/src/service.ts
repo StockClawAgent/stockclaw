@@ -638,15 +638,17 @@ export async function cancel_order(intentId: string, by: "owner" | "agent" | "au
 export async function get_history(limit = 50) { return S.history.slice(0, limit); }
 
 // ---------------------------------------------------------------- faucet
-export async function faucet_testnet() {
+export async function faucet() {
   if (!S.vault) throw new ApiError(409, "Create the smart account first");
   const o = owner(), txs: string[] = [];
   try { txs.push((await o.write(dep().usdg, C.usdg.abi, "faucet")).hash); }
   catch (e) { const r = revertReason(e); if (r.name === "FaucetCooldown") throw new ApiError(429, "Faucet rate limit: 1,000 USDG per 24h"); throw e; }
   txs.push((await o.write(dep().usdg, C.usdg.abi, "transfer", [S.vault, 1000_000000n])).hash);
   if (cfg.isLocalChain()) for (const s of Object.values(dep().stocks)) txs.push((await deployer().write(s.token, C.stock.abi, "mint", [S.vault, parseUnits("5", 18)])).hash); // mirrors the official faucet's 5 each
-  return { ethFaucet: "https://faucet.testnet.chain.robinhood.com", musdgFaucet: `MockUSDG.faucet() at ${dep().usdg}: 1,000 USDG / 24h, sent to your smart wallet`, stocks: cfg.isLocalChain() ? "5 each TSLA/AMZN/PLTR/NFLX/AMD added to your smart wallet" : "Use the official faucet", txHashes: txs, status: "confirmed" };
+  return { ethFaucet: cfg.FAUCET_URL, faucetUrl: cfg.FAUCET_URL, musdgFaucet: `MockUSDG.faucet() at ${dep().usdg}: 1,000 USDG / 24h, sent to your smart wallet`, stocks: cfg.isLocalChain() ? "5 each TSLA/AMZN/PLTR/NFLX/AMD added to your smart wallet" : "Use the official faucet", txHashes: txs, status: "confirmed" };
 }
+/** @deprecated alias of faucet (kept for MCP/REST consumers) */
+export const faucet_testnet = faucet;
 
 export function get_usage() {
   const day = new Date().toISOString().slice(0, 10);

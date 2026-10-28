@@ -78,7 +78,7 @@ export async function seedApproval(p: { ticker?: string; usd?: number } = {}) {
     if (rem < want - 1) break; // the pending sell will be over the remaining headroom
     const chunkUsd = Math.min(98, rem - (want - 2) > 98 ? 98 : Math.max(5, rem - want + 5));
     const amt = +(chunkUsd / px).toFixed(6);
-    if ((await bal()) < amt + want / px) throw new svc.ApiError(409, `Not enough ${ticker} in the vault to use up the sell headroom (call faucet_testnet or buy first)`);
+    if ((await bal()) < amt + want / px) throw new svc.ApiError(409, `Not enough ${ticker} in the vault to use up the sell headroom (call faucet or buy first)`);
     const q = await svc.quote_swap(ticker, "mUSDG", amt);
     const pool = await svc._poolFor(ticker, "mUSDG"), deadline = BigInt((await svc.chainNow()) + 300);
     const { hash } = await svc._agentWallet().write(vault, C.vault.abi, "agentSwap", [pool, ti.address, usdg.address, svc._units(amt, ti.decimals), svc._units(q.minOut, 6), deadline], { label: "dev-seed:sell" });

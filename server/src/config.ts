@@ -49,10 +49,29 @@ export function trustedProxy(env = process.env): string | number | null {
 }
 export const DATA_DIR = process.env.DATA_DIR ?? path.join(ROOT, "data");
 export const DEPLOYMENTS_FILE = process.env.DEPLOYMENTS_FILE ?? path.join(DATA_DIR, IS_LOCAL ? "local-46630.json" : "testnet-46630.json");
-// Block explorer (Blockscout). Testnet 46630: explorer.testnet.chain.robinhood.com. Local anvil: none (hash shown as text).
+// Block explorer (Blockscout). Defaults keep current 46630 URLs; override with EXPLORER_URL. Local anvil: none (hash shown as text).
 export const EXPLORER: string | null = IS_LOCAL ? null : (process.env.EXPLORER_URL ?? "https://explorer.testnet.chain.robinhood.com").replace(/\/+$/, "");
 export const explorerTx = (hash: string) => (EXPLORER && hash ? `${EXPLORER}/tx/${hash}` : null);
 export const explorerAddress = (addr: string) => (EXPLORER && addr ? `${EXPLORER}/address/${addr}` : null);
+/** Official chain faucet for ETH + stock tokens (hostname is the provider's; UI shows neutral link text). Override with FAUCET_URL. */
+export const FAUCET_URL = (process.env.FAUCET_URL ?? "https://faucet.testnet.chain.robinhood.com").replace(/\/+$/, "");
+/** Visible network disclosure (never "mainnet"). Override with NETWORK_LABEL. Local anvil => "Local demo"; else "Demo network". */
+export function networkLabel(): string {
+  const v = (process.env.NETWORK_LABEL ?? "").trim();
+  if (v) return v;
+  return isLocalChain() ? "Local demo" : "Demo network";
+}
+/** Public UI/network config: labels + URLs. Chain behavior unchanged. */
+export function publicNetworkConfig() {
+  return {
+    networkLabel: networkLabel(),
+    explorerUrl: EXPLORER,
+    faucetUrl: FAUCET_URL,
+    chainId: TESTNET_CHAIN_ID,
+    local: isLocalChain(),
+    mockTokens: isLocalChain() || process.env.MOCK_TOKENS === "1",
+  };
+}
 export const KEEPER_INTERVAL_MS = Number(process.env.KEEPER_INTERVAL_MS ?? 60_000);
 /** "open" forces market open (local demo only); "schedule" uses the onchain NYSE schedule (halts off-hours). */
 export const getMarketMode = () => (process.env.MARKET_MODE ?? (isLocalChain() ? "open" : "schedule")) as "open" | "schedule";

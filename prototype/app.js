@@ -19,7 +19,11 @@ window.__requestOwnerToken=requestOwnerToken;
 async function askTok(){try{await requestOwnerToken(true);return true}catch(e){return false}}
 async function needOwner(){if(window.USE_MOCK||getTok())return true;return askTok()}
 window.__apiFails=[];const isAuthErr=(e)=>!!(e&&(e.status==401||e.status==403||e.code=="AUTH_REQUIRED"||e.code=="OWNER_TOKEN_REQUIRED"||/owner token/i.test(String(e&&e.message||e))));const isNetErr=(e)=>!!(e&&(e.name=="Unreachable"||e.code=="NETWORK"||/Unreachable|Failed to fetch|NetworkError/i.test(String((e&&e.name)||"")+" "+String((e&&e.message)||e))));if(window.api)for(const n of Object.keys(api)){if(n==="openActivityStream"||n==="subscribeExecution")continue; /* stream openers return {close()} synchronously: wrapping them in a Promise made BasketFill unable to close a basket stream/poller (a dead execution id was polled forever) */const f=api[n];api[n]=(...a)=>Promise.resolve().then(()=>f(...a)).catch(e=>{window.__apiFails.push(n+": "+(e&&e.message));console.warn("api."+n+" failed:",e);if(e&&(e.status==404||e.code=="NOT_FOUND"||isAuthErr(e))){/* auth / not-found: not offline */}else if(isNetErr(e))say("Can't reach StockClaw right now. Check your connection and try again.");throw e})}
-const KEY="stockclaw-proto-v1";const B='';
+const KEY="stockclaw-proto-v1";
+// Neutral network disclosure badge (config-driven; never says mainnet / testnet).
+const netLabel=()=>(typeof NETWORK_LABEL!=="undefined"&&NETWORK_LABEL)||(window.NETWORK_LABEL)||"Demo network";
+let B=` <span class="badge" title="Non-mainnet demo; balances and prices may be mocks">${netLabel()}</span>`;
+const refreshNetBadge=()=>{B=` <span class="badge" title="Non-mainnet demo; balances and prices may be mocks">${esc(netLabel())}</span>`;if(typeof paintBar=="function")try{paintBar()}catch(e){}};
 const DISC='<p class="disc">Stock tokens are not available to US persons or residents of restricted regions and are not shares. Stock tokens can be frozen or restricted by their issuer; a frozen token can\'t be sold.</p>';
 const BLOCKED=["United States","Canada","United Kingdom","Switzerland","United Arab Emirates","Iran","North Korea","Cuba","Syria","Russia"];
 const COUNTRIES=["Germany","France","Spain","Brazil","Japan","Singapore","Australia",...BLOCKED].sort();
@@ -82,7 +86,7 @@ function O2(){return ob(1,`<h1>Connect your wallet</h1><p>You own your wallet. W
 ${S.elig!=="eligible"?`<div class="st err" role="alert">Complete the eligibility check first. <a href="#/onboarding/eligibility">Go to step 1</a></div>`:""}
 <h3>1. Connect wallet</h3>${S.owner?`<div class="st ok">✓ Owner: ${short(S.owner)}</div>`:`<button id="cw" ${S.elig!=="eligible"?"disabled":""}>Connect wallet</button> <span class="muted">[RainbowKit / passkey]</span>`}
 ${S.owner&&S.dev.wrongnet&&!S.switched?`<div class="st err" role="alert">✕ Wrong network. Switch to Robinhood Chain. <button class="sec" id="sw">Switch network</button></div>`:""}<h3>2. Sign eligibility attestation</h3>${!S.attest&&S.elig=="eligible"?`<p class="muted">Eligible, pending signature.</p>`:""}${S.attest?`<div class="st ok">✓ Attestation signed (EIP-712)</div>`:`<button id="sg" ${S.owner&&!(S.dev.wrongnet&&!S.switched)?"":"disabled"}>Sign (EIP-712, no gas)</button>`}
-<h3>3. Create smart wallet</h3>${S.sa?`<div class="st ok">✓ Smart wallet: ${short(S.sa)} <button class="sec" data-copy="${S.sa}">Copy</button> <a href="${EXPLORER}/address/${S.sa}" target="_blank" rel="noopener">View on explorer ↗</a></div>`:`<button id="cs" ${S.attest?"":"disabled"}>${S.err=="wallet"?"Try again":"Create smart wallet"}</button>`}${S.err=="wallet"?`<div class="st err" role="alert">✕ Couldn't create wallet. Nothing was charged. Use “Try again”.</div>`:""}
+<h3>3. Create smart wallet</h3>${S.sa?`<div class="st ok">✓ Smart wallet: ${short(S.sa)} <button class="sec" data-copy="${S.sa}">Copy</button>${EXPLORER&&/^https?:/.test(EXPLORER)?` <a href="${EXPLORER}/address/${S.sa}" target="_blank" rel="noopener">View on explorer ↗</a>`:""}</div>`:`<button id="cs" ${S.attest?"":"disabled"}>${S.err=="wallet"?"Try again":"Create smart wallet"}</button>`}${S.err=="wallet"?`<div class="st err" role="alert">✕ Couldn't create wallet. Nothing was charged. Use “Try again”.</div>`:""}
 <p><a class="btn ${S.sa?"":"sec"}" href="#/onboarding/key" ${S.sa?"":'aria-disabled="true" tabindex="-1" style="pointer-events:none;opacity:.45"'}>Continue</a></p>`)}
 function O2bind(){const c=$("#cw"),s=$("#sg"),k=$("#cs");
  c&&(c.onclick=async()=>{let w;try{w=await api.get_wallet()}catch(e){return fail("get_wallet",e)}S.owner=w.owner;save();render();say("Wallet connected");$("#sg")?.focus()});
@@ -105,7 +109,7 @@ function validate(){readDraft();const e=$("#kerr");let m="";if(!(draft.perTradeC
 async function issueKey(d){const caps={perTradeCap:+d.perTradeCap,dailyCap:+d.dailyCap,days:+d.days||7,allowlist:[...d.allowlist]};const r=await api.create_session_key(caps)||{};
  const cr=r.created||{};return {status:"active",spentToday:0,...caps,...r,...cr,_revoked:r.revoked||null,id:cr.id||r.id||("sk_"+Math.random().toString(16).slice(2,8)),expiresAt:cr.expiresAt||r.expiresAt||new Date(Date.now()+caps.days*864e5).toISOString()}}
 // Tx link: use the API's explorerUrl when it's a real URL (local chain returns "local-anvil/tx/…": show the hash only).
-const txLink=(hash,url)=>{if(url&&/^local/.test(url)&&!S.localChain){S.localChain=true;save()}if(!hash)return"—";const u=url||`${EXPLORER}/tx/${hash}`;return /^https?:/.test(u)?`<a href="${u}" target="_blank" rel="noopener">${short(hash)} ↗</a>`:`<code title="${hash}">${short(hash)}</code> (local)`};
+const txLink=(hash,url)=>{if(url&&/^local/.test(url)&&!S.localChain){S.localChain=true;save()}if(!hash)return"—";const base=(typeof EXPLORER!=="undefined"&&EXPLORER&&/^https?:/.test(EXPLORER))?EXPLORER:null;const u=url||(base?`${base}/tx/${hash}`:null);return u&&/^https?:/.test(u)?`<a href="${u}" target="_blank" rel="noopener">${short(hash)} ↗</a>`:`<code title="${hash}">${short(hash)}</code>${base?"":" (local)"}`};
 // Vault-wide rolling 24h cap ($500, shared by every agent key on the vault).
 const vaultLeft=()=>{const r=ST&&ST.status&&ST.status.remaining24h;if(typeof r=="number")return r;const sp=S.key&&+S.key.spentToday||0;return Math.max(0,500-sp)};
 const isVaultCap=(t)=>/shared by all agent keys|rolling-24h cap|rolling 24-hour cap|over \$500 per 24h/i.test(String(t||""));
@@ -139,15 +143,16 @@ ${S.key?`<div class="st ok" role="status">✓ Agent key ${S.key.id} created: $${
 function O3bind(){const f=$("#kf");if(!f)return;bindKeyFields();f.onsubmit=async(e)=>{e.preventDefault();if(!validate())return;let k;try{k=await issueKey(draft)}catch(e){const er=$("#kerr");er.hidden=false;er.textContent="create_session_key: "+e.message;return}S.key=k;draft=null;save();render();say("Agent key created")}}
 
 // ---------- O4 ----------
-// Local chain: the server mints the test stock tokens itself, so the external faucet link is hidden.
-// Robinhood Chain testnet and the local chain both use id 46630, so local is detected from the live server (localhost origin or local-* explorer URLs).
-const isLocalChain=()=>!window.USE_MOCK&&CHAIN_ID==46630&&(/^(localhost|127\.|0\.0\.0\.0)/.test(location.hostname)||S.localChain===true);
+// Local chain: the server mints the stock tokens itself, so the external faucet link is hidden.
+// Robinhood Chain demo and the local chain both use id 46630; local is detected from the live server
+// (localhost origin, NETWORK_LOCAL from /api/config, or local-* explorer URLs).
+const isLocalChain=()=>!window.USE_MOCK&&CHAIN_ID==46630&&(window.NETWORK_LOCAL===true||/^(localhost|127\.|0\.0\.0\.0)/.test(location.hostname)||S.localChain===true);
 function O4(){const loc=isLocalChain();return ob(3,`<h1>Fund your wallet</h1>
-<div class="st"><b>1. ETH + stock tokens</b> ${B}<br>${loc||window.USE_MOCK?"5 each of TSLA/AMZN/PLTR/NFLX/AMD are added to your smart wallet when you claim below.":`ETH + TSLA/AMZN/PLTR/NFLX/AMD <a href="https://faucet.testnet.chain.robinhood.com" target="_blank" rel="noopener">Claim ↗</a>`}<br>Send to: ${short(S.sa)||"(no smart wallet yet)"} ${S.sa?`<button class="sec" data-copy="${S.sa}">Copy</button>`:""}</div>
+<div class="st"><b>1. ETH + stock tokens</b> ${B}<br>${loc||window.USE_MOCK?"5 each of TSLA/AMZN/PLTR/NFLX/AMD are added to your smart wallet when you claim below.":`ETH + TSLA/AMZN/PLTR/NFLX/AMD ${((typeof FAUCET_URL!=="undefined"&&FAUCET_URL)||window.FAUCET_URL)?`<a href="${(typeof FAUCET_URL!=="undefined"&&FAUCET_URL)||window.FAUCET_URL}" target="_blank" rel="noopener">Get funds ↗</a>`:""}`}<br>Send to: ${short(S.sa)||"(no smart wallet yet)"} ${S.sa?`<button class="sec" data-copy="${S.sa}">Copy</button>`:""}</div>
 <div class="st"><b>2. USDG</b><br>${S.funded?"✓ Claimed":`<button id="cl" ${S.claiming?"disabled":""}>Claim 1,000 USDG</button>`}</div>
 ${S.err=="rate"?`<div class="st err" role="alert">✕ Daily limit reached. ${loc?"You can claim 1,000 USDG per 24 hours. Use “Skip for now” if the wallet is already funded.":"Try again later."}</div>`:""}${S.claiming?`<div class="st wait" role="status">⏳ Waiting for balances…</div>`:""}${S.funded?`<div class="st ok" role="status">✓ Funded. Ready.</div>`:""}
 <p><a class="btn" href="#/onboarding/client" ${S.funded?"":'aria-disabled="true" tabindex="-1" style="pointer-events:none;opacity:.45"'}>Continue</a> ${S.funded?"":'<a href="#/onboarding/client">Skip for now</a>'}</p>`)}
-function O4bind(){const b=$("#cl");b&&(b.onclick=async()=>{S.claiming=true;render();say("Waiting for balances");try{await api.faucet_testnet()}catch(e){S.claiming=false;if(e.status==429){S.err="rate";render();say("Daily limit reached");return}return fail("faucet_testnet",e)}setTimeout(()=>{if(S.dev.ratelimit){S.claiming=false;S.err="rate";render();say("Daily limit reached");$("#cl")?.focus();return}S.claiming=false;S.funded=true;save();render();say("Funded");$("main a.btn")?.focus()},1200)})}
+function O4bind(){const b=$("#cl");b&&(b.onclick=async()=>{S.claiming=true;render();say("Waiting for balances");try{await (api.faucet||api.faucet_testnet)()}catch(e){S.claiming=false;if(e.status==429){S.err="rate";render();say("Daily limit reached");return}return fail("faucet",e)}setTimeout(()=>{if(S.dev.ratelimit){S.claiming=false;S.err="rate";render();say("Daily limit reached");$("#cl")?.focus();return}S.claiming=false;S.funded=true;save();render();say("Funded");$("main a.btn")?.focus()},1200)})}
 
 // ---------- O5 ----------
 const MCP="https://mcp.stockclaw.example/mcp";
@@ -415,10 +420,10 @@ let lastRoute;function render(){const p=(location.hash.slice(1)||"/").split("?")
 addEventListener("hashchange",render);render();
 
 // ---- Persistent banner (shared bar from index.html; landing reuses the same bar) ----
-const BANNER="";
+const BANNER=""; // legacy; network disclosure comes from NETWORK_LABEL via netLabel()
 // ---- Owner token (presenter). sessionStorage only; never localStorage, never logged. ----
 function paintBar(){const b=document.querySelector(".tnbar");if(!b)return;let t=b.querySelector(".bn-t");if(!t){b.innerHTML=`<span class="bn-t"></span> <span class="bn-o"></span>`;t=b.querySelector(".bn-t")}
- t.textContent=BANNER;const o=b.querySelector(".bn-o");if(window.USE_MOCK){o.innerHTML="";if(window.PUBLIC_SITE)b.hidden=true;return}
+ t.textContent=BANNER||netLabel();const o=b.querySelector(".bn-o");if(window.USE_MOCK){o.innerHTML="";if(window.PUBLIC_SITE)b.hidden=true;return}
  o.innerHTML=getTok()?`Owner token set <button type="button" class="linkbtn" id="forgetTok">Forget token</button>`:`<button type="button" class="linkbtn" id="setTok">Set owner token</button>`}
 document.addEventListener("click",e=>{if(e.target.id=="forgetTok"){forgetTok();say&&say("Owner token forgotten")}else if(e.target.id=="setTok"){askTok()}});
 const owned=(fn)=>async(...a)=>{if(!await needOwner())throw new Error("Owner token needed: action cancelled.");
@@ -426,4 +431,5 @@ const owned=(fn)=>async(...a)=>{if(!await needOwner())throw new Error("Owner tok
 ["submit_attestation","create_smart_account","create_session_key","revoke_session_key","cancel_order"].forEach(n=>{if(api[n])api[n]=owned(api[n])});
 ["choose_strategy","resume_strategy","pause_strategy","stop_strategy"].forEach(n=>{if(SREST[n])SREST[n]=owned(SREST[n])});
 applyTok();
+if(window.networkConfigReady)window.networkConfigReady.then(()=>{refreshNetBadge();render()});
 

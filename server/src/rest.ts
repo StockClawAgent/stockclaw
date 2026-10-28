@@ -105,9 +105,11 @@ export function buildApp(opts: { restPerMin?: number; mcpPerMin?: number; ipPerM
   r.get("/jobs/:id", anyRole, h(async (q) => { const v = await trades.waitView(Number(q.params.id), Number(q.query.wait ?? 0)); if (!v) throw new svc.ApiError(404, "Unknown job"); return v; }));
   r.get("/list_orders", anyRole, h((q) => svc.list_orders(q.query.status as string | undefined)));
   r.get("/get_history", anyRole, h((q) => svc.get_history(q.query.limit ? Number(q.query.limit) : undefined)));
-  r.post("/faucet_testnet", anyRole, h(() => svc.faucet_testnet()));
+  r.post("/faucet", anyRole, h(() => svc.faucet()));
+  r.post("/faucet_testnet", anyRole, h(() => svc.faucet())); // alias of /faucet
   r.get("/get_usage", anyRole, h(() => svc.get_usage()));
-  r.get("/health", h(async () => ({ ...(await mon.health()), chainId: 46630, router: svc.dep().router, ownerSimulated: true })));
+  r.get("/config", h(() => cfg.publicNetworkConfig())); // public: NETWORK_LABEL / explorer / faucet URLs for the UI
+  r.get("/health", h(async () => ({ ...(await mon.health()), chainId: 46630, router: svc.dep().router, ownerSimulated: true, ...cfg.publicNetworkConfig() })));
   // owner-only (dashboard)
   r.post("/submit_attestation", ownerOnly, h((q) => svc.submit_attestation(q.body?.sig, geo(q))));
   r.post("/create_smart_account", ownerOnly, h((q) => svc.create_smart_account(q.body?.owner)));

@@ -57,7 +57,8 @@ export function buildMcpServer() {
   s.registerTool("list_orders", { description: "List DCA and limit orders.", inputSchema: { status: z.string().optional() }, annotations: RO }, wrap((a: { status?: string }) => svc.list_orders(a.status)));
   s.registerTool("cancel_order", { description: "Cancel an order onchain (cancels its nonce).", inputSchema: { intentId: z.string() }, annotations: W }, wrap((a: { intentId: string }) => svc.cancel_order(a.intentId, "agent")));
   s.registerTool("get_history", { description: "Trade history incl. blocked attempts.", inputSchema: { limit: z.number().int().min(1).max(500).optional() }, annotations: RO }, wrap((a: { limit?: number }) => svc.get_history(a.limit)));
-  s.registerTool("faucet_testnet", { description: "Fund the smart wallet with demo USDG (1,000 / 24h) and stock tokens.", annotations: { ...W, destructiveHint: false } }, wrap(() => svc.faucet_testnet()));
+  s.registerTool("faucet", { description: "Fund the smart wallet with demo USDG (1,000 / 24h) and stock tokens.", annotations: { ...W, destructiveHint: false } }, wrap(() => svc.faucet()));
+  s.registerTool("faucet_testnet", { description: "Alias of faucet. Fund the smart wallet with demo USDG (1,000 / 24h) and stock tokens.", annotations: { ...W, destructiveHint: false } }, wrap(() => svc.faucet()));
   s.registerTool("get_usage", { description: "API usage for today (tiers are placeholders).", annotations: RO }, wrap(() => svc.get_usage()));
   // ---- strategies (STRATEGIES.md §4). The agent can propose, pause and stop; it can NOT activate, switch or resume (S-3).
   const sid = z.enum(["steady-stacker", "dip-hunter", "momentum-rider", "ai-thematic", "monday-planner"]);

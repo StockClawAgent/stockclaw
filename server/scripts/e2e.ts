@@ -149,7 +149,7 @@ try {
     const c = new Client({ name: "e2e", version: "1" });
     await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${PORT_API}/mcp`), { requestInit: { headers: { authorization: `Bearer ${MCPT}` } } }));
     const tools = (await c.listTools()).tools.map((t) => t.name);
-    for (const t of ["check_eligibility", "get_wallet", "get_balances", "list_assets", "get_price", "quote_swap", "execute_swap", "create_dca", "create_limit_order", "list_orders", "cancel_order", "get_history", "faucet_testnet", "get_usage"]) assert.ok(tools.includes(t), t);
+    for (const t of ["check_eligibility", "get_wallet", "get_balances", "list_assets", "get_price", "quote_swap", "execute_swap", "create_dca", "create_limit_order", "list_orders", "cancel_order", "get_history", "faucet", "faucet_testnet", "get_usage"]) assert.ok(tools.includes(t), t);
     const p: any = await c.callTool({ name: "get_price", arguments: { symbol: "TSLA" } }); assert.ok(JSON.parse(p.content[0].text).priceUsd > 200);
     const s: any = await c.callTool({ name: "execute_swap", arguments: { tokenIn: "TSLA", tokenOut: "mUSDG", amountIn: 0.05 } }); assert.ok(!s.isError, s.content[0].text);
     await c.close();
