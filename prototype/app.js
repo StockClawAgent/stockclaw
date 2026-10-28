@@ -255,7 +255,7 @@ function confirmDlg(title,body,yes,fn){const m=$("#modal"),back=document.activeE
 // Trend Flip: 9 EMA / VWAP flip strategy (momentum-rider slot). Rename here only.
 const FLIP_NAME="Trend Flip";
 const SAVATAR={"steady-stacker":"avatars/steady-stacker-512-transparent.png","dip-hunter":"avatars/dip-hunter-512-transparent.png","ema-vwap-flip":"avatars/trend-flip-512-transparent.png","momentum-rider":"avatars/trend-flip-512-transparent.png","trend-flip":"avatars/trend-flip-512-transparent.png","monday-planner":"avatars/weekend-edge-512-transparent.png","ai-thematic":"avatars/ai-thematic-512-transparent.png","weekend-edge":"avatars/weekend-edge-512-transparent.png"};
-const SARCH={"steady-stacker":"#CFE6C8","dip-hunter":"#FFD3C2","trend-flip":"#CFE4F5","ema-vwap-flip":"#CFE4F5","momentum-rider":"#CFE4F5","ai-thematic":"#E3D9F5","weekend-edge":"#F8D3DF","monday-planner":"#F8D3DF"};
+const SARCH={"steady-stacker":"#1a2410","dip-hunter":"#1a2410","trend-flip":"#1a2410","ema-vwap-flip":"#1a2410","momentum-rider":"#1a2410","ai-thematic":"#1a2410","weekend-edge":"#1a2410","monday-planner":"#1a2410"};
 const STOCKS=["TSLA","AMZN","PLTR","NFLX","AMD"];
 const SDISC='<p class="disc"><b>Tools, not investment advice.</b> You choose the parameters; StockClaw executes them within your limits.</p>';
 const MOCK_STRATS=[

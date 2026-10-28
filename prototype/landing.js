@@ -1,6 +1,6 @@
 /* StockClaw landing page (#/). Separate from app.js; registers itself on the shared router table R. */
 (function(){
-window.SCLogo=()=>`<img class="sc-claw" src="logo3d/claw-mark.svg" width="28" height="28" alt=""><span class="sc-word">stockclaw</span>`;
+window.SCLogo=()=>`<picture class="sc-l3"><source type="image/webp" srcset="logo3d/blob-3d-64.webp 64w, logo3d/blob-3d-128.webp 128w" sizes="34px"><img class="sc-l3b" src="logo3d/blob-3d-64.png" srcset="logo3d/blob-3d-64.png 64w, logo3d/blob-3d-128.png 128w" sizes="34px" width="34" height="24" alt="" fetchpriority="high" onerror="this.onerror=null;var s=this.parentNode.querySelector('source');if(s)s.remove();this.removeAttribute('srcset');this.src='logo3d/blob-mark-transparent.svg'"></picture><img class="sc-lw" src="logo3d/blob-wordmark.svg" width="159" height="24" alt="StockClaw">`;
 const DIS='<p class="lp-disc">Stock tokens are not available to US persons or residents of restricted regions and are not shares.</p>';
 const BADGE='';
 const WE_NAME="Weekend Edge"; // rename here only (pending Julius)
@@ -23,7 +23,7 @@ function swapWord(b){const w=document.querySelector(".lp-hw");if(!w)return;const
  if(matchMedia("(prefers-reduced-motion: reduce)").matches||!old){w.innerHTML=`<span class="lp-hw-i">${esc(t)}</span>`;return}
  w.querySelectorAll(".out").forEach(x=>x.remove());old.classList.add("out");old.setAttribute("aria-hidden","true");const n=document.createElement("span");n.className="lp-hw-i in";n.textContent=t;w.appendChild(n);
  requestAnimationFrame(()=>requestAnimationFrame(()=>n.classList.remove("in")));setTimeout(()=>old.remove(),280)}
-const PAL=["#FF7A59","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
+const PAL=["#C6FF3D","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
 let TCOL={};function buildColors(bs){const nb={},ord=[];(bs||[]).forEach(b=>{const s=(b.tickers||[]).map(t=>t.symbol||t.ticker);s.forEach(x=>{if(!nb[x]){nb[x]=new Set();ord.push(x)}s.forEach(y=>y!=x&&nb[x].add(y))})});
  ord.sort((a,b)=>(b=="NVDA")-(a=="NVDA")||nb[b].size-nb[a].size);TCOL={};for(const x of ord){const used=new Set([...nb[x]].map(y=>TCOL[y]));TCOL[x]=PAL.find(c=>!used.has(c))||PAL[ord.indexOf(x)%PAL.length]}}
 const col=s=>TCOL[s]||"#D4D4D4";

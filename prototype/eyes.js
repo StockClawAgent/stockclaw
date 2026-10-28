@@ -3,7 +3,7 @@
 (function(){
 const ALIAS={"momentum-rider":"trend-flip","ema-vwap-flip":"trend-flip","monday-planner":"weekend-edge"};
 const LARVA=new Set(["steady-stacker","dip-hunter","trend-flip","ai-thematic","weekend-edge"]);
-const TINT={"steady-stacker":"#CFE6C8","dip-hunter":"#FFD3C2","trend-flip":"#CFE4F5","ai-thematic":"#E3D9F5","weekend-edge":"#F8D3DF"};
+const TINT={"steady-stacker":"#1a2410","dip-hunter":"#1a2410","trend-flip":"#1a2410","ai-thematic":"#1a2410","weekend-edge":"#1a2410"};
 const src=(id)=>LARVA.has(id)?`avatars/${id}-512-transparent.webp`:`avatars/eyeless-${id}-transparent.png`;
 const html=(id,name,size,cls="")=>{
  id=ALIAS[id]||id;
