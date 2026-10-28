@@ -46,15 +46,28 @@ fieldset{border:1px solid #d4d4d8;border-radius:6px;margin:8px 0}
 .tokdlg{max-width:440px;border:1px solid #ccc;border-radius:10px;padding:20px}.tokdlg input{width:100%;margin:6px 0 12px}.tokdlg::backdrop{background:rgba(0,0,0,.4)}
 .ptab{width:100%;margin:8px 0 12px}.ptab th{text-align:left;font-weight:500;width:55%}.ptab code{font-size:.8em;color:#666}.ptab caption{text-align:left;font-weight:600;padding:4px 0}
 
-/* --- Brand tokens: black + lime (rebrand 2026-10-18). Lime is used only as a fill on dark or with #0A0A0A text; #3F6212 for text/links/focus on light. --- */
-:root{--sc-ink:#0A0A0A;--sc-lime:#C6FF3D;--sc-lime-ink:#3F6212}
-a{color:var(--sc-lime-ink)}
-:focus-visible{outline-color:var(--sc-lime-ink)!important}
-.tnbar{background:var(--sc-ink)}.tnbar a{color:var(--sc-lime)}
-button,.btn{background:var(--sc-ink);border-color:var(--sc-ink);color:var(--sc-lime)}
-button.sec,.btn.sec{background:#fff;color:var(--sc-ink)}button.danger{background:#fff;color:#b91c1c;border-color:#b91c1c}
-.badge{background:var(--sc-lime);border-color:var(--sc-ink);color:var(--sc-ink)}
-.steps .on,.tabs a[aria-current=page]{background:var(--sc-ink);color:var(--sc-lime)}
-.chip2{background:var(--sc-lime);color:var(--sc-ink)}
-.logo{display:inline-block;width:132px;height:40px;background:var(--sc-ink) url(logo-lockup.svg?v=2) no-repeat center/104px auto;border-radius:8px;color:transparent!important;overflow:hidden;white-space:nowrap}
-.tnbar .linkbtn{background:none;border:0;padding:0;color:inherit}
+/* --- Brand tokens: Pastel Candy (2026-10-28). Cream + coral; dark ink on coral for AA. --- */
+:root{--sc-cream:#FFF7EE;--sc-ink:#2A1E3B;--sc-coral:#FF7A59;--sc-coral-deep:#D85A3B;--sc-muted:#7A6C80;--sc-line:#E8D9CE;--sc-card:#FFFFFF;--sc-arch-sage:#CFE6C8;--sc-arch-coral:#FFD3C2;--sc-arch-sky:#CFE4F5;--sc-arch-lav:#E3D9F5;--sc-arch-pink:#F8D3DF}
+a{color:var(--sc-coral-deep)}
+:focus-visible{outline-color:var(--sc-coral)!important}
+.tnbar{background:var(--sc-ink);color:#fff}.tnbar a{color:var(--sc-coral)}
+button,.btn{background:var(--sc-coral);border-color:var(--sc-coral);color:var(--sc-ink);box-shadow:0 4px 0 var(--sc-coral-deep)}
+button.sec,.btn.sec{background:#fff;color:var(--sc-ink);border-color:var(--sc-line);box-shadow:none}button.danger{background:#fff;color:#b91c1c;border-color:#b91c1c;box-shadow:none}
+.badge{background:var(--sc-coral);border-color:var(--sc-ink);color:var(--sc-ink)}
+.steps .on,.tabs a[aria-current=page]{background:var(--sc-ink);color:#fff}
+.chip2{background:var(--sc-coral);color:var(--sc-ink)}
+.logo{display:inline-flex;align-items:center;width:auto;height:auto;background:none;border-radius:0;color:var(--sc-ink)!important;overflow:visible;white-space:nowrap}
+.tnbar .linkbtn{background:none;border:0;padding:0;color:inherit;box-shadow:none}
+body{background:var(--sc-cream);color:var(--sc-ink)}
+.card{background:var(--sc-card);border-color:var(--sc-line);border-radius:20px;box-shadow:0 8px 24px rgba(42,30,59,.06)}
+.av{border-radius:20px;background:var(--sc-arch-sage);box-shadow:none;padding:4px}
+.av.grey{filter:grayscale(.4);opacity:.55}
+.scard{border-radius:24px;border-color:var(--sc-line);box-shadow:0 10px 28px rgba(42,30,59,.06)}
+.sgrid .scard{align-items:flex-start}
+.dlg,.tokdlg{border-radius:20px;border-color:var(--sc-line)}
+#modal{background:rgba(42,30,59,.35)}
+
+/* Larva avatars in strategy cards */
+picture.av{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;overflow:hidden}
+picture.av img{display:block;width:100%;height:100%;object-fit:contain}
+.scard{align-items:center}

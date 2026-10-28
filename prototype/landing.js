@@ -1,6 +1,6 @@
 /* StockClaw landing page (#/). Separate from app.js; registers itself on the shared router table R. */
 (function(){
-window.SCLogo=()=>`<picture class="sc-l3"><source type="image/webp" srcset="logo3d/blob-3d-64.webp 64w, logo3d/blob-3d-128.webp 128w" sizes="34px"><img class="sc-l3b" src="logo3d/blob-3d-64.png" srcset="logo3d/blob-3d-64.png 64w, logo3d/blob-3d-128.png 128w" sizes="34px" width="34" height="24" alt="" fetchpriority="high" onerror="this.onerror=null;var s=this.parentNode.querySelector('source');if(s)s.remove();this.removeAttribute('srcset');this.src='logo3d/blob-mark-transparent.svg'"></picture><img class="sc-lw" src="logo3d/blob-wordmark.svg" width="159" height="24" alt="StockClaw">`;
+window.SCLogo=()=>`<img class="sc-claw" src="logo3d/claw-mark.svg" width="28" height="28" alt=""><span class="sc-word">stockclaw</span>`;
 const DIS='<p class="lp-disc">Stock tokens are not available to US persons or residents of restricted regions and are not shares.</p>';
 const BADGE='';
 const WE_NAME="Weekend Edge"; // rename here only (pending Julius)
@@ -11,7 +11,7 @@ const BOTS=[
  ["ai-thematic","AI Thematic",0,"The reader. Your AI reads the news and suggests changes.","Your AI reads news and earnings, then rebalances within your limits.","After AMD's earnings call, your AI moved $60 from PLTR to AMD, within your limits."],
  ["weekend-edge",WE_NAME,0,"The planner. Line up orders while the market is closed.","Lets you queue limit orders over the weekend. They can only fill after US markets open, within your limits.","On Sunday you queued a $50 NFLX buy limit. After Monday's open it fills only if the price reaches your limit. It may not fill."]];
 const FAQ=[["What are stock tokens?","Tokens on Robinhood Chain that track the price of a stock, traded here against USDG. They are not shares."],["Who is eligible?","Not US persons, and not residents of the US, Canada, the UK, Switzerland, the UAE, Russia or sanctioned countries. We check your country, you sign an attestation with your wallet, and your smart wallet must be on our onchain eligibility list before it can trade. An identity-check provider is still being chosen."],["Do you hold my keys?","You own your wallet. We never hold its owner key. Your agent uses a limited key you can revoke anytime."],["What fees apply?","0.30% per trade, taken from the input token. Quotes are shown net of the fee."],["How do I stop my agent?","Revoke the agent key from the dashboard in one click. Keys also expire after 7 days."],["Are strategies advice?","No. They are templates: you choose the parameters and StockClaw executes them within your limits. Tools, not investment advice."],["Is this real money?","Not in this preview. Balances and prices are sample data."]];
-const bot=(id,n)=>window.SCEyes?SCEyes.html(id,n,144):`<img loading="lazy" src="avatars/final-${id}.png" width="144" height="144" alt="${n} mascot">`;
+const bot=(id,n)=>window.SCEyes?SCEyes.html(id,n,144):`<img loading="lazy" src="avatars/${id}-512-transparent.png" width="144" height="144" alt="${n} mascot">`;
 // ---- Baskets: data only from data/baskets.json (see data/README.md) ----
 let BK=null,BKerr=null;
 fetch("data/baskets.json",{cache:"no-cache"}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{BK=d;buildColors(d.baskets)}).catch(e=>{BKerr=String(e)}).finally(()=>{const p=(location.hash.slice(1)||"/").split("?")[0];if(p==="/"||p==="/dashboard/basket"||p==="/dashboard/overview")render()});
@@ -23,7 +23,7 @@ function swapWord(b){const w=document.querySelector(".lp-hw");if(!w)return;const
  if(matchMedia("(prefers-reduced-motion: reduce)").matches||!old){w.innerHTML=`<span class="lp-hw-i">${esc(t)}</span>`;return}
  w.querySelectorAll(".out").forEach(x=>x.remove());old.classList.add("out");old.setAttribute("aria-hidden","true");const n=document.createElement("span");n.className="lp-hw-i in";n.textContent=t;w.appendChild(n);
  requestAnimationFrame(()=>requestAnimationFrame(()=>n.classList.remove("in")));setTimeout(()=>old.remove(),280)}
-const PAL=["#C6FF3D","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
+const PAL=["#FF7A59","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
 let TCOL={};function buildColors(bs){const nb={},ord=[];(bs||[]).forEach(b=>{const s=(b.tickers||[]).map(t=>t.symbol||t.ticker);s.forEach(x=>{if(!nb[x]){nb[x]=new Set();ord.push(x)}s.forEach(y=>y!=x&&nb[x].add(y))})});
  ord.sort((a,b)=>(b=="NVDA")-(a=="NVDA")||nb[b].size-nb[a].size);TCOL={};for(const x of ord){const used=new Set([...nb[x]].map(y=>TCOL[y]));TCOL[x]=PAL.find(c=>!used.has(c))||PAL[ord.indexOf(x)%PAL.length]}}
 const col=s=>TCOL[s]||"#D4D4D4";
@@ -58,17 +58,15 @@ function baskets(){const ph=!BK||BK.status==="placeholder";const tag='<span clas
 const esc=(v)=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function Landing(){return `<div class="lp">
 <header class="lp-nav"><a class="lp-logo sc-logo" href="#/" aria-label="StockClaw home">${SCLogo()}</a>
-<nav aria-label="Main"><a href="#lp-how">How it works</a><a href="#lp-safety">Safety</a><a href="#lp-faq">FAQ</a><a class="lp-pill" href="#/onboarding/eligibility">Try the demo</a></nav></header>
+<nav aria-label="Main"><a href="#lp-bots">Agents</a><a href="#lp-how">How it works</a><a href="#lp-faq">FAQ</a><a class="lp-pill" href="#/onboarding/eligibility">Connect</a></nav></header>
 <section class="lp-hero" aria-labelledby="lp-h1">
-<div class="lp-h3d" data-bot><picture><source type="image/webp" srcset="logo3d/blob-3d-eyeless-256.webp 256w, logo3d/blob-3d-eyeless-512.webp 512w, logo3d/blob-3d-eyeless-1024.webp 1024w" sizes="(max-width:600px) 220px, 320px"><img src="logo3d/blob-3d-eyeless-512.png" width="320" height="227" alt="StockClaw mascot" fetchpriority="high" onerror="this.onerror=null;var p=this.closest('.lp-h3d');p.querySelectorAll('.lp-eye,source').forEach(function(n){n.remove()});p.classList.add('lp-h3d-flat');this.src='logo3d/blob-mark-transparent.svg'"></picture><span class="lp-eye lp-h3e" aria-hidden="true" style="left:34.46%;top:64.78%;width:8.68%;height:13.78%"></span><span class="lp-eye lp-h3e" aria-hidden="true" style="left:59.15%;top:64.78%;width:8.68%;height:13.78%"></span></div>
-<h1 id="lp-h1">Your agent trades<br>tokenized stocks.<br><em>You set the limits.</em></h1>
-<p class="lp-sub">Pick an AI agent, connect your own AI, and let it trade tokenized stocks on Robinhood Chain within limits you set.</p>
-<p class="lp-chips" aria-label="Tradeable">${["PLTR","NFLX","AMD","AMZN","TSLA"].map(t=>`<span class="lp-chip">${t}</span>`).join("")}${BADGE}</p>
-<p class="lp-clients">Works in Claude, ChatGPT, Grok and Cursor as an MCP connector.</p>
-<div class="lp-cta"><a class="lp-btn" href="#/onboarding/eligibility">Try the demo <span aria-hidden="true">→</span></a><a class="lp-ghost" href="#lp-wait">Join the waitlist</a></div>
+<h1 id="lp-h1">Pick a Larva.<br>Let it trade.</h1>
+<p class="lp-sub">Each agent runs one simple strategy on Robinhood Chain stock tokens. Your AI connects in one step.</p>
+<div class="lp-cta"><a class="lp-btn" href="#/dashboard/strategies">Pick an agent</a></div>
+${(()=>{const A=[["steady-stacker","Steady Stacker","a-steady","Buys a little, every week"],["dip-hunter","Dip Hunter","a-dip","Waits for the dip"],["trend-flip","Trend Flip","a-trend","Rides the trend"],["ai-thematic","AI Thematic","a-ai","Holds the AI names"],["weekend-edge",WE_NAME,"a-week","Queues orders for Monday"]];return `<div class="lp-arch-row" role="list">${A.map(([id,n,c,d])=>`<a class="lp-arch ${c}" role="listitem" href="#/dashboard/strategies"><picture><source type="image/webp" srcset="avatars/${id}-512-transparent.webp"><img src="avatars/${id}-512-transparent.png" width="200" height="200" alt="${n}" loading="eager" decoding="async" fetchpriority="high"></picture><b>${n}</b></a>`).join("")}</div>`})()}
 </section>
-<section class="lp-line" aria-labelledby="lp-bots"><h2 id="lp-bots" class="lp-meet">Meet the agents</h2>${(()=>{const F=[["ai-thematic","AI Thematic",84],["dip-hunter","Dip Hunter",104],["steady-stacker","Steady Stacker",128],["trend-flip","Trend Flip",104],["weekend-edge",WE_NAME,84]];return `<div class="lp-fam lp-fam-meet" role="img" aria-label="The five StockClaw agents: ${F.map(f=>f[1]).join(", ")}">${F.map(([id,n,z],i)=>`<div class="lp-fm lp-fm${i}" aria-hidden="true">${window.SCEyes?SCEyes.html(id,"",z):`<img loading="lazy" src="avatars/final-${id}-transparent.png" width="${z}" height="${z}" alt="">`}</div>`).join("")}</div>`})()}
-<p class="lp-meet-note">Each agent follows rules you set, within your limits. Examples below are illustrations, not real results. Tools, not investment advice.</p>
+<section class="lp-line" aria-labelledby="lp-bots"><h2 id="lp-bots" class="lp-meet">Meet the agents</h2>
+<p class="lp-meet-note">Each agent follows rules you set, within your limits. Examples below are illustrations, not real results.</p>
 <ol class="lp-intro">${BOTS.map(([id,n,live,intro,how,story],i)=>`<li class="${live?"":"soon"} ${i%2?"rev":""}">${bot(id,n)}<div class="lp-it"><h3>${n} <span class="lp-tag ${live?"live":""}">${live?"Live":"Coming soon"}</span></h3><p class="lp-intro-l">${intro}</p><p><span class="lp-lbl">Strategy</span>${how}</p><figure class="lp-story"><span class="lp-ill">Illustrative example, not a real result</span><blockquote>${story}</blockquote></figure></div></li>`).join("")}</ol></section>
 ${baskets()}
 <section class="lp-sec" id="lp-how" aria-labelledby="lp-how-h"><p class="lp-k">02</p><h2 id="lp-how-h">How it works</h2>
@@ -85,7 +83,7 @@ ${FAQ.map(([q,a])=>`<details><summary>${q}</summary><p>${a}</p></details>`).join
 </div>`}
 function LandingBind(){const f=document.getElementById("lp-form");if(!f)return;f.onsubmit=e=>{e.preventDefault();const i=f.querySelector("input"),m=document.getElementById("lp-msg");if(!i.checkValidity()){i.setAttribute("aria-invalid","true");m.textContent="Enter a valid email address.";i.focus();return}i.removeAttribute("aria-invalid");m.textContent="Thanks. Sign-ups open soon.";f.querySelector("button").disabled=true}}
 function mark(){const p=(location.hash.slice(1)||"/").split("?")[0];document.body.classList.toggle("is-landing",!(p in R)||p==="/")}
-R["/"]=[Landing,()=>{LandingBind();(()=>{const h=document.querySelector(".lp-h3d");if(h&&"IntersectionObserver" in window)new IntersectionObserver(es=>h.classList.toggle("lp-h3-off",!es[0].isIntersecting)).observe(h)})();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
+R["/"]=[Landing,()=>{LandingBind();bindBaskets();window.SCEyes&&SCEyes.init(document.querySelector(".lp"))}];
 addEventListener("hashchange",mark);mark();render();
 // Shared with dashboard/basketfill: basket data + fixed ticker colors.
 window.SCBaskets={get data(){return BK},col:s=>col(s),has:s=>s in TCOL};

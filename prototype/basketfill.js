@@ -11,7 +11,7 @@
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const usd=n=>"$"+(+n||0).toFixed(2);
 // Per-ticker colors from landing.js's fixed map; tickers it doesn't know (testnet-only ones) get the first palette color unused in this order.
-const PAL=["#C6FF3D","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
+const PAL=["#FF7A59","#3DE0FF","#FF5FA2","#FFE14D","#A78BFA","#5AA9FF","#5EF2B8","#FF7AF5","#9DFF8A","#7DF9FF","#F5F5F5","#D4D4D4"];
 let LOCAL={};const known=t=>window.SCBaskets&&SCBaskets.has&&SCBaskets.has(t)?SCBaskets.col(t):null;
 function assign(tickers){LOCAL={};const used=new Set(tickers.map(known).filter(Boolean));tickers.forEach(t=>{if(!known(t)){const c=PAL.find(c=>!used.has(c))||"#D4D4D4";used.add(c);LOCAL[t]=c}})}
 const color=t=>known(t)||LOCAL[t]||"#D4D4D4";
@@ -65,7 +65,7 @@ function svg(sl,x){assign(sl.map(s=>s.ticker));const tot=sl.reduce((a,s)=>a+s.ta
 <circle r="${R+11}" cx="90" cy="90" fill="none" stroke="${c}" stroke-opacity=".28" stroke-width="1.5" stroke-dasharray="${(len*(R+11)/R).toFixed(2)} ${C*2}"/>
 <circle r="${R-11}" cx="90" cy="90" fill="none" stroke="${c}" stroke-opacity=".28" stroke-width="1.5" stroke-dasharray="${(len*(R-11)/R).toFixed(2)} ${C*2}"/>
 <circle class="bf-f" r="${R}" cx="90" cy="90" fill="none" stroke="${s.status=="failed"?"url(#bf-hatch-"+i+")":c}" stroke-width="22" stroke-dasharray="${fill.toFixed(2)} ${C}"/>
-<defs><pattern id="bf-hatch-${i}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#0A0A0A"/><rect width="2" height="6" fill="${c}" fill-opacity=".45"/></pattern></defs></g>`}).join("");
+<defs><pattern id="bf-hatch-${i}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#FFF7EE"/><rect width="2" height="6" fill="${c}" fill-opacity=".45"/></pattern></defs></g>`}).join("");
  return `<svg class="bf-dn" viewBox="0 0 180 180" role="img" aria-label="${e(center)}: ${done} of ${sl.length} tickers filled">${segs}</svg><div class="bf-c" aria-hidden="true"><b>${e(center)}</b><span>${e(sub)}</span></div>`}
 function legend(sl){return `<ul class="bf-lg">${sl.map(s=>`<li class="bf-${s.status}"><span class="bf-sw" style="background:${color(s.ticker)}" aria-hidden="true"></span><span class="bf-t" style="color:${color(s.ticker)}">${e(s.ticker)}</span><span class="bf-w">${usd(s.filled)} <span class="bf-of">of ${usd(s.target)}</span></span><span class="bf-st">${
  s.status=="filled"?'<span class="bf-ok" aria-label="Filled">✓</span>':s.status=="failed"?`<button class="bf-retry" data-retry="${e(s.ticker)}" aria-label="Retry ${e(s.ticker)}${s.error?": "+e(s.error):""}">Retry</button>`:s.status=="confirming"?'<span class="bf-pend bf-conf">Confirming…</span>':s.status=="filling"?'<span class="bf-dot" aria-label="Filling">…</span>':'<span class="bf-pend">Waiting</span>'}</span></li>`).join("")}</ul>`}

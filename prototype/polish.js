@@ -38,7 +38,7 @@ document.addEventListener("click",ev=>{const c=ev.target.closest&&ev.target.clos
 // ---- success moments ----
 const WINS={"Agent key created":"Agent key created","Passkey saved":"Passkey set","Sell approved":"Sell approved","Limits saved, new key active":"Limits saved"};
 function toast(msg){document.querySelectorAll(".sc-toast").forEach(x=>x.remove());const t=document.createElement("div");t.className="sc-toast";t.setAttribute("aria-hidden","true");
- t.innerHTML=`<span class="tb"><img src="logo3d/blob-3d-eyeless-256.webp" width="44" height="31" alt=""><i class="te" style="left:34.46%"></i><i class="te" style="left:59.15%"></i></span><span><span class="tk">✓</span> ${msg}</span>`;
+ t.innerHTML=`<span class="tb"><img src="logo3d/claw-mark.svg" width="28" height="28" alt=""></span><span><span class="tk">✓</span> ${msg}</span>`;
  document.body.appendChild(t);if(!RM.matches){setTimeout(()=>t.classList.add("smile"),380);setTimeout(()=>t.classList.remove("smile"),700)}
  setTimeout(()=>{t.classList.add("out");setTimeout(()=>t.remove(),260)},2200)}
 window.SCToast=toast;

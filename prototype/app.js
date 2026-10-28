@@ -245,7 +245,8 @@ function confirmDlg(title,body,yes,fn){const m=$("#modal"),back=document.activeE
 // Calls go through api.<name> when api.js has it; otherwise REST (§5) in live mode; on 404/unreachable or ?mock=1, a local mock.
 // Trend Flip: 9 EMA / VWAP flip strategy (momentum-rider slot). Rename here only.
 const FLIP_NAME="Trend Flip";
-const SAVATAR={"steady-stacker":"avatars/steady-stacker.png","dip-hunter":"avatars/dip-hunter.png","ema-vwap-flip":"avatars/trend-flip.png","momentum-rider":"avatars/trend-flip.png","trend-flip":"avatars/trend-flip.png","monday-planner":"avatars/weekend-edge.png","ai-thematic":"avatars/ai-thematic.png","weekend-edge":"avatars/weekend-edge.png"};
+const SAVATAR={"steady-stacker":"avatars/steady-stacker-512-transparent.png","dip-hunter":"avatars/dip-hunter-512-transparent.png","ema-vwap-flip":"avatars/trend-flip-512-transparent.png","momentum-rider":"avatars/trend-flip-512-transparent.png","trend-flip":"avatars/trend-flip-512-transparent.png","monday-planner":"avatars/weekend-edge-512-transparent.png","ai-thematic":"avatars/ai-thematic-512-transparent.png","weekend-edge":"avatars/weekend-edge-512-transparent.png"};
+const SARCH={"steady-stacker":"#CFE6C8","dip-hunter":"#FFD3C2","trend-flip":"#CFE4F5","ema-vwap-flip":"#CFE4F5","momentum-rider":"#CFE4F5","ai-thematic":"#E3D9F5","weekend-edge":"#F8D3DF","monday-planner":"#F8D3DF"};
 const STOCKS=["TSLA","AMZN","PLTR","NFLX","AMD"];
 const SDISC='<p class="disc"><b>Tools, not investment advice.</b> You choose the parameters; StockClaw executes them within your limits.</p>';
 const MOCK_STRATS=[
@@ -308,7 +309,7 @@ async function loadStrats(force){if(ST.loading||(!force&&ST.list&&ST.status!==un
  try{const [l,s]=await Promise.all([sapi("list_strategies"),sapi("get_strategy_status")]);ST.list=(l||[]).map(normStrat);const ns=normStatus(s);ST.status=ns&&!["stopped","rejected","none"].includes(ns.status)?ns:null;ST.err=null}catch(e){ST.err=e.message||String(e);ST.errAt=Date.now()}
  ST.loading=false;if(/strateg/.test(lastRoute||""))render();return true}
 const sById=(id)=>(ST.list||MOCK_STRATS).find(s=>s.id==id)||MOCK_STRATS.find(s=>s.id==id);
-const avatar=(id,size,extra="")=>`<img class="av ${extra}" src="${SAVATAR[id]||""}" width="${size}" height="${size}" alt="${esc((sById(id)||{}).name||id)} avatar">`;
+const avatar=(id,size,extra="")=>{const src=SAVATAR[id]||"";const webp=src.replace(/\.png$/,".webp");const arch=SARCH[id]||"#E8D9CE";return `<picture class="av ${extra}" style="--arch:${arch};background:${arch}"><source type="image/webp" srcset="${webp}"><img src="${src}" width="${size}" height="${size}" alt="${esc((sById(id)||{}).name||id)} avatar" loading="lazy" decoding="async"></picture>`};
 const runsLbl=(r)=>r=="client"?"Runs on: your AI (within your limits)":r=="both"?"Runs on: our keeper + your AI":"Runs on: our keeper";
 function gallery(base){const cur=ST.status;return `${ST.loading&&!ST.list?'<div role="status"><span class="sr-only">Loading strategies</span><span class="sk sk-card"></span><span class="sk sk-card"></span></div>':""}${ST.err?`<div class="st err" role="alert">✕ Couldn't load strategies: ${esc(ST.err)} <button class="sec" id="sRetry">Retry</button></div>`:""}
 <ul class="sgrid" role="list">${(()=>{const L=ST.list||MOCK_STRATS,first=cur?null:(L.find(x=>x.demoAvailable)||{}).id; /* one primary: the first available template when nothing runs */return L.map(s=>{const on=s.demoAvailable;const active=cur&&cur.id==s.id;return `<li class="scard ${on?"":"soon"}">${avatar(s.id,72,on?"":"grey")}

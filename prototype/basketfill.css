@@ -9,19 +9,19 @@
 @keyframes bf-pulse{50%{opacity:.6}}
 .bf-filled .bf-f{opacity:1}
 .bf-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
-.bf-c b{font:800 30px/1 var(--f-display,inherit);color:#ecebe8;letter-spacing:-.02em}
-.bf-c span{font-size:12px;color:#9a978f;margin-top:4px}
+.bf-c b{font:800 30px/1 var(--f-display,inherit);color:#2A1E3B;letter-spacing:-.02em}
+.bf-c span{font-size:12px;color:#7A6C80;margin-top:4px}
 .bf-lg{list-style:none;margin:0;padding:0;min-width:260px;flex:1;max-width:420px}
-.bf-lg li{display:grid;grid-template-columns:12px 64px 1fr auto;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid #1d1d20;font-size:14px}
+.bf-lg li{display:grid;grid-template-columns:12px 64px 1fr auto;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid #E8D9CE;font-size:14px}
 .bf-sw{width:10px;height:10px;border-radius:3px}
 .bf-t{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600}
-.bf-w{color:#ecebe8;font-variant-numeric:tabular-nums}.bf-of{color:#9a978f}
+.bf-w{color:#2A1E3B;font-variant-numeric:tabular-nums}.bf-of{color:#7A6C80}
 .bf-pending .bf-sw{opacity:.35}.bf-pending .bf-t{opacity:.6}
 .bf-failed .bf-sw,.bf-failed .bf-t{opacity:.45}
-.bf-ok{color:#C6FF3D;font-weight:800}
-.bf-pend,.bf-dot{color:#9a978f;font-size:12px}
-.bf-retry{background:none!important;border:1px solid #3a3a3f!important;color:#ecebe8!important;border-radius:999px;padding:3px 12px!important;font-size:12px!important;min-height:0!important;cursor:pointer}
-.bf-retry:hover{border-color:#C6FF3D!important}
+.bf-ok{color:#FF7A59;font-weight:800}
+.bf-pend,.bf-dot{color:#7A6C80;font-size:12px}
+.bf-retry{background:none!important;border:1px solid #d0bfb2!important;color:#2A1E3B!important;border-radius:999px;padding:3px 12px!important;font-size:12px!important;min-height:0!important;cursor:pointer}
+.bf-retry:hover{border-color:#FF7A59!important}
 .bf-card{margin:0 0 8px}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (max-width:520px){.bf-wrap{flex-direction:column;align-items:stretch;gap:20px}.bf-ring{margin:0 auto}}
