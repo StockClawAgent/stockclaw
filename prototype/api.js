@@ -1,4 +1,4 @@
-// StockClaw data layer. Chain 46630 (demo / non-mainnet): tokens and prices may be mocks.
+// StockClaw data layer. Chain 46630 (demo network): tokens and prices may be mocks.
 // Each function is named after an MCP tool / REST endpoint in ARCHITECTURE.md §7.
 // Live mode calls the StockClaw server (server/, `npm start`, same origin). Return shapes match the original stubs.
 // Mock mode: only with explicit ?mock=1 (or a static public build via config.js STOCKCLAW_USE_MOCK / *.github.io).
