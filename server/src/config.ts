@@ -55,7 +55,7 @@ export const explorerTx = (hash: string) => (EXPLORER && hash ? `${EXPLORER}/tx/
 export const explorerAddress = (addr: string) => (EXPLORER && addr ? `${EXPLORER}/address/${addr}` : null);
 /** Official chain faucet for ETH + stock tokens (hostname is the provider's; UI shows neutral link text). Override with FAUCET_URL. */
 export const FAUCET_URL = (process.env.FAUCET_URL ?? "https://faucet.testnet.chain.robinhood.com").replace(/\/+$/, "");
-/** Visible network disclosure (never "mainnet"). Override with NETWORK_LABEL. Local anvil => "Local demo"; else "Demo network". */
+/** Visible network disclosure (neutral wording). Override with NETWORK_LABEL. Local anvil => "Local demo"; else "Demo network". */
 export function networkLabel(): string {
   const v = (process.env.NETWORK_LABEL ?? "").trim();
   if (v) return v;

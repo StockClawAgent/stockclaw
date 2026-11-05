@@ -20,10 +20,10 @@ async function askTok(){try{await requestOwnerToken(true);return true}catch(e){r
 async function needOwner(){if(window.USE_MOCK||getTok())return true;return askTok()}
 window.__apiFails=[];const isAuthErr=(e)=>!!(e&&(e.status==401||e.status==403||e.code=="AUTH_REQUIRED"||e.code=="OWNER_TOKEN_REQUIRED"||/owner token/i.test(String(e&&e.message||e))));const isNetErr=(e)=>!!(e&&(e.name=="Unreachable"||e.code=="NETWORK"||/Unreachable|Failed to fetch|NetworkError/i.test(String((e&&e.name)||"")+" "+String((e&&e.message)||e))));if(window.api)for(const n of Object.keys(api)){if(n==="openActivityStream"||n==="subscribeExecution")continue; /* stream openers return {close()} synchronously: wrapping them in a Promise made BasketFill unable to close a basket stream/poller (a dead execution id was polled forever) */const f=api[n];api[n]=(...a)=>Promise.resolve().then(()=>f(...a)).catch(e=>{window.__apiFails.push(n+": "+(e&&e.message));console.warn("api."+n+" failed:",e);if(e&&(e.status==404||e.code=="NOT_FOUND"||isAuthErr(e))){/* auth / not-found: not offline */}else if(isNetErr(e))say("Can't reach StockClaw right now. Check your connection and try again.");throw e})}
 const KEY="stockclaw-proto-v1";
-// Neutral network disclosure badge (config-driven; never says mainnet / testnet).
+// Neutral network disclosure badge (config-driven; neutral wording only).
 const netLabel=()=>(typeof NETWORK_LABEL!=="undefined"&&NETWORK_LABEL)||(window.NETWORK_LABEL)||"Demo network";
-let B=` <span class="badge" title="Non-mainnet demo; balances and prices may be mocks">${netLabel()}</span>`;
-const refreshNetBadge=()=>{B=` <span class="badge" title="Non-mainnet demo; balances and prices may be mocks">${esc(netLabel())}</span>`;if(typeof paintBar=="function")try{paintBar()}catch(e){}};
+let B=` <span class="badge" title="Demo network; balances and prices may be mocks">${netLabel()}</span>`;
+const refreshNetBadge=()=>{B=` <span class="badge" title="Demo network; balances and prices may be mocks">${esc(netLabel())}</span>`;if(typeof paintBar=="function")try{paintBar()}catch(e){}};
 const DISC='<p class="disc">Stock tokens are not available to US persons or residents of restricted regions and are not shares. Stock tokens can be frozen or restricted by their issuer; a frozen token can\'t be sold.</p>';
 const BLOCKED=["United States","Canada","United Kingdom","Switzerland","United Arab Emirates","Iran","North Korea","Cuba","Syria","Russia"];
 const COUNTRIES=["Germany","France","Spain","Brazil","Japan","Singapore","Australia",...BLOCKED].sort();
